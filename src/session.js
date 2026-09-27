@@ -21,6 +21,9 @@ const LOCAL = Symbol('local')
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
+// chokidar drops a 'change' for a path within 50ms of the previous one (no
+// trailing event), so each change is re-checked once that window has passed.
+const WATCH_RECHECK_MS = 80
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true }) {
@@ -47,6 +50,7 @@ export class Session extends EventEmitter {
     this.lastKnown = new Map() // path -> text content, or "bin:<sha1>"
     this.pending = new Set()
     this.flushTimer = null
+    this.rechecks = new Map() // path -> timer
     this.ready = false
     this.myEdits = new Map() // path -> ts of my last edit
     this.lastActivityPush = new Map()
@@ -407,7 +411,14 @@ export class Session extends EventEmitter {
       const rel = toPosix(path.relative(this.root, p))
       if (rel && !rel.startsWith('..')) this.queue(rel)
     }
-    this.watcher.on('add', onFile).on('change', onFile).on('unlink', onFile)
+    const onChange = (p) => {
+      onFile(p)
+      const rel = toPosix(path.relative(this.root, p))
+      if (!rel || rel.startsWith('..')) return
+      clearTimeout(this.rechecks.get(rel))
+      this.rechecks.set(rel, setTimeout(() => { this.rechecks.delete(rel); if (this.ready) this.queue(rel) }, WATCH_RECHECK_MS))
+    }
+    this.watcher.on('add', onFile).on('change', onChange).on('unlink', onFile)
     this.watcher.on('unlinkDir', (p) => {
       const relDir = toPosix(path.relative(this.root, p))
       for (const rel of this.sharedPaths()) if (rel.startsWith(relDir + '/')) this.queue(rel)
@@ -796,6 +807,8 @@ export class Session extends EventEmitter {
   async stop () {
     this.ready = false
     if (this.watcher) await this.watcher.close()
+    for (const t of this.rechecks.values()) clearTimeout(t)
+    this.rechecks.clear()
     this.flushPending()
     clearTimeout(this.statusTimer)
     clearTimeout(this.presenceTimer)
