@@ -19,7 +19,7 @@ const STATIC = {
   '/app.css': ['app.css', 'text/css; charset=utf-8']
 }
 
-export async function startUi ({ port = 7420, relayPort = 4321 } = {}) {
+export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {}) {
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
   const clients = new Set() // SSE responses
@@ -137,7 +137,13 @@ export async function startUi ({ port = 7420, relayPort = 4321 } = {}) {
     'POST /api/sessions/:id/release': (b, id) => ({ released: get(id).release(b.pattern) }),
     'POST /api/sessions/:id/read': (b, id) => { get(id).messages({ limit: 500 }); pushStatus(id); return { ok: true } },
     'GET /api/sessions/:id/messages': (b, id) => ({ messages: get(id).messages({ limit: 200, markRead: false }) }),
-    'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir())
+    'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
+    // Reply first, then shut down, so the page hears back before we exit.
+    'POST /api/shutdown': () => {
+      if (!onShutdown) throw httpError(501, 'Shut down is not available here.')
+      setTimeout(onShutdown, 100)
+      return { ok: true }
+    }
   }
 
   const server = http.createServer(async (req, res) => {

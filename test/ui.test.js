@@ -9,9 +9,10 @@ process.env.HOME = home // keep recent.json and relay data out of the real home
 
 const { startUi } = await import('../src/ui-server.js')
 let ui, base
+let shutdowns = 0
 
 before(async () => {
-  ui = await startUi({ port: 0, relayPort: 0 })
+  ui = await startUi({ port: 0, relayPort: 0, onShutdown: () => { shutdowns++ } })
   base = `http://127.0.0.1:${ui.port}`
 })
 after(async () => { await ui.close() })
@@ -80,4 +81,11 @@ test('bad invite gives a friendly error', async () => {
   const r = await api('POST', '/api/sessions', { mode: 'join', dir: path.join(home, 'x'), invite: 'nonsense' })
   assert.equal(r.status, 400)
   assert.match(r.body.error, /invite code is not valid/)
+})
+
+test('shut down asks the host to stop everything', async () => {
+  const r = await api('POST', '/api/shutdown')
+  assert.equal(r.status, 200)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  assert.equal(shutdowns, 1)
 })

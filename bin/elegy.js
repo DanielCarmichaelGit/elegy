@@ -23,6 +23,7 @@ Usage:
   elegy claim <path|glob> [reason]                    Mark files as yours for now
   elegy release <path|glob|*>                         Release a claim
   elegy invite                                        Print this session's invite code
+  elegy stop                                          Shut down everything elegy is running (relay, app, syncs)
   elegy mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
@@ -55,6 +56,7 @@ async function main () {
       `claimed ${argv[0]}` + (r.overlapping?.length ? `\nwarning: overlaps ${r.overlapping.map((c) => `${c.by}'s ${c.pattern}`).join(', ')}` : ''))
     case 'release': return simple('/release', { pattern: argv[0] || '*' }, (r) => `released ${r.released} claim(s)`)
     case 'invite': return invite()
+    case 'stop': return stopAll()
     case undefined: case '-h': case '--help': case 'help':
       process.stdout.write(HELP); return
     default:
@@ -70,6 +72,8 @@ async function serve () {
   const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir })
   console.log(`elegy relay listening on :${srv.port} (data: ${dataDir})`)
   console.log(`start a session with:  elegy join --server ws://<this-host>:${srv.port}`)
+  const { registerProcess } = await import('../src/procs.js')
+  registerProcess('relay', { port: srv.port, dataDir })
   const shutdown = async () => { await srv.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
@@ -123,6 +127,8 @@ async function join () {
     fail(err.message)
   }
 
+  const { registerProcess } = await import('../src/procs.js')
+  registerProcess('sync', { dir })
   console.log(`\nInvite your partner. They run this in an empty (or matching) project folder:\n\n  elegy join ${run.invite}\n`)
   console.log('Tip: run `elegy setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
 
@@ -138,9 +144,20 @@ async function join () {
 async function ui () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, 'no-open': { type: 'boolean' } } })
   const { startUi } = await import('../src/ui-server.js')
-  const app = await startUi({ port: Number(values.port || 7420) })
+  const { registerProcess, stopProcesses } = await import('../src/procs.js')
+  const app = await startUi({
+    port: Number(values.port || 7420),
+    // The app's "Shut down" button: stop every other elegy process, then this one.
+    onShutdown: async () => {
+      console.log('\nshutting down everything…')
+      await stopProcesses()
+      await app.close()
+      process.exit(0)
+    }
+  })
+  registerProcess('app', { port: app.port })
   console.log(`elegy is running at:\n\n  ${app.url}\n`)
-  console.log('Keep this terminal open while you work. Ctrl+C to stop.')
+  console.log('Keep this terminal open while you work. Ctrl+C to stop, or `elegy stop` to shut everything down.')
   if (!values['no-open']) openBrowser(app.url)
   const stop = async () => { console.log('\nstopping…'); await app.close(); process.exit(0) }
   process.on('SIGINT', stop)
@@ -316,6 +333,13 @@ async function invite () {
     if (path.dirname(dir) === dir) fail('no session configured in this folder')
     dir = path.dirname(dir)
   }
+}
+
+async function stopAll () {
+  const { stopProcesses, describeProcess } = await import('../src/procs.js')
+  const stopped = await stopProcesses()
+  if (!stopped.length) return console.log('nothing to stop: elegy is not running')
+  console.log('stopped:\n' + stopped.map((p) => `  - ${describeProcess(p)}`).join('\n'))
 }
 
 function fail (msg) {

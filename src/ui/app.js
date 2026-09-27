@@ -20,6 +20,7 @@ const I = {
   up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>',
   file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
   user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>'
 }
 
@@ -111,7 +112,7 @@ async function boot () {
 }
 
 function connectEvents () {
-  const es = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
+  const es = state.events = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
   es.addEventListener('session', (e) => {
     const sum = JSON.parse(e.data)
     const isNew = !state.sessions.has(sum.id)
@@ -181,6 +182,19 @@ async function go (view) {
 }
 
 // --------------------------------------------------------------- render --
+async function shutdown () {
+  if (!confirm('Shut down elegy? This stops every session, the relay, and this app. Your files stay where they are.')) return
+  try {
+    await api('POST', '/api/shutdown')
+    state.events?.close() // don't re-render or reconnect as sessions stop
+    renderLocked('elegy is shut down. You can close this tab.')
+  } catch (err) {
+    toast(err.message)
+  }
+}
+
+document.addEventListener('click', (e) => { if (e.target.closest('[data-shutdown]')) shutdown() })
+
 function render () {
   const app = $('#app')
   if (state.view === 'home') {
@@ -211,6 +225,7 @@ function topbarHtml () {
       <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt="">elegy</button>
       <nav class="tabs" id="tabs"></nav>
       <button class="btn sm" data-go="home">${I.plus}<span>New</span></button>
+      <button class="btn sm ghost icon" data-shutdown title="Shut down elegy" aria-label="Shut down elegy">${I.power}</button>
     </header>`
 }
 
@@ -337,6 +352,7 @@ function homeHtml () {
         </div>`).join('')}</div>` : ''}
 
     <p class="footer-note">Files sync live between everyone in a session. Chat, direct messages and file sharing live inside each session.</p>
+    ${running.length ? '' : `<p class="footer-note" style="margin-top:12px"><button class="btn sm ghost" data-shutdown>${I.power}<span>Shut down elegy</span></button></p>`}
   </main>`
 }
 
