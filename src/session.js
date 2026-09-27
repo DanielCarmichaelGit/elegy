@@ -108,11 +108,11 @@ export class Session extends EventEmitter {
         if (ev.target === this.files) for (const k of ev.changes.keys.keys()) paths.add(k)
         else if (ev.path.length) paths.add(ev.path[0])
       }
-      for (const p of paths) this.writeOut(p)
+      for (const p of paths) this.fromRemote(p)
     })
     this.blobs.observe((ev, tr) => {
       if (tr.origin === LOCAL) return
-      for (const k of ev.changes.keys.keys()) this.writeOut(k)
+      for (const k of ev.changes.keys.keys()) this.fromRemote(k)
     })
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
@@ -370,6 +370,34 @@ export class Session extends EventEmitter {
   }
 
   // ------------------------------------------------------- shared -> local --
+
+  fromRemote (rel) {
+    const claim = this.claimFor(rel)
+    if (claim && claim.by === this.name) this.reclaim(rel)
+    else this.writeOut(rel)
+  }
+
+  /**
+   * A partner changed a path we claimed (their elegy should have refused, so
+   * it's an old or misbehaving client): keep their version aside and put ours
+   * back into the shared doc.
+   */
+  reclaim (rel) {
+    if (!this.syncable(rel)) return
+    const t = this.files.get(rel)
+    const b = this.blobs.get(rel)
+    if ((t || b) && this.sharedKey(rel) !== this.lastKnown.get(rel)) {
+      const dest = path.join(this.stateDir, 'rejected', `${Date.now()}`, ...rel.split('/'))
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, t ? t.toString() : Buffer.from(b.data, 'base64'))
+    }
+    // Outside the observer, so the revert goes out as its own update.
+    queueMicrotask(() => {
+      try {
+        if (this.ingest(rel)) this.log(`🔒 reverted a partner's change to ${rel}, which you claimed; theirs is in .elegy/rejected`)
+      } catch (err) { this.log(`could not revert ${rel}: ${err.message}`) }
+    })
+  }
 
   writeOut (rel) {
     if (!this.syncable(rel)) return
@@ -629,10 +657,11 @@ export class Session extends EventEmitter {
     if (!pattern) throw new Error('pattern required')
     const existing = this.claims.get(pattern)
     if (existing && existing.by !== this.name) throw new Error(`${pattern} is already claimed by ${existing.by}`)
-    const overlap = this.claimsOverlapping(pattern).filter((c) => c.by !== this.name)
+    const other = this.claimsOverlapping(pattern).find((c) => c.by !== this.name)
+    if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
     this.doc.transact(() => this.claims.set(pattern, { by: this.name, pattern, note: String(note).slice(0, 500), ts: Date.now() }), LOCAL)
     this.scheduleStatusWrite()
-    return { ok: true, overlapping: overlap }
+    return { ok: true }
   }
 
   release (pattern) {
@@ -649,9 +678,18 @@ export class Session extends EventEmitter {
     return 1
   }
 
+  /**
+   * The claim that owns rel. Overlapping claims can only come from two people
+   * claiming at the same instant; every client then picks the same owner: the
+   * earliest claim (ties broken by name, then pattern).
+   */
   claimFor (rel) {
-    for (const c of this.claims.values()) if (globMatcher(c.pattern)(rel)) return c
-    return null
+    let owner = null
+    for (const c of this.claims.values()) {
+      if (!c || !globMatcher(c.pattern)(rel)) continue
+      if (!owner || c.ts < owner.ts || (c.ts === owner.ts && (c.by < owner.by || (c.by === owner.by && c.pattern < owner.pattern)))) owner = c
+    }
+    return owner
   }
 
   claimsOverlapping (pattern) {

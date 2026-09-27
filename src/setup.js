@@ -21,8 +21,9 @@ with their own AI coding tool. Files can change underneath you at any time.
   are working with \`elegy_list_files\` (recent edits and claims).
 - Announce what you're working on (\`elegy_set_focus\` / \`elegy focus "..."\`).
 - Before a larger change, claim the files (\`elegy_claim\` / \`elegy claim <glob>\`)
-  and release them when done. Don't edit files someone else has claimed; send
-  them a message (\`elegy_message\` / \`elegy say "..."\`) instead.
+  and release them when done. Edits to files someone else has claimed are
+  undone automatically, so don't try; send them a message
+  (\`elegy_message\` / \`elegy say "..."\`) instead.
 - Always re-read a file right before editing it; never rely on an old copy.
 - Prefer small, focused edits over rewriting whole files.
 - Don't run git commands that rewrite the working tree (checkout, reset,

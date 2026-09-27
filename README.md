@@ -163,9 +163,20 @@ In a session, the app's main area has two modes:
 
 The file tree on the left shows orange badges on files edited in the last two
 minutes and purple badges on claims. Use a file's or folder's ⋯ menu to claim
-or release it. Claims are enforced: if anyone else changes a claimed file,
-elegy puts the shared version back on their disk, never sends the change, and
-saves their version under `.elegy/rejected/`.
+or release it.
+
+Claims are enforced in code, not just by asking agents nicely:
+
+- **Your side:** if you change a file someone else has claimed (including
+  creating or deleting files in a claimed folder), elegy puts the shared version
+  back on your disk, never sends the change, and keeps your version in
+  `.elegy/rejected/`.
+- **Their side:** if a change to your claimed files still arrives (say, from a
+  partner running an older elegy), your elegy reverts it in the shared session
+  and keeps their version in your `.elegy/rejected/`.
+- A folder can be claimed before it exists; anything created in it later is
+  covered. A claim that overlaps someone else's is refused. If two overlapping
+  claims are made at the same instant, everyone treats the earliest as the owner.
 
 Sharing is on when you join. Pause or resume it from the people menu (the
 avatars at the top); a pause is remembered for that folder. elegy reads Claude

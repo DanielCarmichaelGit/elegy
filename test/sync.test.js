@@ -121,8 +121,8 @@ test('presence, focus, claims and chat are shared', async () => {
   await waitFor(() => A.status().chat.some((m) => m.by === 'bob'))
   assert.throws(() => B.claim('src/auth/**'), /already claimed by alice/)
   assert.equal(B.claimFor('src/auth/login.ts').by, 'alice')
-  assert.equal(B.claim('src/auth/login.ts').overlapping[0].by, 'alice')
-  B.release('src/auth/login.ts')
+  assert.throws(() => B.claim('src/auth/login.ts'), /overlaps alice's claim on src\/auth\/\*\*/)
+  assert.throws(() => B.claim('src'), /overlaps alice's claim/)
   assert.equal(A.release('*'), 1)
 })
 
@@ -154,6 +154,49 @@ test('claims are enforced: others\' edits are undone locally and never shared', 
   await waitFor(() => !B.claimFor('locked/a.txt'))
   write(dirB, 'locked/a.txt', 'bob again\n')
   await waitFor(() => read(dirA, 'locked/a.txt') === 'bob again\n')
+})
+
+test('a claim on a folder that does not exist yet covers files created later', async () => {
+  B.claim('brand-new', 'starting a module')
+  await waitFor(() => A.claimFor('brand-new/deep/x.js'))
+  write(dirA, 'brand-new/deep/x.js', 'nope')
+  await waitFor(() => read(dirA, 'brand-new/deep/x.js') === null)
+  write(dirB, 'brand-new/deep/x.js', 'bob owns this')
+  await waitFor(() => read(dirA, 'brand-new/deep/x.js') === 'bob owns this')
+  B.release('brand-new')
+  await waitFor(() => !A.claimFor('brand-new/deep/x.js'))
+})
+
+test('the claimer reverts changes from clients that do not enforce claims', async () => {
+  write(dirA, 'guarded.txt', 'safe\n')
+  await waitFor(() => read(dirB, 'guarded.txt') === 'safe\n')
+  A.claim('guarded.txt')
+  await waitFor(() => B.claimFor('guarded.txt'))
+  // An old or misbehaving client writes straight into the shared doc.
+  B.doc.transact(() => B.files.get('guarded.txt').insert(0, 'hacked '), 'rogue')
+  await waitFor(() => B.files.get('guarded.txt').toString() === 'safe\n')
+  assert.equal(read(dirA, 'guarded.txt'), 'safe\n')
+  await waitFor(() => read(dirB, 'guarded.txt') === 'safe\n')
+  const saved = fs.readdirSync(path.join(dirA, '.elegy', 'rejected'))
+  assert.ok(saved.some((ts) => read(path.join(dirA, '.elegy', 'rejected', ts), 'guarded.txt') === 'hacked safe\n'))
+  // Creating a file under someone's claim is reverted too.
+  A.claim('fort')
+  await waitFor(() => B.claimFor('fort/a.txt'))
+  B.doc.transact(() => B.files.set('fort/a.txt', new Y.Text('sneaky')), 'rogue')
+  await waitFor(() => !B.files.has('fort/a.txt'))
+  assert.equal(read(dirA, 'fort/a.txt'), null)
+  A.release('*')
+})
+
+test('overlapping claims made at the same moment resolve to the earliest everywhere', async () => {
+  // Simulate a race: both claims land in the doc without the overlap check.
+  A.doc.transact(() => A.claims.set('race', { by: 'alice', pattern: 'race', note: '', ts: 2000 }))
+  B.doc.transact(() => B.claims.set('race/x.js', { by: 'bob', pattern: 'race/x.js', note: '', ts: 1000 }))
+  await waitFor(() => A.claims.size === 2 && B.claims.size === 2)
+  assert.equal(A.claimFor('race/x.js').by, 'bob')
+  assert.equal(B.claimFor('race/x.js').by, 'bob')
+  assert.equal(A.claimFor('race/y.js').by, 'alice')
+  A.release('*'); B.release('*')
 })
 
 test('direct messages are only shown to sender and recipient', async () => {

@@ -606,8 +606,8 @@ function showTreeMenu (anchor, path, kind) {
 
 async function claimPath (path, note) {
   try {
-    const r = await api('POST', `/api/sessions/${current}/claim`, { pattern: path, note })
-    toast(r.overlapping?.length ? `Claimed, but it overlaps ${r.overlapping.map((c) => `${c.by}'s ${c.pattern}`).join(', ')}` : `Claimed ${path}`)
+    await api('POST', `/api/sessions/${current}/claim`, { pattern: path, note })
+    toast(`Claimed ${path}`)
     loadTree()
   } catch (err) { toast(err.message) }
 }

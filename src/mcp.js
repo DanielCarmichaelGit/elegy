@@ -67,17 +67,14 @@ export async function runMcp () {
   }))
 
   server.registerTool('elegy_claim', {
-    description: 'Claim files so collaborators (and their agents) know to stay out of them while you work. Accepts a file path, a folder, or a glob like "src/auth/**".',
+    description: 'Claim files so only you can change them while you work: elegy undoes anyone else\'s edits there. Accepts a file path, a folder (it need not exist yet), or a glob like "src/auth/**". Fails if it overlaps someone else\'s claim.',
     inputSchema: {
       pattern: z.string().describe('File path, folder, or glob'),
       reason: z.string().optional().describe('What you are doing there')
     }
   }, ({ pattern, reason }) => withDaemon(async (d) => {
-    const r = await call(d, 'POST', '/claim', { pattern, note: reason || '' })
-    const warn = r.overlapping && r.overlapping.length
-      ? `\nWarning: overlaps with claims by ${r.overlapping.map((c) => `${c.by} (${c.pattern})`).join(', ')}. Coordinate before editing.`
-      : ''
-    return `Claimed ${pattern}.${warn}`
+    await call(d, 'POST', '/claim', { pattern, note: reason || '' })
+    return `Claimed ${pattern}. Only you can change it until you release it.`
   }))
 
   server.registerTool('elegy_release', {
