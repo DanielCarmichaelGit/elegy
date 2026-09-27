@@ -2,12 +2,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { parseArgs } from 'node:util'
 
 const HELP = `elegy: real-time pair vibe coding with any AI tool
 
 Usage:
+  elegy ui                                            Open the app in your browser (start, join, chat)
   elegy serve [--port 4321] [--data ./elegy-data]   Run a relay server
   elegy join --server <ws(s)://relay>                 Start a new session in this folder
   elegy join <invite-code>                            Join a partner's session in this folder
@@ -37,16 +37,10 @@ Join options:
 const cmd = process.argv[2]
 const argv = process.argv.slice(3)
 
-const encodeInvite = (c) => Buffer.from(JSON.stringify({ s: c.server, r: c.room, k: c.secret })).toString('base64url')
-const decodeInvite = (code) => {
-  const j = JSON.parse(Buffer.from(code.replace(/^elegy:/, ''), 'base64url').toString('utf8'))
-  if (!j.s || !j.r) throw new Error('bad invite')
-  return { server: j.s, room: j.r, secret: j.k || '' }
-}
-
 async function main () {
   switch (cmd) {
     case 'serve': return serve()
+    case 'ui': return ui()
     case 'join': return join()
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
@@ -88,79 +82,77 @@ async function join () {
     options: {
       server: { type: 'string' }, room: { type: 'string' }, secret: { type: 'string' },
       name: { type: 'string' }, tool: { type: 'string' }, dir: { type: 'string' },
-      prefer: { type: 'string' }, quiet: { type: 'boolean' }
+      prefer: { type: 'string' }
     }
   })
+  const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
   const dir = path.resolve(values.dir || '.')
-  const cfgFile = path.join(dir, '.elegy', 'config.json')
-  let saved = {}
-  try { saved = JSON.parse(fs.readFileSync(cfgFile, 'utf8')) } catch {}
+  const saved = readConfig(dir) || {}
 
   let conn
   if (positionals[0]) {
-    try { conn = decodeInvite(positionals[0]) } catch { fail('That invite code is not valid.') }
+    try { conn = decodeInvite(positionals[0]) } catch (err) { fail(err.message) }
   } else if (values.server || process.env.ELEGY_SERVER) {
-    conn = {
-      server: values.server || process.env.ELEGY_SERVER,
-      room: values.room || `room-${crypto.randomBytes(4).toString('hex')}`,
-      secret: values.secret || process.env.ELEGY_SECRET || crypto.randomBytes(18).toString('base64url')
-    }
+    conn = newConn(values.server || process.env.ELEGY_SERVER)
+    if (values.room) conn.room = values.room
+    if (values.secret || process.env.ELEGY_SECRET) conn.secret = values.secret || process.env.ELEGY_SECRET
   } else if (saved.server) {
     conn = { server: saved.server, room: saved.room, secret: saved.secret }
   } else {
-    fail('Give a relay to start a session (elegy join --server wss://…) or an invite code to join one.')
+    fail('Give a relay to start a session (elegy join --server wss://…) or an invite code to join one.\nOr run `elegy ui` to do it in your browser.')
   }
-  if (!/^wss?:\/\//.test(conn.server)) fail('--server must start with ws:// or wss://')
 
-  const name = values.name || saved.name || os.userInfo().username
-  const tool = values.tool || saved.tool || 'unknown'
-  fs.mkdirSync(path.dirname(cfgFile), { recursive: true })
-  fs.writeFileSync(cfgFile, JSON.stringify({ ...conn, name, tool }, null, 2), { mode: 0o600 })
-  ensureGitExclude(dir)
-
-  const { Session } = await import('../src/session.js')
-  const { startControl } = await import('../src/control.js')
-  const { renderStatus } = await import('../src/status.js')
-
-  const session = new Session({ dir, ...conn, name, tool, prefer: values.prefer === 'local' ? 'local' : 'remote' })
   const stamp = () => new Date().toLocaleTimeString()
-  session.on('log', (m) => console.log(`[${stamp()}] ${m}`))
-  session.on('fatal', (err) => { console.error(err.message); process.exit(1) })
-  if (process.env.ELEGY_DEBUG) session.on('debug', (m) => console.log(`[${stamp()}] debug: ${m}`))
-  const statusFile = path.join(dir, '.elegy', 'STATUS.md')
-  session.on('status-changed', () => {
-    try { fs.writeFileSync(statusFile, renderStatus(session.status())) } catch {}
-  })
-
+  const name = values.name || saved.name || os.userInfo().username
   console.log(`elegy: syncing ${dir}`)
   console.log(`  room ${conn.room} on ${conn.server} as "${name}"`)
-  await session.start()
-  const control = await startControl(session)
+  let run
+  try {
+    run = await runSession({
+      dir,
+      conn,
+      name,
+      tool: values.tool || saved.tool,
+      prefer: values.prefer === 'local' ? 'local' : 'remote',
+      inviteServer: saved.room === conn.room ? saved.inviteServer : undefined,
+      onLog: (m) => console.log(`[${stamp()}] ${m}`),
+      onDebug: process.env.ELEGY_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
+      onFatal: (err) => fail(err.message)
+    })
+  } catch (err) {
+    fail(err.message)
+  }
 
-  console.log(`\nInvite your partner. They run this in an empty (or matching) project folder:\n\n  elegy join ${encodeInvite(conn)}\n`)
+  console.log(`\nInvite your partner. They run this in an empty (or matching) project folder:\n\n  elegy join ${run.invite}\n`)
   console.log('Tip: run `elegy setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
 
   const stop = async () => {
     console.log('\nstopping…')
-    await control.close()
-    await session.stop()
+    await run.stop()
     process.exit(0)
   }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
 }
 
-/** Keep .elegy/ out of git without editing the (synced) .gitignore. */
-function ensureGitExclude (dir) {
-  const exclude = path.join(dir, '.git', 'info', 'exclude')
-  try {
-    if (!fs.existsSync(path.join(dir, '.git'))) return
-    const text = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
-    if (!text.split('\n').includes('.elegy/')) {
-      fs.mkdirSync(path.dirname(exclude), { recursive: true })
-      fs.appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}.elegy/\n`)
-    }
-  } catch {}
+async function ui () {
+  const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, 'no-open': { type: 'boolean' } } })
+  const { startUi } = await import('../src/ui-server.js')
+  const app = await startUi({ port: Number(values.port || 7420) })
+  console.log(`elegy is running at:\n\n  ${app.url}\n`)
+  console.log('Keep this terminal open while you work. Ctrl+C to stop.')
+  if (!values['no-open']) openBrowser(app.url)
+  const stop = async () => { console.log('\nstopping…'); await app.close(); process.exit(0) }
+  process.on('SIGINT', stop)
+  process.on('SIGTERM', stop)
+}
+
+async function openBrowser (url) {
+  const { spawn } = await import('node:child_process')
+  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
+    : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+      : ['xdg-open', [url]]
+  try { spawn(cmd, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref() } catch {}
 }
 
 async function doSetup () {
@@ -312,13 +304,14 @@ async function chat () {
   rl.on('close', () => { ctrl.abort(); process.exit(0) })
 }
 
-function invite () {
+async function invite () {
+  const { encodeInvite } = await import('../src/runner.js')
   let dir = process.cwd()
   while (true) {
     const f = path.join(dir, '.elegy', 'config.json')
     if (fs.existsSync(f)) {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'))
-      return console.log(`elegy join ${encodeInvite(c)}`)
+      return console.log(`elegy join ${encodeInvite({ ...c, server: c.inviteServer || c.server })}`)
     }
     if (path.dirname(dir) === dir) fail('no session configured in this folder')
     dir = path.dirname(dir)

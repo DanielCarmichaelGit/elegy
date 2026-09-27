@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="elegy">
+  <defs>
+    <linearGradient id="elegy-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#221d3a"/>
+      <stop offset="1" stop-color="#110f1e"/>
+    </linearGradient>
+    <linearGradient id="elegy-a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffa26b"/>
+      <stop offset="1" stop-color="#ff5c7a"/>
+    </linearGradient>
+    <linearGradient id="elegy-b" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8f7dff"/>
+      <stop offset="1" stop-color="#4f8dff"/>
+    </linearGradient>
+    <clipPath id="elegy-clip"><circle cx="48" cy="64" r="32"/></clipPath>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#elegy-bg)"/>
+  <circle cx="48" cy="64" r="32" fill="url(#elegy-a)"/>
+  <circle cx="80" cy="64" r="32" fill="url(#elegy-b)"/>
+  <circle cx="80" cy="64" r="32" fill="#fff4ea" clip-path="url(#elegy-clip)"/>
+  <rect x="61.75" y="49" width="4.5" height="30" rx="2.25" fill="#221d3a"/>
+</svg>

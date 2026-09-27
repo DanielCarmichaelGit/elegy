@@ -620,6 +620,7 @@ export class Session extends EventEmitter {
       peers.push({
         name: s.name,
         tool: s.tool,
+        color: s.color,
         agents: s.agents || [],
         focus: s.focus || '',
         editing: Object.entries(s.editing || {})
@@ -631,7 +632,7 @@ export class Session extends EventEmitter {
       room: this.room,
       server: this.server,
       connected: !!(this.conn && this.conn.connected),
-      me: { name: this.name, tool: this.tool, focus: this.focus, agents: [...this.agents] },
+      me: { name: this.name, tool: this.tool, focus: this.focus, agents: [...this.agents], color: this.conn?.awareness.getLocalState()?.color },
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       activity: this.activity.toArray().slice(-30),

@@ -172,7 +172,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
   }, 30000)
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    httpServer.once('error', (err) => { clearInterval(heartbeat); reject(err) })
     httpServer.listen(port, host, () => {
       const actualPort = httpServer.address().port
       resolve({

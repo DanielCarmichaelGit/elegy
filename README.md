@@ -1,6 +1,8 @@
-# elegy
+<p align="center"><img src="assets/logo.svg" width="96" alt="elegy logo"></p>
 
-Real-time pair vibe coding that doesn't care which AI tool you use.
+<h1 align="center">elegy</h1>
+
+<p align="center">Real-time pair vibe coding that doesn't care which AI tool you use.</p>
 
 You use Claude Code, your friend uses Cursor, someone else uses Codex or plain
 vim. Everyone works in their own copy of the project, on their own machine,
@@ -43,6 +45,25 @@ Requires Node.js 20+.
 git clone <this repo> && cd elegy && npm install && npm link   # puts `elegy` on your PATH
 ```
 
+### The easy way: the app
+
+```bash
+elegy ui
+```
+
+This opens elegy in your browser, where you can:
+
+- **Start a session:** pick your project folder, then either host the relay on
+  your computer with one click or point at a hosted relay. You get an invite code to send.
+- **Join a session:** paste an invite code and pick where the project should go.
+- **Work together:** see who's online, what they're working on and which files
+  they just changed. Chat, send direct messages, and drag and drop files to share
+  them. You can also claim files, and rejoin recent sessions later.
+
+The app only listens on `127.0.0.1` and needs the secret link `elegy ui` prints.
+
+### The terminal way
+
 **1. Run a relay** that both of you can reach (see [Hosting the relay](#hosting-the-relay)):
 
 ```bash
@@ -84,6 +105,7 @@ pick up the MCP server.
 
 | Command | What it does |
 |---|---|
+| `elegy ui` | Open the app (start, join, chat, files) |
 | `elegy serve [--port 4321] [--data ./elegy-data]` | Run a relay |
 | `elegy join --server <url>` | Start a new session for this folder |
 | `elegy join <invite>` | Join a session |
@@ -176,7 +198,7 @@ and the changes sync to everyone.
 npm test     # end-to-end tests: real relay, two clients, temp folders
 ```
 
-Layout: `src/server.js` (relay), `src/connection.js` (client protocol +
+Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),
 `src/control.js` (local API for CLI/MCP), `src/mcp.js`, `src/setup.js`,
 `bin/elegy.js` (CLI).
