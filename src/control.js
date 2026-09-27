@@ -10,7 +10,10 @@ export async function startControl (session) {
   const token = crypto.randomBytes(16).toString('hex')
   const routes = {
     'GET /status': () => ({ ...session.status(), markdown: renderStatus(session.status()) }),
-    'POST /say': (b) => session.say(b.text),
+    'POST /say': (b) => session.say(b.text, { to: b.to }),
+    'POST /send': (b) => session.sendFile(b.path, { to: b.to, text: b.text }),
+    'POST /messages': (b) => ({ messages: session.messages({ limit: b.limit || 50, unreadOnly: !!b.unreadOnly, withName: b.with || null }) }),
+    'POST /get': async (b) => ({ path: await session.fetchFile(b.id, b.dest) }),
     'POST /focus': (b) => { session.setFocus(b.text); return { ok: true } },
     'POST /claim': (b) => session.claim(b.pattern, b.note),
     'POST /release': (b) => ({ released: session.release(b.pattern) }),
@@ -22,6 +25,7 @@ export async function startControl (session) {
       res.end(JSON.stringify(body))
     }
     if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: 'unauthorized' })
+    if (req.method === 'GET' && req.url === '/events') return streamEvents(session, req, res)
     const route = routes[`${req.method} ${req.url.split('?')[0]}`]
     if (!route) return reply(404, { error: 'not found' })
     let raw = ''
@@ -41,6 +45,25 @@ export async function startControl (session) {
       return new Promise((r) => server.close(r))
     }
   }
+}
+
+// Server-sent events: pushes each new message as it arrives (used by `elegy chat`).
+function streamEvents (session, req, res) {
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+  res.write(': connected\n\n')
+  const onMessage = (msg) => {
+    res.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`)
+    if (msg.by !== session.name) session.markRead([msg.id])
+  }
+  const onLog = (line) => res.write(`event: log\ndata: ${JSON.stringify(line)}\n\n`)
+  const ping = setInterval(() => res.write(': ping\n\n'), 15000)
+  session.on('message', onMessage)
+  session.on('log', onLog)
+  req.on('close', () => {
+    clearInterval(ping)
+    session.off('message', onMessage)
+    session.off('log', onLog)
+  })
 }
 
 /** Finds the nearest folder (from `start` upward) with a running session. */

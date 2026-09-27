@@ -126,11 +126,65 @@ test('presence, focus, claims and chat are shared', async () => {
   assert.equal(A.release('*'), 1)
 })
 
+test('direct messages are only shown to sender and recipient', async () => {
+  const r = B.say('psst alice', { to: 'alice' })
+  assert.equal(r.recipientOnline, true)
+  B.say('note to carol', { to: 'carol' })
+  await waitFor(() => A.messages({ markRead: false }).some((m) => m.text === 'psst alice' && m.to === 'alice'))
+  assert.ok(!A.messages({ markRead: false }).some((m) => m.text === 'note to carol'), 'alice must not see a DM to carol')
+  assert.ok(B.messages({ markRead: false }).some((m) => m.text === 'note to carol'), 'sender sees their own DM')
+  assert.throws(() => B.say(''), /empty/)
+})
+
+test('unread tracking', async () => {
+  A.messages() // mark everything read
+  assert.equal(A.unreadCount(), 0)
+  B.say('are you there?')
+  await waitFor(() => A.unreadCount() === 1)
+  const unread = A.messages({ unreadOnly: true })
+  assert.equal(unread.length, 1)
+  assert.equal(unread[0].text, 'are you there?')
+  assert.equal(A.unreadCount(), 0)
+})
+
+test('files sent in chat are delivered without touching the project', async () => {
+  const outside = tmp('outside')
+  const payload = Buffer.concat([Buffer.from('screenshot'), Buffer.from([0, 1, 2, 255])])
+  fs.writeFileSync(path.join(outside, 'shot.png'), payload)
+  const received = []
+  B.on('log', (m) => received.push(m))
+  const sent = await A.sendFile(path.join(outside, 'shot.png'), { text: 'look at this' })
+  assert.equal(sent.file.name, 'shot.png')
+  // Bob's session downloads it into .elegy/inbox automatically.
+  const inboxFile = await waitFor(() => {
+    const m = B.messages({ markRead: false }).find((x) => x.id === sent.id)
+    return m && m.file.localPath
+  })
+  assert.ok(fs.readFileSync(path.join(dirB, inboxFile)).equals(payload))
+  assert.ok(inboxFile.startsWith('.elegy/inbox/'))
+  assert.equal(read(dirB, 'shot.png'), null, 'shared files must not land in the project tree')
+  assert.ok(received.some((l) => l.includes('received shot.png')))
+  // Fetch it again somewhere else.
+  const dest = await B.fetchFile(sent.id, outside + '/copy.png')
+  assert.ok(fs.readFileSync(dest).equals(payload))
+  // Direct file: carol-only file is invisible to bob.
+  const dm = await A.sendFile(path.join(outside, 'shot.png'), { to: 'carol' })
+  await assert.rejects(B.fetchFile(dm.id), /no such file/)
+})
+
+test('relay rejects file access with the wrong secret', async () => {
+  const res = await fetch(`http://127.0.0.1:${srv.port}/files/test`, { method: 'POST', headers: { 'x-elegy-secret': 'nope' }, body: 'x' })
+  assert.equal(res.status, 401)
+})
+
 test('offline edits merge when a client comes back', async () => {
   write(dirA, 'offline.txt', 'top\nmiddle\nbottom\n')
   await waitFor(() => read(dirB, 'offline.txt') === 'top\nmiddle\nbottom\n')
   await B.stop()
   sessions.splice(sessions.indexOf(B), 1)
+  const note = path.join(tmp('note'), 'while-away.txt')
+  fs.writeFileSync(note, 'sent while bob was offline')
+  const sentAway = await A.sendFile(note, { to: 'bob' })
   write(dirB, 'offline.txt', 'top (bob offline)\nmiddle\nbottom\n')
   write(dirB, 'bob-only.txt', 'made on a plane\n')
   write(dirA, 'offline.txt', 'top\nmiddle\nbottom (alice)\n')
@@ -139,6 +193,8 @@ test('offline edits merge when a client comes back', async () => {
   const expected = 'top (bob offline)\nmiddle\nbottom (alice)\n'
   await waitFor(() => read(dirA, 'offline.txt') === expected && read(dirB, 'offline.txt') === expected)
   await waitFor(() => read(dirA, 'bob-only.txt') === 'made on a plane\n')
+  const got = await waitFor(() => B.messages({ markRead: false }).find((m) => m.id === sentAway.id)?.file.localPath)
+  assert.equal(read(dirB, got), 'sent while bob was offline')
 })
 
 test('first join backs up conflicting local files and takes the session version', async () => {

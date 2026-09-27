@@ -14,7 +14,11 @@ Usage:
   elegy join                                          Rejoin this folder's last session
   elegy setup                                         Connect Claude Code / Cursor / others via MCP
   elegy status                                        Show collaborators, claims, activity, chat
-  elegy say <message>                                 Message your collaborators
+  elegy chat                                          Live chat (messages, DMs, files) in this terminal
+  elegy say [@name] <message>                         Message everyone, or one person with @name
+  elegy send <file> [@name] [message]                 Send a file (not added to the project)
+  elegy messages [--all] [--with name]                Show unread (or all) messages
+  elegy get <message-id> [dest]                       Download a shared file again
   elegy focus <what you're doing>                     Tell collaborators what you're working on
   elegy claim <path|glob> [reason]                    Mark files as yours for now
   elegy release <path|glob|*>                         Release a claim
@@ -47,7 +51,11 @@ async function main () {
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
     case 'status': return status()
-    case 'say': return simple('/say', { text: argv.join(' ') }, () => 'sent')
+    case 'say': return say()
+    case 'send': return sendFile()
+    case 'messages': case 'inbox': return messages()
+    case 'get': return getFile()
+    case 'chat': return chat()
     case 'focus': return simple('/focus', { text: argv.join(' ') }, () => 'focus updated')
     case 'claim': return simple('/claim', { pattern: argv[0], note: argv.slice(1).join(' ') }, (r) =>
       `claimed ${argv[0]}` + (r.overlapping?.length ? `\nwarning: overlaps ${r.overlapping.map((c) => `${c.by}'s ${c.pattern}`).join(', ')}` : ''))
@@ -118,6 +126,7 @@ async function join () {
   const stamp = () => new Date().toLocaleTimeString()
   session.on('log', (m) => console.log(`[${stamp()}] ${m}`))
   session.on('fatal', (err) => { console.error(err.message); process.exit(1) })
+  if (process.env.ELEGY_DEBUG) session.on('debug', (m) => console.log(`[${stamp()}] debug: ${m}`))
   const statusFile = path.join(dir, '.elegy', 'STATUS.md')
   session.on('status-changed', () => {
     try { fs.writeFileSync(statusFile, renderStatus(session.status())) } catch {}
@@ -178,6 +187,129 @@ async function status () {
 async function simple (route, body, format) {
   const { d, call } = await daemonOrFail()
   try { console.log(format(await call(d, 'POST', route, body))) } catch (err) { fail(err.message) }
+}
+
+/** Splits "@bob rest of message" into { to: 'bob', rest: [...] }. */
+function splitRecipient (args) {
+  const i = args.indexOf('--to')
+  if (i !== -1) return { to: args[i + 1], rest: [...args.slice(0, i), ...args.slice(i + 2)] }
+  if (args[0] && args[0].startsWith('@') && args[0].length > 1) return { to: args[0].slice(1), rest: args.slice(1) }
+  return { to: undefined, rest: args }
+}
+
+async function say () {
+  const { to, rest } = splitRecipient(argv)
+  if (!rest.length) fail('usage: elegy say [@name] <message>')
+  await simple('/say', { text: rest.join(' '), to }, (r) =>
+    to ? `sent to ${to}${r.recipientOnline ? '' : ' (offline, they will see it when they reconnect)'}` : 'sent')
+}
+
+async function sendFile () {
+  const [file, ...more] = argv
+  if (!file) fail('usage: elegy send <file> [@name] [message]')
+  if (!fs.existsSync(file)) fail(`no such file: ${file}`)
+  const { to, rest } = splitRecipient(more)
+  await simple('/send', { path: path.resolve(file), to, text: rest.join(' ') }, (r) =>
+    `sent ${r.file.name}${to ? ` to ${to}` : ''}`)
+}
+
+async function messages () {
+  const { values } = parseArgs({ args: argv, options: { all: { type: 'boolean' }, with: { type: 'string' }, n: { type: 'string', short: 'n' } } })
+  const { d, call } = await daemonOrFail()
+  const { renderMessage } = await import('../src/status.js')
+  const all = values.all || !!values.with
+  const { messages } = await call(d, 'POST', '/messages', { unreadOnly: !all, with: values.with, limit: Number(values.n || 50) })
+  const me = (await call(d, 'GET', '/status')).me.name
+  if (!messages.length) return console.log(all ? 'no messages yet' : 'no unread messages (use --all to see history)')
+  for (const m of messages) console.log(plain(renderMessage(m, me)))
+}
+
+async function getFile () {
+  if (!argv[0]) fail('usage: elegy get <message-id> [dest]')
+  await simple('/get', { id: argv[0], dest: argv[1] ? path.resolve(argv[1]) : undefined }, (r) => `saved to ${r.path}`)
+}
+
+const plain = (md) => md.replace(/\*\*/g, '').replace(/`/g, '')
+
+async function chat () {
+  const { d, call } = await daemonOrFail()
+  const { renderMessage } = await import('../src/status.js')
+  const readline = await import('node:readline')
+  const st = await call(d, 'GET', '/status')
+  const me = st.me.name
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' })
+  const print = (line) => {
+    readline.clearLine(process.stdout, 0)
+    readline.cursorTo(process.stdout, 0)
+    console.log(line)
+    rl.prompt(true)
+  }
+
+  console.log(`chatting in room ${st.room} as ${me}. Online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
+  console.log('type a message, "@name msg" for a direct message, "/send <file> [@name] [msg]", "/get <id> [dest]", "/who", "/quit"\n')
+  const { messages: backlog } = await call(d, 'POST', '/messages', { limit: 20 })
+  for (const m of backlog) console.log(plain(renderMessage(m, me)))
+
+  // Live messages over server-sent events.
+  const ctrl = new AbortController()
+  ;(async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${d.port}/events`, { headers: { authorization: `Bearer ${d.token}` }, signal: ctrl.signal })
+      const decoder = new TextDecoder()
+      let buf = ''
+      for await (const chunk of res.body) {
+        buf += decoder.decode(chunk, { stream: true })
+        let idx
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, idx)
+          buf = buf.slice(idx + 2)
+          const event = (block.match(/^event: (.*)$/m) || [])[1]
+          const data = (block.match(/^data: (.*)$/m) || [])[1]
+          if (!event || !data) continue
+          const payload = JSON.parse(data)
+          if (event === 'message' && payload.by !== me) print(plain(renderMessage({ ...payload, unread: false }, me)))
+          else if (event === 'log' && !payload.startsWith('💬')) print(`  · ${payload}`)
+        }
+      }
+      if (!ctrl.signal.aborted) { print('lost connection to elegy'); process.exit(1) }
+    } catch (err) {
+      if (!ctrl.signal.aborted) { print(`lost connection to elegy: ${err.message}`); process.exit(1) }
+    }
+  })()
+
+  rl.prompt()
+  rl.on('line', async (line) => {
+    line = line.trim()
+    try {
+      if (!line) {
+        // nothing
+      } else if (line === '/quit' || line === '/exit') {
+        return rl.close()
+      } else if (line === '/who') {
+        const s = await call(d, 'GET', '/status')
+        print(s.peers.length ? s.peers.map((p) => `  ${p.name} (${p.tool})${p.focus ? `: ${p.focus}` : ''}`).join('\n') : '  nobody else is online')
+      } else if (line.startsWith('/send ')) {
+        const [file, ...more] = line.slice(6).trim().split(/\s+/)
+        const { to, rest } = splitRecipient(more)
+        const r = await call(d, 'POST', '/send', { path: path.resolve(file), to, text: rest.join(' ') })
+        print(`  sent ${r.file.name}${to ? ` to ${to}` : ''}`)
+      } else if (line.startsWith('/get ')) {
+        const [id, dest] = line.slice(5).trim().split(/\s+/)
+        const r = await call(d, 'POST', '/get', { id, dest: dest ? path.resolve(dest) : undefined })
+        print(`  saved to ${r.path}`)
+      } else if (line.startsWith('/')) {
+        print('  unknown command')
+      } else {
+        const { to, rest } = splitRecipient(line.split(' '))
+        const r = await call(d, 'POST', '/say', { text: rest.join(' '), to })
+        if (to && !r.recipientOnline) print(`  (${to} is offline; they'll see it when they reconnect)`)
+      }
+    } catch (err) {
+      print(`  error: ${err.message}`)
+    }
+    rl.prompt()
+  })
+  rl.on('close', () => { ctrl.abort(); process.exit(0) })
 }
 
 function invite () {

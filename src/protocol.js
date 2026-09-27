@@ -9,6 +9,9 @@ export const MSG_SYNC = 0
 export const MSG_AWARENESS = 1
 export const MSG_QUERY_AWARENESS = 3
 
+// Largest file that can be sent in chat.
+export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
+
 export { encoding, decoding, syncProtocol, awarenessProtocol }
 
 export function syncStep1Message (doc) {

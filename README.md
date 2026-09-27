@@ -93,7 +93,11 @@ pick up the MCP server.
 | `elegy focus "adding auth"` | Tell others what you're working on |
 | `elegy claim 'src/auth/**' "rewriting login"` | Soft-lock files/folders/globs |
 | `elegy release <pattern>` / `elegy release` | Release one claim / all of yours |
-| `elegy say "pushing a schema change, pull before editing db/"` | Chat |
+| `elegy chat` | Interactive chat in your terminal (live messages, DMs, files) |
+| `elegy say "pushing a schema change"` / `elegy say @bob "got a sec?"` | Message everyone / one person |
+| `elegy send design.png @bob "new mockup"` | Send a file (to everyone, or one person) |
+| `elegy messages` / `elegy messages --all` / `--with bob` | Unread messages / history / one conversation |
+| `elegy get <message-id> [dest]` | Download a shared file again |
 | `elegy setup` | Wire up MCP + agent instructions |
 | `elegy mcp` | The MCP server itself (your AI tool launches this) |
 
@@ -104,10 +108,28 @@ pick up the MCP server.
 | `elegy_status` | Collaborators, their focus, recently edited files, claims, messages |
 | `elegy_set_focus` | Announce the current task |
 | `elegy_claim` / `elegy_release` | Claim or release files before and after larger changes |
-| `elegy_message` | Message collaborators |
+| `elegy_message` | Message everyone, or one person with `to` |
+| `elegy_read_messages` | Read unread (or recent) messages, including received files |
+| `elegy_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
+| `elegy_get_file` | Download a shared file (again) |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
 Point its MCP config at the command `elegy` with args `["mcp"]`.
+
+## Messaging and file sharing
+
+Chat lives alongside the code. Messages go to everyone by default, or to one
+person with `@name`. Messages are kept in the room, so anyone offline sees
+them when they reconnect, and `elegy status` shows your unread count.
+
+Files you **send** (screenshots, logs, exports, a PDF spec) go through the relay
+as attachments. They are *not* added to the shared project folder. Recipients
+get them automatically in `.elegy/inbox/`, including files sent while they
+were offline. The limit is 100 MB per file.
+
+Direct messages and files are only shown to the sender and recipient, but they
+travel through the shared room, so they're private from other collaborators'
+screens, not from the relay operator.
 
 ## Hosting the relay
 

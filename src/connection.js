@@ -63,7 +63,7 @@ export class Connection extends EventEmitter {
     })
 
     ws.on('message', (data) => {
-      try { this.handle(new Uint8Array(data)) } catch (err) { this.emit('warn', `bad message from relay: ${err.message}`) }
+      try { this.handle(new Uint8Array(data)) } catch (err) { this.emit('warn', `error handling message from relay: ${err.stack}`) }
     })
 
     ws.on('unexpected-response', (req, res) => {

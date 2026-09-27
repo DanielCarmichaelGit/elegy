@@ -4,11 +4,14 @@
 // character by the CRDT.
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import * as Y from 'yjs'
 import diff from 'fast-diff'
 import { watch } from 'chokidar'
 import { Connection } from './connection.js'
+import { MAX_SHARED_FILE_BYTES } from './protocol.js'
+import { formatBytes } from './status.js'
 import {
   loadIgnore, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
   toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES
@@ -103,9 +106,19 @@ export class Session extends EventEmitter {
       for (const k of ev.changes.keys.keys()) this.writeOut(k)
     })
     this.chat.observe((ev, tr) => {
-      if (tr.origin === LOCAL) return
       for (const item of ev.changes.added) {
-        for (const msg of item.content.getContent()) if (msg && msg.by !== this.name) this.log(`💬 ${msg.by}: ${msg.text}`)
+        for (const msg of item.content.getContent()) {
+          if (!msg || !this.canSee(msg)) continue
+          this.emit('message', this.describeMessage(msg))
+          if (tr.origin === LOCAL || msg.by === this.name) continue
+          this.log(`💬 ${formatMessage(msg)}`)
+          if (msg.file) {
+            this.fetchFile(msg).then(
+              (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
+              (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: elegy get ${msg.id})`)
+            )
+          }
+        }
       }
       this.scheduleStatusWrite()
     })
@@ -121,6 +134,7 @@ export class Session extends EventEmitter {
     this.activity.observe(() => this.scheduleStatusWrite())
     this.doc.on('update', () => this.scheduleStateSave())
     this.ready = true
+    this.fetchMissedFiles()
     this.scheduleStateSave()
     this.scheduleStatusWrite()
   }
@@ -432,14 +446,129 @@ export class Session extends EventEmitter {
     this.conn.awareness.setLocalStateField('agents', [...this.agents])
   }
 
-  say (text) {
-    const msg = { by: this.name, text: String(text).slice(0, 4000), ts: Date.now() }
+  // ------------------------------------------------------------ messaging --
+
+  /**
+   * Posts a chat message. `to` makes it a direct message: it is only shown to
+   * that person (it still travels through the shared room, so it isn't secret
+   * from the relay or a modified client).
+   */
+  say (text, { to = null, file = null } = {}) {
+    text = String(text || '').slice(0, 4000)
+    if (!text && !file) throw new Error('message is empty')
+    to = to ? String(to).trim() : null
+    if (to === this.name) throw new Error('that is you')
+    const msg = { id: crypto.randomBytes(8).toString('hex'), by: this.name, to, text, ts: Date.now() }
+    if (file) msg.file = file
     this.doc.transact(() => {
       this.chat.push([msg])
       if (this.chat.length > 500) this.chat.delete(0, this.chat.length - 500)
     }, LOCAL)
+    this.markRead([msg.id])
     this.scheduleStatusWrite()
-    return msg
+    const online = !to || this.peerNames().includes(to)
+    return { ...this.describeMessage(msg), recipientOnline: online }
+  }
+
+  /** Uploads a file to the relay and posts it as a message. */
+  async sendFile (filePath, { to = null, text = '' } = {}) {
+    const abs = path.resolve(this.root, filePath)
+    const st = fs.statSync(abs)
+    if (!st.isFile()) throw new Error(`${filePath} is not a file`)
+    if (st.size > MAX_SHARED_FILE_BYTES) throw new Error(`${filePath} is larger than ${MAX_SHARED_FILE_BYTES / 1024 / 1024} MB`)
+    const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}`, {
+      method: 'POST',
+      headers: { 'x-elegy-secret': this.secret, 'content-type': 'application/octet-stream' },
+      body: fs.readFileSync(abs)
+    })
+    if (!res.ok) throw new Error(`upload failed: ${await res.text()}`)
+    const fileId = await res.text()
+    return this.say(text, { to, file: { id: fileId, name: path.basename(abs), size: st.size } })
+  }
+
+  /** Downloads a message's attachment (to .elegy/inbox/ by default). */
+  async fetchFile (msgOrId, dest) {
+    const msg = typeof msgOrId === 'string' ? this.chat.toArray().find((m) => m.id === msgOrId || (m.file && m.file.id === msgOrId)) : msgOrId
+    if (!msg || !msg.file || !this.canSee(msg)) throw new Error('no such file')
+    const target = dest ? path.resolve(dest) : this.inboxPath(msg)
+    const finalPath = fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, safeName(msg.file.name)) : target
+    const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${msg.file.id}`, {
+      headers: { 'x-elegy-secret': this.secret }
+    })
+    if (!res.ok) throw new Error(`download failed: ${await res.text()}`)
+    fs.mkdirSync(path.dirname(finalPath), { recursive: true })
+    fs.writeFileSync(finalPath, Buffer.from(await res.arrayBuffer()))
+    return finalPath
+  }
+
+  /** Downloads unread files that were sent while we were offline. */
+  fetchMissedFiles () {
+    for (const m of this.messages({ unreadOnly: true, markRead: false, limit: 50 })) {
+      if (!m.file || m.file.localPath) continue
+      this.fetchFile(m.id).then(
+        (dest) => this.log(`📎 received ${m.file.name} from ${m.by} while you were away → ${path.relative(this.root, dest)}`),
+        () => {}
+      )
+    }
+  }
+
+  inboxPath (msg) {
+    return path.join(this.stateDir, 'inbox', `${msg.id.slice(0, 6)}-${safeName(msg.file.name)}`)
+  }
+
+  httpBase () {
+    return this.server.replace(/^ws/, 'http').replace(/\/+$/, '')
+  }
+
+  canSee (msg) {
+    return !msg.to || msg.to === this.name || msg.by === this.name
+  }
+
+  peerNames () {
+    return this.status().peers.map((p) => p.name)
+  }
+
+  describeMessage (msg) {
+    const out = { ...msg, unread: msg.by !== this.name && !this.readIds().has(msg.id) }
+    if (msg.file) {
+      const local = this.inboxPath(msg)
+      out.file = { ...msg.file, localPath: fs.existsSync(local) ? path.relative(this.root, local) : null }
+    }
+    return out
+  }
+
+  /** Messages visible to me, oldest first. */
+  messages ({ limit = 50, unreadOnly = false, markRead = true, withName = null } = {}) {
+    let list = this.chat.toArray().filter((m) => m && m.id && this.canSee(m))
+    if (withName) list = list.filter((m) => m.by === withName || m.to === withName)
+    let out = list.map((m) => this.describeMessage(m))
+    if (unreadOnly) out = out.filter((m) => m.unread)
+    out = out.slice(-limit)
+    if (markRead) this.markRead(out.map((m) => m.id))
+    return out
+  }
+
+  unreadCount () {
+    const read = this.readIds()
+    return this.chat.toArray().filter((m) => m && m.id && this.canSee(m) && m.by !== this.name && !read.has(m.id)).length
+  }
+
+  readIds () {
+    if (!this._read) {
+      try { this._read = new Set(JSON.parse(fs.readFileSync(path.join(this.stateDir, 'read.json'), 'utf8'))) } catch { this._read = new Set() }
+    }
+    return this._read
+  }
+
+  markRead (ids) {
+    const read = this.readIds()
+    let changed = false
+    for (const id of ids) if (!read.has(id)) { read.add(id); changed = true }
+    if (!changed) return
+    const live = new Set(this.chat.toArray().map((m) => m && m.id))
+    for (const id of read) if (!live.has(id)) read.delete(id)
+    try { fs.writeFileSync(path.join(this.stateDir, 'read.json'), JSON.stringify([...read])) } catch {}
+    this.scheduleStatusWrite()
   }
 
   claim (pattern, note = '') {
@@ -506,7 +635,8 @@ export class Session extends EventEmitter {
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       activity: this.activity.toArray().slice(-30),
-      chat: this.chat.toArray().slice(-20),
+      chat: this.messages({ limit: 20, markRead: false }),
+      unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size
     }
   }
@@ -541,6 +671,17 @@ export function applyTextDiff (ytext, next) {
     else if (op === diff.DELETE) { ytext.delete(pos, str.length); removed += countLines(str) } else { ytext.insert(pos, str); pos += str.length; added += countLines(str) }
   }
   return `+${added} -${removed}`
+}
+
+export function formatMessage (m) {
+  const head = m.to ? `${m.by} → ${m.to} (direct)` : m.by
+  const file = m.file ? ` 📎 ${m.file.name} (${formatBytes(m.file.size)})` : ''
+  return `${head}: ${m.text}${file}`
+}
+
+function safeName (name) {
+  const base = path.basename(String(name)).replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^\.+/, '')
+  return base.slice(0, 120) || 'file'
 }
 
 function countLines (s) {

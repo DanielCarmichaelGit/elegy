@@ -4,10 +4,11 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import os from 'node:os'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 import {
-  MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS,
+  MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MAX_SHARED_FILE_BYTES,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage
 } from './protocol.js'
@@ -123,9 +124,27 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     return rooms.get(name)
   }
 
+  // Files shared in chat are stored on the relay, not in the synced project.
+  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-relay-')), 'files')
   const httpServer = http.createServer((req, res) => {
-    res.writeHead(200, { 'content-type': 'text/plain' })
-    res.end('elegy relay ok\n')
+    const url = new URL(req.url, 'http://x')
+    const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
+    if (!m) {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      return res.end('elegy relay ok\n')
+    }
+    const [, name, id] = m
+    const text = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain' }); res.end(msg) }
+    if (!getRoom(name).authorize(req.headers['x-elegy-secret'] || '')) return text(401, 'wrong room secret')
+    const dir = path.join(filesDir, name)
+    if (req.method === 'POST' && !id) return receiveFile(req, dir, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))
+    if (req.method === 'GET' && id) {
+      const file = path.join(dir, id)
+      if (!fs.existsSync(file)) return text(404, 'no such file')
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(file).size })
+      return fs.createReadStream(file).pipe(res)
+    }
+    text(405, 'method not allowed')
   })
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 })
 
@@ -168,6 +187,30 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       })
     })
   })
+}
+
+function receiveFile (req, dir, done) {
+  fs.mkdirSync(dir, { recursive: true })
+  const id = crypto.randomBytes(16).toString('hex')
+  const file = path.join(dir, id)
+  const out = fs.createWriteStream(file)
+  let size = 0
+  let failed = false
+  const fail = (code, message) => {
+    if (failed) return
+    failed = true
+    out.destroy()
+    fs.rm(file, { force: true }, () => {})
+    done(Object.assign(new Error(message), { code }))
+  }
+  req.on('data', (chunk) => {
+    size += chunk.length
+    if (size > MAX_SHARED_FILE_BYTES) { fail(413, 'file too large'); req.destroy() }
+  })
+  req.on('error', () => fail(400, 'upload interrupted'))
+  req.pipe(out)
+  out.on('finish', () => { if (!failed) done(null, id) })
+  out.on('error', (err) => fail(500, err.message))
 }
 
 function reject (socket, code, message) {

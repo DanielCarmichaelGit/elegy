@@ -43,9 +43,26 @@ export function renderStatus (st) {
   }
   out.push('')
 
-  out.push('## Messages')
+  out.push(`## Messages${st.unread ? ` (${st.unread} unread)` : ''}`)
   if (!st.chat.length) out.push('_No messages._')
-  for (const m of st.chat.slice(-10)) out.push(`- ${ago(m.ts)} **${m.by === st.me.name ? 'you' : m.by}:** ${m.text}`)
+  for (const m of st.chat.slice(-10)) out.push(`- ${renderMessage(m, st.me.name)}`)
   out.push('')
   return out.join('\n')
+}
+
+export function renderMessage (m, me) {
+  const from = m.by === me ? 'you' : m.by
+  const to = m.to ? ` → ${m.to === me ? 'you' : m.to} (direct)` : ''
+  let line = `${ago(m.ts)} ${m.unread ? '🆕 ' : ''}**${from}${to}:** ${m.text}`
+  if (m.file) {
+    line += ` 📎 \`${m.file.name}\` (${formatBytes(m.file.size)})`
+    line += m.file.localPath ? `, saved at \`${m.file.localPath}\`` : `, id \`${m.id}\``
+  }
+  return line
+}
+
+export function formatBytes (n) {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
