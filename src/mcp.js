@@ -167,6 +167,8 @@ export async function runMcp () {
       tool,
       kind: 'agent',
       inviteServer,
+      // This agent's own chat lives where it was started, which may be above the synced folder.
+      readerOptions: { chatDir: process.cwd() },
       onLog: (line) => { logs.push(line); if (logs.length > 50) logs.shift() },
       onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() }
     })

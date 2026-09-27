@@ -88,9 +88,21 @@ Verified against Cursor's storage on this machine (composerData `_v: 3`):
   - `bubbleId:<id>:<bubbleId>` → `{ type: 1|2, text, toolFormerData? }`.
     `type 1` → `prompt`; `type 2` with `text` → `reply`; `toolFormerData.name`
     → `action`.
-- Open both databases read-only with `node:sqlite`
-  (`new DatabaseSync(path, { readOnly: true })`) and poll every 2 seconds for
-  composers whose `lastUpdatedAt` changed.
+- Newer Cursor versions also list conversations globally: global `ItemTable`
+  key `composer.composerHeaders` → `allComposers[]` tagged with
+  `workspaceIdentifier` (matched to this workspace's id or folder). Both lists
+  are read, and every workspace folder that matches the synced folder is used.
+- Open the databases read-only with `node:sqlite` and poll every second. A
+  poll only reads when `PRAGMA data_version` says Cursor wrote something. The
+  workspace list's `lastUpdatedAt` is written lazily, so it is **not** used to
+  decide whether to re-read: the most recent and recently active
+  conversations' `composerData` are re-read on every change.
+- A bubble is shared as soon as a later bubble exists; the newest one (still
+  streaming) is shared once it hasn't changed for 2.5 seconds. Bubbles listed
+  before they're written are picked up on a later poll.
+- Cursor writes these databases constantly while streaming, so "database is
+  locked" and similar errors are transient: the poll is skipped and retried
+  (busy timeout 200 ms, since `node:sqlite` blocks).
 - `node:sqlite` needs Node 22.13+. If it is missing, or the layout doesn't
   match (missing table/keys, JSON parse errors), the reader reports
   `unavailable` with a reason, logs once, and stops. Syncing is unaffected.

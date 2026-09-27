@@ -5,8 +5,9 @@ import path from 'node:path'
 
 const EDIT = new Set(['edit', 'multiedit', 'notebookedit', 'edit_file', 'search_replace', 'str_replace', 'apply_patch', 'write'])
 const READ = new Set(['read', 'read_file'])
-const SEARCH = new Set(['grep', 'glob', 'grep_search', 'file_search', 'codebase_search', 'list_dir', 'ls'])
-const RUN = new Set(['bash', 'run_terminal_cmd', 'run_command', 'shell'])
+const SEARCH = new Set(['grep', 'glob', 'grep_search', 'file_search', 'glob_file_search', 'codebase_search', 'list_dir', 'ls'])
+const RUN = new Set(['bash', 'run_terminal_cmd', 'run_terminal_command', 'run_command', 'shell'])
+const DELETE = new Set(['delete_file'])
 
 /**
  * @param {string} tool   tool name as the agent reported it
@@ -16,7 +17,8 @@ const RUN = new Set(['bash', 'run_terminal_cmd', 'run_command', 'shell'])
  */
 export function describeAction (tool, input = {}, dir = '', opts = {}) {
   const name = String(tool || '').trim()
-  const key = name.toLowerCase()
+  // Cursor versions its tools ("edit_file_v2"); the suffix doesn't change what they do.
+  const key = name.toLowerCase().replace(/_v\d+$/, '')
   input = input && typeof input === 'object' ? input : {}
 
   if (EDIT.has(key)) {
@@ -24,6 +26,10 @@ export function describeAction (tool, input = {}, dir = '', opts = {}) {
     const shown = file ? rel(file, dir) : 'a file'
     if (key === 'write' && file && opts.existed && !opts.existed(path.resolve(dir || '/', file))) return `Created ${shown}`
     return `Edited ${shown}`
+  }
+  if (DELETE.has(key)) {
+    const file = pickPath(input)
+    return file ? `Deleted ${rel(file, dir)}` : 'Deleted a file'
   }
   if (READ.has(key)) {
     const file = pickPath(input)

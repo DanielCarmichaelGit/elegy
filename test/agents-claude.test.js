@@ -99,3 +99,23 @@ test('old conversations are not backfilled, and long text is truncated', async (
   assert.ok(oldEntries[0].text.endsWith('…(truncated)'))
   assert.equal(oldEntries[0].text.length, 8000 + '…(truncated)'.length)
 })
+
+test('an agent that synced into a subfolder shares its own chat (chatDir)', async () => {
+  // e.g. Claude Code in the cloud runs in the repo, and elegy_join_session synced into ./elegy-<room>.
+  const synced = path.join(project, 'elegy-room1')
+  fs.mkdirSync(synced, { recursive: true })
+  fs.writeFileSync(path.join(projDir, 'agent.jsonl'), lines(
+    user('Fix the header', { sessionId: 'agent' }),
+    asst([{ type: 'tool_use', name: 'Edit', input: { file_path: path.join(synced, 'header.css') } }], { sessionId: 'agent' })
+  ))
+  const without = []
+  const r1 = startClaudeCodeReader({ dir: synced, home, onEntries: (e) => without.push(...e), onState: () => {}, pollMs: 20 })
+  r1.stop()
+  assert.equal(without.length, 0, 'the chat lives above the synced folder')
+
+  const got = []
+  const r2 = startClaudeCodeReader({ dir: synced, chatDir: project, home, onEntries: (e) => got.push(...e), onState: () => {}, pollMs: 20 })
+  r2.stop()
+  const mine = got.filter((e) => e.conv === 'agent').map((e) => e.text)
+  assert.deepEqual(mine, ['Fix the header', 'Edited header.css'])
+})

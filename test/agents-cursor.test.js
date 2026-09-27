@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { startCursorReader, findWorkspace } from '../src/agents/cursor.js'
+import { startCursorReader, findWorkspace, findWorkspaces } from '../src/agents/cursor.js'
 
 let sqlite = null
 try { sqlite = await import('node:sqlite') } catch {}
@@ -31,6 +31,7 @@ function makeCursor () {
   fs.mkdirSync(path.join(userDir, 'globalStorage'), { recursive: true })
   const g = new sqlite.DatabaseSync(path.join(userDir, 'globalStorage', 'state.vscdb'))
   g.exec('CREATE TABLE cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)')
+  g.exec('CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)')
 
   const put = (db, table, key, value) => db.prepare(`INSERT INTO ${table} (key, value) VALUES (?, ?)`).run(key, JSON.stringify(value))
   const convs = {}
@@ -41,7 +42,7 @@ function makeCursor () {
     put(g, 'cursorDiskKV', `bubbleId:${cid}:${bubbleId}`, { bubbleId, ...bubble })
     put(g, 'cursorDiskKV', `composerData:${cid}`, { _v: 3, composerId: cid, fullConversationHeadersOnly: convs[cid].map((b) => ({ bubbleId: b, type: 1 })) })
   }
-  return { root, userDir, project, otherProject, wsDb, otherDb, g, put, setComposers, addBubble }
+  return { root, userDir, project, otherProject, wsDb, otherDb, g, put, setComposers, addBubble, mkWs }
 }
 
 test('finds the workspace for a folder', { skip }, () => {
@@ -123,4 +124,90 @@ test('no Cursor install: stays idle quietly', { skip }, async () => {
   await wait(60)
   r.stop()
   assert.deepEqual(states.map((s) => s.status), ['idle'])
+})
+
+function collect (c, opts = {}) {
+  const entries = []
+  const states = []
+  const logs = []
+  const r = startCursorReader({ dir: c.project, userDir: c.userDir, pollMs: 20, settleMs: 60, onEntries: (e) => entries.push(...e), onState: (s) => states.push(s), onLog: (l) => logs.push(l), ...opts })
+  return { r, entries, states, logs, texts: () => entries.map((e) => e.text) }
+}
+
+test('keeps following a conversation when the workspace list is not rewritten', { skip }, async () => {
+  const c = makeCursor()
+  c.addBubble('c1', 'b1', { type: 1, text: 'first' })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: Date.now() }])
+  const f = collect(c)
+  await wait(100)
+  // Cursor streams a whole turn without touching composer.composerData.
+  c.addBubble('c1', 'b2', { type: 2, text: 'Looking at it.' })
+  c.addBubble('c1', 'b3', { type: 2, text: '', toolFormerData: { name: 'read_file', params: { target_file: 'a.ts' } } })
+  c.addBubble('c1', 'b4', { type: 2, text: 'All done.' })
+  await wait(250)
+  f.r.stop()
+  assert.deepEqual(f.texts(), ['first', 'Looking at it.', 'Read a.ts', 'All done.'])
+})
+
+test('a bubble listed before it is written is picked up once it exists', { skip }, async () => {
+  const c = makeCursor()
+  c.addBubble('c1', 'b1', { type: 1, text: 'hi' })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: Date.now() }])
+  const f = collect(c)
+  await wait(80)
+  c.put(c.g, 'cursorDiskKV', 'composerData:c1', { _v: 3, fullConversationHeadersOnly: [{ bubbleId: 'b1' }, { bubbleId: 'b2' }, { bubbleId: 'b3' }] })
+  c.put(c.g, 'cursorDiskKV', 'bubbleId:c1:b3', { bubbleId: 'b3', type: 2, text: 'second part' })
+  await wait(150)
+  c.put(c.g, 'cursorDiskKV', 'bubbleId:c1:b2', { bubbleId: 'b2', type: 2, text: 'first part' })
+  await wait(200)
+  f.r.stop()
+  assert.deepEqual(f.texts().sort(), ['first part', 'hi', 'second part'])
+})
+
+test('a locked database is retried, not treated as a broken layout', { skip }, async () => {
+  const c = makeCursor()
+  c.addBubble('c1', 'b1', { type: 1, text: 'before' })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: Date.now() }])
+  const f = collect(c)
+  await wait(80)
+  c.g.exec('BEGIN EXCLUSIVE')
+  c.put(c.g, 'cursorDiskKV', 'bubbleId:c1:b2', { bubbleId: 'b2', type: 2, text: 'during the lock' })
+  await wait(300)
+  c.put(c.g, 'cursorDiskKV', 'composerData:c1', { _v: 3, fullConversationHeadersOnly: [{ bubbleId: 'b1' }, { bubbleId: 'b2' }, { bubbleId: 'b3' }] })
+  c.put(c.g, 'cursorDiskKV', 'bubbleId:c1:b3', { bubbleId: 'b3', type: 1, text: 'after' })
+  c.g.exec('COMMIT')
+  await wait(250)
+  f.r.stop()
+  assert.ok(f.states.every((s) => s.status !== 'unavailable'), JSON.stringify(f.states))
+  assert.deepEqual(f.texts(), ['before', 'during the lock', 'after'])
+})
+
+test('finds conversations in the global list (newer Cursor) and ignores other folders', { skip }, async () => {
+  const c = makeCursor()
+  c.addBubble('g1', 'b1', { type: 1, text: 'from the global list' })
+  c.addBubble('x1', 'bx', { type: 1, text: 'other project secret' })
+  c.put(c.g, 'ItemTable', 'composer.composerHeaders', {
+    allComposers: [
+      { composerId: 'g1', lastUpdatedAt: Date.now(), workspaceIdentifier: { id: 'aaa' } },
+      { composerId: 'x1', lastUpdatedAt: Date.now(), workspaceIdentifier: { id: 'bbb' } }
+    ]
+  })
+  const f = collect(c)
+  await wait(100)
+  f.r.stop()
+  assert.deepEqual(f.texts(), ['from the global list'])
+})
+
+test('reads every Cursor workspace for the folder, not just the first one found', { skip }, async () => {
+  const c = makeCursor()
+  const stale = c.mkWs('000', c.project + path.sep)
+  c.addBubble('s1', 'b1', { type: 1, text: 'old window' })
+  c.setComposers(stale, [{ composerId: 's1', lastUpdatedAt: Date.now() }])
+  c.addBubble('c1', 'b2', { type: 1, text: 'current window' })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: Date.now() }])
+  assert.equal(findWorkspaces(c.userDir, c.project).length, 2)
+  const f = collect(c)
+  await wait(100)
+  f.r.stop()
+  assert.deepEqual(f.texts().sort(), ['current window', 'old window'])
 })

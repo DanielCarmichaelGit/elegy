@@ -26,11 +26,13 @@ export function claudeProjectsDir (home = os.homedir()) {
  * @param {(state: object) => void} o.onState
  * @param {(line: string) => void} [o.onLog]
  * @param {string} [o.home]
+ * @param {string} [o.chatDir]      folder the AI works from, if not `dir` (an agent that synced into a subfolder)
  */
-export function startClaudeCodeReader ({ dir, onEntries, onState, onLog = () => {}, home, pollMs = POLL_MS, now = Date.now }) {
+export function startClaudeCodeReader ({ dir, chatDir, onEntries, onState, onLog = () => {}, home, pollMs = POLL_MS, now = Date.now }) {
   dir = path.resolve(dir)
+  const chatRoot = path.resolve(chatDir || dir)
   const root = claudeProjectsDir(home)
-  const slug = slugFor(dir)
+  const slug = slugFor(chatRoot)
   const files = new Map() // path -> { offset, partial, seen: Set<path> }
   let status = null
   let lastLineAt = 0
@@ -45,7 +47,7 @@ export function startClaudeCodeReader ({ dir, onEntries, onState, onLog = () => 
   }
   setStatus('idle')
 
-  const inside = (cwd) => typeof cwd === 'string' && (cwd === dir || cwd.startsWith(dir + path.sep))
+  const inside = (cwd) => typeof cwd === 'string' && (cwd === chatRoot || cwd.startsWith(chatRoot + path.sep))
 
   function parseLine (line, file, st) {
     let j
