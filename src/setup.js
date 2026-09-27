@@ -17,6 +17,8 @@ with their own AI coding tool. Files can change underneath you at any time.
 - Before starting a task, check what your collaborators are doing: call the
   \`elegy_status\` MCP tool, or run \`elegy status\` in a shell, or read
   \`.elegy/STATUS.md\`.
+- See what a partner's AI is doing with \`elegy_partner_feed\`, and where people
+  are working with \`elegy_list_files\` (recent edits and claims).
 - Announce what you're working on (\`elegy_set_focus\` / \`elegy focus "..."\`).
 - Before a larger change, claim the files (\`elegy_claim\` / \`elegy claim <glob>\`)
   and release them when done. Don't edit files someone else has claimed; send

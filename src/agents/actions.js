@@ -52,9 +52,22 @@ function rel (file, dir) {
   return r.split(path.sep).join('/')
 }
 
+const SETUP = new Set(['cd', 'pushd', 'export', 'set', 'source', '.', 'true'])
+
 /** "FOO=1 npm test -- --watch" -> "npm test". Only the program and one plain word survive. */
 export function summarizeCommand (command) {
-  const words = String(command).trim().split(/\s+/).filter(Boolean)
+  // "cd app && npm test" is really "npm test": skip setup steps.
+  const steps = String(command).split(/&&|;|\|\|/).map((s) => s.trim()).filter(Boolean)
+  const main = steps.find((s) => {
+    const w = s.split(/\s+/).filter((x) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x))
+    return w.length && !SETUP.has(w[0])
+  })
+  // Only setup steps (e.g. just "cd somewhere"): show the program, not where it went.
+  return main ? summarizeStep(main) : summarizeStep(steps[0] || '').split(' ')[0]
+}
+
+function summarizeStep (step) {
+  const words = String(step).trim().split(/\s+/).filter(Boolean)
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift()
   if (!words.length) return ''
   let program = words[0]

@@ -6,7 +6,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { renderStatus } from './status.js'
 
-export async function startControl (session) {
+export async function startControl (session, extras = {}) {
   const token = crypto.randomBytes(16).toString('hex')
   const routes = {
     'GET /status': () => ({ ...session.status(), markdown: renderStatus(session.status()) }),
@@ -17,7 +17,11 @@ export async function startControl (session) {
     'POST /focus': (b) => { session.setFocus(b.text); return { ok: true } },
     'POST /claim': (b) => session.claim(b.pattern, b.note),
     'POST /release': (b) => ({ released: session.release(b.pattern) }),
-    'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } }
+    'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
+    'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
+    'GET /tree': () => session.tree(),
+    'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
+    'GET /info': () => ({ room: session.room, dir: session.root, name: session.name, kind: session.kind, invite: extras.invite || null, pid: process.pid })
   }
   const server = http.createServer(async (req, res) => {
     const reply = (code, body) => {

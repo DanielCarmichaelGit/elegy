@@ -32,10 +32,16 @@ within milliseconds. Your agents can also see what the other agents are doing.
   (host it anywhere, or tunnel it from your laptop). If your connection drops,
   keep working: elegy keeps a local copy of the shared state and merges your
   offline edits when you reconnect.
-- **Agents coordinate.** An MCP server gives each agent tools to see who's
-  online, what they're working on, which files they touched recently, to
-  *claim* files, and to message each other. Tools without MCP can use the
-  `elegy` CLI or read `.elegy/STATUS.md`.
+- **Watch each other's AI, live.** The app shows your partner's AI conversation
+  as it happens: their prompts, the AI's replies, and one-line actions like
+  "Edited src/app.ts" or "Ran npm test". This works for Claude Code and Cursor.
+  Next to it are a live file tree (who's editing what, what's claimed) and
+  read-only file tabs where changed lines light up.
+- **Agents coordinate, and can join by themselves.** An MCP server gives each
+  agent tools to see who's online, read a partner's AI feed, see where people
+  are working, *claim* files and message each other. With an invite code, an
+  agent can even join (or start) a session on its own. Tools without MCP can
+  use the `elegy` CLI or read `.elegy/STATUS.md`.
 
 ## Quick start
 
@@ -127,7 +133,12 @@ pick up the MCP server.
 
 | Tool | Purpose |
 |---|---|
+| `elegy_join_session` | Join a session from an invite code, as an agent (no human needed) |
+| `elegy_start_session` | Start a new session for a folder and get an invite code |
+| `elegy_leave_session` / `elegy_session_info` | Leave; or see the folder, your name, who's online, and the invite |
 | `elegy_status` | Collaborators, their focus, recently edited files, claims, messages |
+| `elegy_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
+| `elegy_list_files` | Shared files with recent editors and claims |
 | `elegy_set_focus` | Announce the current task |
 | `elegy_claim` / `elegy_release` | Claim or release files before and after larger changes |
 | `elegy_message` | Message everyone, or one person with `to` |
@@ -137,6 +148,39 @@ pick up the MCP server.
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
 Point its MCP config at the command `elegy` with args `["mcp"]`.
+
+## Watching each other's AI
+
+In a session, the app's main area has two modes:
+
+- **AI:** one tab per person, showing their AI conversation live. You see
+  prompts and replies in full, plus one-line actions ("Edited src/app.ts",
+  "Ran npm test"). Command output, file contents and the AI's hidden reasoning
+  are never shared. Commands are cut down to the program and one plain word,
+  so flags, paths, URLs and tokens stay private.
+- **Files:** read-only tabs for shared files, with who edited each one and
+  whether it's claimed. Lines light up as your partner's AI changes them.
+
+The file tree on the left shows orange badges on files edited in the last two
+minutes and purple badges on claims. Use a file's or folder's ⋯ menu to claim
+or release it.
+
+Sharing is on when you join. Pause or resume it from the people menu (the
+avatars at the top); a pause is remembered for that folder. elegy reads Claude
+Code transcripts from `~/.claude/projects` and Cursor's local chat database
+(read-only, needs Node.js 22.13+). Both are best-effort: if a tool's format
+changes, its feed shows as unavailable and syncing carries on.
+
+## Agents as participants
+
+An AI agent can be a full member of a session, with no human running elegy for
+it. Give the agent an invite code and it calls `elegy_join_session`. The project
+syncs into its folder, and everyone sees it in the session with an agent badge.
+It can then read partners' AI feeds, claim files, chat, and edit files that
+sync to everyone. It can also start a session with `elegy_start_session` and
+hand out the invite. The session lasts as long as the agent's MCP server runs.
+
+Agents that prefer the shell can run `elegy join <invite> --agent` instead.
 
 ## Messaging and file sharing
 

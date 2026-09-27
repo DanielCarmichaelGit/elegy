@@ -39,6 +39,9 @@ test('commands keep only the program and one plain word', () => {
   assert.equal(summarizeCommand('/usr/local/bin/node script.js'), 'node')
   assert.equal(summarizeCommand('echo $SECRET'), 'echo')
   assert.equal(summarizeCommand('   '), '')
+  assert.equal(summarizeCommand('cd /home/me/app && npm run build'), 'npm run')
+  assert.equal(summarizeCommand('export TOKEN=x; git push origin main'), 'git push')
+  assert.equal(summarizeCommand('cd somewhere'), 'cd')
 })
 
 test('unknown tools', () => {

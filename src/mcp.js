@@ -1,6 +1,8 @@
 // MCP server (stdio) that lets any MCP-capable agent (Claude Code, Cursor,
-// Windsurf, Codex, ...) see what the other collaborators are doing and
-// coordinate with them. It forwards to the local `elegy join` process.
+// Windsurf, Codex, ...) take part in a live session: see what collaborators
+// and their AIs are doing, coordinate, and even join or start a session by
+// itself. It forwards to the local `elegy join` process for the project, or
+// runs the session itself when the agent joins on its own.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
@@ -8,23 +10,41 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
+import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
 
-const NOT_RUNNING = 'Elegy is not running for this project, so there is no live pair session. ' +
-  'Ask the user to start it with `elegy join` in the project folder.'
+const NOT_RUNNING = 'There is no live elegy session for this project. If the user gave you an invite code, join with ' +
+  'elegy_join_session. To start a new session, use elegy_start_session. A person can also run `elegy join` or `elegy ui`.'
+
+/** "claude-code" -> "Claude Code" etc., from the MCP client's name. */
+export function toolLabel (client) {
+  const n = String(client || '')
+  if (/claude/i.test(n)) return 'Claude Code'
+  if (/cursor/i.test(n)) return 'Cursor'
+  if (/codex/i.test(n)) return 'Codex'
+  if (/windsurf|codeium/i.test(n)) return 'Windsurf'
+  if (/zed/i.test(n)) return 'Zed'
+  return n || 'AI agent'
+}
 
 export async function runMcp () {
   const server = new McpServer(
     { name: 'elegy', version: '0.1.0' },
     {
-      instructions: 'This project is being edited live by several people at once, each with their own AI coding tool. ' +
-        'Files may change underneath you at any time. Call elegy_status before starting a task and before editing files ' +
-        'another person recently touched; announce what you are doing with elegy_set_focus; claim files before larger ' +
-        'changes and do not edit files someone else has claimed. Always re-read a file right before you edit it.'
+      instructions: 'elegy lets several people (and their AI agents) edit one project live, each in their own tool. ' +
+        'If you are given an elegy invite code, join with elegy_join_session. In a session, files may change underneath ' +
+        'you at any time. Call elegy_status before starting a task; use elegy_partner_feed to see what a partner\'s AI is ' +
+        'doing; announce your task with elegy_set_focus; claim files or folders before larger changes and do not edit files ' +
+        'someone else has claimed. Always re-read a file right before you edit it.'
     }
   )
 
+  // A session this MCP server runs itself, when the agent joined or started one.
+  let joined = null // { run, dir, invite }
+  let logs = []
+  const clientTool = () => toolLabel(server.server.getClientVersion()?.name)
+
   const withDaemon = async (fn) => {
-    const d = findDaemon()
+    const d = findDaemon(joined ? joined.dir : undefined)
     if (!d) return { content: [{ type: 'text', text: NOT_RUNNING }], isError: true }
     try {
       return { content: [{ type: 'text', text: await fn(d) }] }
@@ -115,6 +135,174 @@ export async function runMcp () {
     const r = await call(d, 'POST', '/get', { id, dest: dest ? insideProject(d.dir, dest) : undefined })
     return `Saved to ${path.relative(d.dir, r.path)}`
   }))
+
+  // ------------------------------------------------ joining as an agent --
+
+  const startAs = async ({ conn, folder, name, inviteServer }) => {
+    if (joined) throw new Error(`Already in session ${path.basename(joined.dir)} (${joined.dir}). Call elegy_leave_session first.`)
+    const cwd = process.env.ELEGY_DIR || process.cwd()
+    let dir = folder ? path.resolve(cwd, folder) : null
+    if (!dir) {
+      // Join into the current folder only if it's empty or already this room's folder.
+      const saved = readConfig(cwd)
+      const empty = !fs.existsSync(cwd) || fs.readdirSync(cwd).filter((n) => n !== '.elegy' && n !== '.DS_Store').length === 0
+      dir = empty || (saved && saved.room === conn.room) ? cwd : path.join(cwd, `elegy-${conn.room}`)
+    }
+    // A person is already syncing this folder: work through their session.
+    if (runningElsewhere(dir)) {
+      const saved = readConfig(dir)
+      if (saved && saved.room === conn.room) {
+        joined = { dir, attached: true }
+        return { dir, attached: true }
+      }
+      throw new Error(`${dir} is already synced by another elegy session. Choose another folder.`)
+    }
+    const tool = clientTool()
+    logs = []
+    const run = await runSession({
+      dir,
+      conn,
+      name: name || `${tool} agent`,
+      tool,
+      kind: 'agent',
+      inviteServer,
+      onLog: (line) => { logs.push(line); if (logs.length > 50) logs.shift() },
+      onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() }
+    })
+    joined = { run, dir, invite: run.invite }
+    return { dir, invite: run.invite }
+  }
+
+  const leave = async () => {
+    if (!joined) return false
+    const j = joined
+    joined = null
+    if (j.run) await j.run.stop()
+    return true
+  }
+
+  const describeSession = async (dir, extra = '') => {
+    const d = findDaemon(dir)
+    const st = d ? await call(d, 'GET', '/status') : null
+    const info = d ? await call(d, 'GET', '/info') : null
+    const lines = [extra]
+    if (info) lines.push(`Project folder: ${info.dir}`, `You appear as: ${info.name}${info.kind === 'agent' ? ' (AI agent)' : ''}`)
+    if (st) lines.push(`Shared files: ${st.fileCount}`, `People online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
+    if (info && info.invite) lines.push(`Invite code (for others to join): ${info.invite}`)
+    if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with elegy_leave_session.')
+    return lines.filter(Boolean).join('\n')
+  }
+
+  server.registerTool('elegy_join_session', {
+    description: 'Join a live elegy session from an invite code, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "elegy-<room>" subfolder) and kept in sync live. Other people see you in the session.',
+    inputSchema: {
+      invite: z.string().describe('The invite code (or the full "elegy join <code>" command)'),
+      folder: z.string().optional().describe('Where to put the project, relative to the current folder'),
+      name: z.string().optional().describe('Name to show to others (default: "<tool> agent")')
+    }
+  }, async ({ invite, folder, name }) => {
+    try {
+      const conn = decodeInvite(invite)
+      const r = await startAs({ conn, folder, name })
+      const text = await describeSession(r.dir, r.attached
+        ? `This folder is already in the session (someone runs elegy here), so you're working through their session.`
+        : `Joined room ${conn.room}. Files are synced into ${r.dir}; edit them there.`)
+      return { content: [{ type: 'text', text }] }
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Could not join: ${err.message}` }], isError: true }
+    }
+  })
+
+  server.registerTool('elegy_start_session', {
+    description: 'Start a new live elegy session for a folder, as an AI agent, and get an invite code for others. Needs a relay server address (ws:// or wss://), unless ELEGY_SERVER is set.',
+    inputSchema: {
+      relay: z.string().optional().describe('Relay address, e.g. wss://relay.example.com'),
+      folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
+      name: z.string().optional().describe('Name to show to others')
+    }
+  }, async ({ relay, folder, name }) => {
+    try {
+      const server_ = relay || process.env.ELEGY_SERVER
+      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or set ELEGY_SERVER.')
+      const r = await startAs({ conn: newConn(server_), folder: folder || '.', name })
+      return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite code below with collaborators.`) }] }
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }
+    }
+  })
+
+  server.registerTool('elegy_leave_session', {
+    description: 'Leave the session this agent joined or started. Files stay on disk.',
+    inputSchema: {}
+  }, async () => {
+    const left = await leave()
+    return { content: [{ type: 'text', text: left ? 'Left the session. The files stay where they are.' : 'You have not joined a session from here.' }] }
+  })
+
+  server.registerTool('elegy_session_info', {
+    description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite code.',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => describeSession(d.dir)))
+
+  // ------------------------------------------------- the workspace, for agents --
+
+  server.registerTool('elegy_partner_feed', {
+    description: 'Read what a collaborator\'s AI is doing: their prompts, the AI\'s replies, and one-line actions like "Edited src/app.ts". Without "who", lists collaborators and their AI status. Use it to avoid duplicating or conflicting with their work.',
+    inputSchema: {
+      who: z.string().optional().describe('Collaborator name'),
+      limit: z.number().int().min(1).max(300).optional().describe('How many recent entries (default 40)')
+    }
+  }, ({ who, limit }) => withDaemon(async (d) => {
+    const st = await call(d, 'GET', '/status')
+    if (!who) {
+      if (!st.peers.length) return 'Nobody else is in the session right now.'
+      return st.peers.map((p) => {
+        const a = p.agent || {}
+        const ai = a.sharing === false ? 'sharing paused' : a.status === 'unavailable' ? 'feed unavailable' : a.tool ? `${a.tool} ${a.status}` : 'no AI activity yet'
+        return `- ${p.name}${p.kind === 'agent' ? ' (AI agent)' : ''}: ${ai}${p.focus ? `; focus: ${p.focus}` : ''}`
+      }).join('\n') + '\n\nCall again with "who" to read one feed.'
+    }
+    const { entries } = await call(d, 'POST', '/feed', { who, limit: limit || 40 })
+    if (!entries.length) return `No AI activity from ${who} yet.`
+    const cut = (t) => (t.length > 1500 ? t.slice(0, 1500) + '…' : t)
+    let conv = null
+    const out = []
+    for (const e of entries) {
+      if (e.conv && conv && e.conv !== conv) out.push('--- new conversation ---')
+      if (e.conv) conv = e.conv
+      if (e.kind === 'prompt') out.push(`${who} asked: ${cut(e.text)}`)
+      else if (e.kind === 'reply') out.push(`${e.tool || 'AI'} replied: ${cut(e.text)}`)
+      else if (e.kind === 'action') out.push(`  · ${e.text}`)
+      else out.push(`(${who} ${e.kind} sharing)`)
+    }
+    const p = st.peers.find((x) => x.name === who)
+    if (p && p.agent && p.agent.status === 'working' && p.agent.sharing !== false) out.push(`(${who}'s AI is working right now)`)
+    return out.join('\n')
+  }))
+
+  server.registerTool('elegy_list_files', {
+    description: 'List the shared project\'s files with who edited each one recently and any claims, so you can see where others are working.',
+    inputSchema: { prefix: z.string().optional().describe('Only paths under this folder, e.g. "src/auth"') }
+  }, ({ prefix }) => withDaemon(async (d) => {
+    const { files, claims } = await call(d, 'GET', '/tree')
+    const me = (await call(d, 'GET', '/info')).name
+    const pre = prefix ? prefix.replace(/^\.\//, '').replace(/\/+$/, '') : ''
+    const shown = files.filter((f) => !pre || f.path === pre || f.path.startsWith(pre + '/'))
+    const now = Date.now()
+    const lines = shown.slice(0, 400).map((f) => {
+      const notes = []
+      if (f.edited && now - f.edited.ts < 10 * 60 * 1000) notes.push(`edited by ${f.edited.by === me ? 'you' : f.edited.by} ${Math.round((now - f.edited.ts) / 1000)}s ago`)
+      if (f.claim) notes.push(`claimed by ${f.claim.by === me ? 'you' : f.claim.by}${f.claim.note ? `: ${f.claim.note}` : ''}`)
+      if (f.binary) notes.push('binary')
+      return `${f.path}${notes.length ? `  [${notes.join('; ')}]` : ''}`
+    })
+    if (shown.length > 400) lines.push(`… and ${shown.length - 400} more (use prefix to narrow)`)
+    const claimLines = claims.length ? '\n\nClaims: ' + claims.map((c) => `${c.pattern} (${c.by === me ? 'you' : c.by}${c.note ? `: ${c.note}` : ''})`).join(', ') : ''
+    return (lines.join('\n') || 'No shared files.') + claimLines
+  }))
+
+  server.server.onclose = () => { leave().catch(() => {}) }
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { leave().finally(() => process.exit(0)) })
 
   server.server.oninitialized = () => {
     const client = server.server.getClientVersion()

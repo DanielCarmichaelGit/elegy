@@ -210,9 +210,11 @@ function bindTop () {
   const btn = $('#people-btn')
   const menu = $('#people-menu')
   let hoverTimer
-  const open = () => { clearTimeout(hoverTimer); if (menu.hidden) { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu() } }
+  let openedAt = 0
+  const open = () => { clearTimeout(hoverTimer); if (menu.hidden) { menu.hidden = false; openedAt = Date.now(); btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu() } }
   const close = () => { clearTimeout(hoverTimer); menu.hidden = true; btn.setAttribute('aria-expanded', 'false') }
-  btn.onclick = () => (menu.hidden ? open() : close())
+  // A click also focuses (and may hover) the button, which already opened the menu; don't toggle it shut.
+  btn.onclick = () => (menu.hidden ? open() : Date.now() - openedAt > 400 && close())
   wrap.addEventListener('mouseenter', () => { if (window.matchMedia('(hover: hover)').matches) open() })
   wrap.addEventListener('mouseleave', () => {
     // Don't close while someone's typing in the menu.

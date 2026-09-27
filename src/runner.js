@@ -84,7 +84,7 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
     await session.stop().catch(() => {})
     throw err
   }
-  const control = await startControl(session)
+  const control = await startControl(session, { invite })
   remember({ dir, room: conn.room, server: conn.server, name, tool })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.

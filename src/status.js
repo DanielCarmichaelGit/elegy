@@ -20,7 +20,9 @@ export function renderStatus (st) {
   if (!st.peers.length) out.push('_Nobody else is connected right now._')
   for (const p of st.peers) {
     const tools = [p.tool, ...(p.agents || [])].filter((t) => t && t !== 'unknown')
-    out.push(`- **${p.name}**${tools.length ? ` (${[...new Set(tools)].join(', ')})` : ''}${p.focus ? `: working on: ${p.focus}` : ''}`)
+    out.push(`- **${p.name}**${p.kind === 'agent' ? ' [AI agent]' : ''}${tools.length ? ` (${[...new Set(tools)].join(', ')})` : ''}${p.focus ? `: working on: ${p.focus}` : ''}`)
+    const ai = aiLine(p.agent)
+    if (ai) out.push(`  - AI: ${ai}`)
     const editing = p.editing.slice(0, 8)
     if (editing.length) out.push(`  - recently edited: ${editing.map((e) => `\`${e.path}\` (${e.secondsAgo}s ago)`).join(', ')}`)
   }
@@ -48,6 +50,14 @@ export function renderStatus (st) {
   for (const m of st.chat.slice(-10)) out.push(`- ${renderMessage(m, st.me.name)}`)
   out.push('')
   return out.join('\n')
+}
+
+function aiLine (a) {
+  if (!a) return ''
+  if (a.sharing === false) return 'sharing paused'
+  if (a.status === 'unavailable') return `${a.tool || 'feed'} unavailable`
+  if (!a.tool) return ''
+  return `${a.tool} ${a.status === 'working' ? 'is working' : 'idle'} (see elegy_partner_feed)`
 }
 
 export function renderMessage (m, me) {

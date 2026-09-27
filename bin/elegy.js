@@ -31,6 +31,7 @@ Join options:
   --tool <tool>       What you're coding with, e.g. claude, cursor (shown to others)
   --dir <folder>      Project folder (default: current folder)
   --room <name> --secret <secret>   Join/create a specific room instead of using an invite
+  --agent            Join as an AI agent (shown with an agent badge)
   --prefer local      On first join, keep your local version of files that differ
                       (default: take the session's version and back yours up)
 `
@@ -86,7 +87,7 @@ async function join () {
     options: {
       server: { type: 'string' }, room: { type: 'string' }, secret: { type: 'string' },
       name: { type: 'string' }, tool: { type: 'string' }, dir: { type: 'string' },
-      prefer: { type: 'string' }
+      prefer: { type: 'string' }, agent: { type: 'boolean' }
     }
   })
   const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
@@ -118,6 +119,7 @@ async function join () {
       name,
       tool: values.tool || saved.tool,
       prefer: values.prefer === 'local' ? 'local' : 'remote',
+      kind: values.agent ? 'agent' : 'human',
       inviteServer: saved.room === conn.room ? saved.inviteServer : undefined,
       onLog: (m) => console.log(`[${stamp()}] ${m}`),
       onDebug: process.env.ELEGY_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
