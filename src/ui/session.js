@@ -55,7 +55,7 @@ export function mountSession (id) {
   $('#app').innerHTML = `
   <div class="ws" id="ws">
     <header class="ws-top">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt="">elegy</button>
+      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>el<i>e</i>gy</span></button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
       <button class="btn sm ghost icon narrow-only" id="toggle-tree" title="Files" aria-label="Show files">${I.tree}</button>
@@ -94,7 +94,7 @@ export function mountSession (id) {
             <button type="button" class="btn ghost icon" id="attach-btn" title="Send a file" aria-label="Send a file">${I.clip}</button>
             <input type="file" id="file-input" multiple hidden>
             <textarea id="msg-input" rows="1" placeholder="Message everyone…"></textarea>
-            <button type="submit" class="btn grad icon" id="send-btn" title="Send" aria-label="Send">${I.send}</button>
+            <button type="submit" class="btn primary icon" id="send-btn" title="Send" aria-label="Send">${I.send}</button>
           </div>
         </form>
       </aside>

@@ -135,7 +135,7 @@ export function renderLocked (msg) {
   $('#app').innerHTML = `
     <div class="home"><div class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark"><span>elegy</span></div>
+      <div class="wordmark">el<i>e</i>gy</div>
       <p class="tagline">${esc(msg || 'Open elegy using the link printed in your terminal by')} ${msg ? '' : '<code>elegy ui</code>.'}</p>
     </div></div>`
 }
@@ -143,7 +143,7 @@ export function renderLocked (msg) {
 function topbarHtml () {
   return `
     <header class="topbar">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt="">elegy</button>
+      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>el<i>e</i>gy</span></button>
       <nav class="tabs" id="tabs"></nav>
       <button class="btn sm" data-go="home">${I.plus}<span>New</span></button>
       <button class="btn sm ghost icon" data-shutdown title="Shut down elegy" aria-label="Shut down elegy">${I.power}</button>
@@ -186,7 +186,7 @@ function homeHtml () {
   <main class="home">
     <section class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark"><span>elegy</span></div>
+      <div class="wordmark">el<i>e</i>gy</div>
       <p class="tagline">Vibe code together in real time, from anywhere, each in whatever AI tool you like.</p>
     </section>
 
@@ -222,7 +222,7 @@ function homeHtml () {
             </div>
           </div>
         </div>
-        <button class="btn grad full" type="submit">Start session</button>
+        <button class="btn primary full" type="submit">Start session</button>
         <p class="error" id="create-error"></p>
       </form>
 

@@ -7,12 +7,21 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions } from './runner.js'
 import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui')
 const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
+// Fonts are bundled from npm so the app works offline and never calls a font CDN.
+const FONT_PACKAGES = ['newsreader', 'ibm-plex-sans', 'ibm-plex-mono']
+const require = createRequire(import.meta.url)
+const fontFile = (pkg, file) => {
+  if (!FONT_PACKAGES.includes(pkg) || !/^[a-z0-9-]+\.woff2$/.test(file)) return null
+  const f = path.join(path.dirname(require.resolve(`@fontsource/${pkg}/package.json`)), 'files', file)
+  return fs.existsSync(f) ? f : null
+}
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
@@ -176,6 +185,13 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       const [file, type] = STATIC[url.pathname]
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' })
       return res.end(fs.readFileSync(path.join(UI_DIR, file)))
+    }
+    const font = req.method === 'GET' && url.pathname.match(/^\/fonts\/([a-z-]+)\/([^/]+)$/)
+    if (font) {
+      const f = fontFile(font[1], font[2])
+      if (!f) return json(404, { error: 'not found' })
+      res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'max-age=31536000, immutable' })
+      return res.end(fs.readFileSync(f))
     }
     if (req.method === 'GET' && (url.pathname === '/logo.svg' || url.pathname === '/favicon.svg')) {
       res.writeHead(200, { 'content-type': 'image/svg+xml' })

@@ -68,7 +68,7 @@ export const ago = (ts) => {
   return new Date(ts).toLocaleDateString()
 }
 export const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-export const PALETTE = ['#e06c75', '#5b8def', '#3fae6b', '#b267e6', '#d8a23a', '#2fb3c4', '#e0864f']
+export const PALETTE = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 export const colorFor = (name, given) => given || PALETTE[Math.abs([...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)) % PALETTE.length]
 export const avatar = (name, color, online = false) =>
   `<div class="avatar${online ? ' online' : ''}" style="background:${esc(colorFor(name, color))}">${esc(String(name || '?').slice(0, 1))}</div>`
