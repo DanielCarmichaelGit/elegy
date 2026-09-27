@@ -126,6 +126,36 @@ test('presence, focus, claims and chat are shared', async () => {
   assert.equal(A.release('*'), 1)
 })
 
+test('claims are enforced: others\' edits are undone locally and never shared', async () => {
+  write(dirA, 'locked/a.txt', 'original\n')
+  await waitFor(() => read(dirB, 'locked/a.txt') === 'original\n')
+  A.claim('locked/**', 'mine')
+  await waitFor(() => B.claimFor('locked/a.txt'))
+
+  // Edit: bob's disk goes back to the shared text; his version is kept aside.
+  write(dirB, 'locked/a.txt', 'bob was here\n')
+  await waitFor(() => read(dirB, 'locked/a.txt') === 'original\n')
+  const saved = fs.readdirSync(path.join(dirB, '.elegy', 'rejected'))
+  assert.ok(saved.some((ts) => read(path.join(dirB, '.elegy', 'rejected', ts), 'locked/a.txt') === 'bob was here\n'))
+  // New file inside the claim: removed. Delete: restored.
+  write(dirB, 'locked/new.txt', 'sneaky')
+  await waitFor(() => read(dirB, 'locked/new.txt') === null)
+  fs.rmSync(path.join(dirB, 'locked/a.txt'))
+  await waitFor(() => read(dirB, 'locked/a.txt') === 'original\n')
+
+  // The claimer can still edit, and it reaches bob.
+  write(dirA, 'locked/a.txt', 'alice edit\n')
+  await waitFor(() => read(dirB, 'locked/a.txt') === 'alice edit\n')
+  assert.equal(read(dirA, 'locked/new.txt'), null)
+  assert.equal(A.files.get('locked/a.txt').toString(), 'alice edit\n')
+
+  // Released: bob's edits go through again.
+  A.release('locked/**')
+  await waitFor(() => !B.claimFor('locked/a.txt'))
+  write(dirB, 'locked/a.txt', 'bob again\n')
+  await waitFor(() => read(dirA, 'locked/a.txt') === 'bob again\n')
+})
+
 test('direct messages are only shown to sender and recipient', async () => {
   const r = B.say('psst alice', { to: 'alice' })
   assert.equal(r.recipientOnline, true)

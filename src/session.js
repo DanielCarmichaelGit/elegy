@@ -284,6 +284,12 @@ export class Session extends EventEmitter {
       return false
     }
 
+    const claim = this.claimFor(rel)
+    if (claim && claim.by !== this.name && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
+      this.rejectClaimed(rel, disk, claim)
+      return false
+    }
+
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
       this.doc.transact(() => {
@@ -321,6 +327,31 @@ export class Session extends EventEmitter {
     return true
   }
 
+  /** Someone else claimed rel: keep our version aside and put the shared one back on disk. */
+  rejectClaimed (rel, disk, claim) {
+    let kept = ''
+    if (disk) {
+      const dest = path.join(this.stateDir, 'rejected', `${Date.now()}`, ...rel.split('/'))
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
+      kept = `; your version saved to ${path.relative(this.root, dest)}`
+    }
+    const abs = path.join(this.root, ...rel.split('/'))
+    const t = this.files.get(rel)
+    const b = this.blobs.get(rel)
+    if (t || b) {
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
+      this.lastKnown.set(rel, this.sharedKey(rel))
+    } else {
+      fs.rmSync(abs, { force: true })
+      removeEmptyParents(this.root, path.dirname(abs))
+      this.lastKnown.delete(rel)
+    }
+    this.log(`🔒 ${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}, so your change was undone${kept}`)
+    this.emit('file-changed', { path: rel, by: claim.by })
+  }
+
   recordActivity (rel, kind, detail) {
     const now = Date.now()
     const last = this.lastActivityPush.get(rel)
@@ -335,10 +366,6 @@ export class Session extends EventEmitter {
     const now = Date.now()
     this.emit('file-changed', { path: rel, by: this.name })
     this.myEdits.set(rel, now)
-    const claim = this.claimFor(rel)
-    if (claim && claim.by !== this.name) {
-      this.log(`⚠️  you changed ${rel}, which ${claim.by} has claimed${claim.note ? ` (${claim.note})` : ''}`)
-    }
     this.updatePresence()
   }
 

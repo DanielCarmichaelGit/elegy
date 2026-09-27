@@ -119,7 +119,7 @@ pick up the MCP server.
 | `elegy invite` | Print the invite code again |
 | `elegy status` | Who's online, focus, recent edits, claims, messages |
 | `elegy focus "adding auth"` | Tell others what you're working on |
-| `elegy claim 'src/auth/**' "rewriting login"` | Soft-lock files/folders/globs |
+| `elegy claim 'src/auth/**' "rewriting login"` | Lock files/folders/globs so only you can change them |
 | `elegy release <pattern>` / `elegy release` | Release one claim / all of yours |
 | `elegy chat` | Interactive chat in your terminal (live messages, DMs, files) |
 | `elegy say "pushing a schema change"` / `elegy say @bob "got a sec?"` | Message everyone / one person |
@@ -163,7 +163,9 @@ In a session, the app's main area has two modes:
 
 The file tree on the left shows orange badges on files edited in the last two
 minutes and purple badges on claims. Use a file's or folder's ⋯ menu to claim
-or release it.
+or release it. Claims are enforced: if anyone else changes a claimed file,
+elegy puts the shared version back on their disk, never sends the change, and
+saves their version under `.elegy/rejected/`.
 
 Sharing is on when you join. Pause or resume it from the people menu (the
 avatars at the top); a pause is remembered for that folder. elegy reads Claude
