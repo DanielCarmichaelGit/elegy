@@ -1,0 +1,28 @@
+{
+  "name": "elegy",
+  "version": "0.1.0",
+  "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
+  "type": "module",
+  "bin": {
+    "elegy": "bin/elegy.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "serve": "node bin/elegy.js serve"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "chokidar": "^5.0.0",
+    "fast-diff": "^1.3.0",
+    "ignore": "^7.0.10",
+    "lib0": "^0.2.118",
+    "ws": "^8.22.0",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33",
+    "zod": "^4.6.5"
+  }
+}
