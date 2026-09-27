@@ -222,3 +222,62 @@ test('glob matching', () => {
   assert.ok(globMatcher('src/auth')('src/auth/x.js'))
   assert.ok(!globMatcher('src/auth')('src/authz.js'))
 })
+
+test('AI feed entries reach the other side, deduped by id', async () => {
+  const base = { tool: 'Claude Code', conv: 'c1', ts: Date.now() }
+  assert.equal(A.pushAgentEntries([
+    { ...base, id: 'p1', kind: 'prompt', text: 'add a navbar' },
+    { ...base, id: 'r1', kind: 'reply', text: 'Sure.' }
+  ]), 2)
+  assert.equal(A.pushAgentEntries([{ ...base, id: 'p1', kind: 'prompt', text: 'add a navbar' }]), 0, 'same id is skipped')
+  await waitFor(() => B.agentFeedFor('alice').length === 2)
+  assert.deepEqual(B.agentFeedFor('alice').map((e) => [e.by, e.kind, e.text]), [['alice', 'prompt', 'add a navbar'], ['alice', 'reply', 'Sure.']])
+  assert.equal(B.agentFeedFor('bob').length, 0)
+})
+
+test('AI feed keeps each person\'s newest 300 entries', async () => {
+  const many = Array.from({ length: 320 }, (_, i) => ({ id: `bulk${i}`, tool: 'Cursor', conv: 'c2', kind: 'action', text: `step ${i}`, ts: Date.now() + i }))
+  B.pushAgentEntries([{ id: 'bob1', kind: 'prompt', text: 'bob stays', ts: Date.now() }])
+  A.pushAgentEntries(many)
+  const feed = A.agentFeedFor('alice')
+  assert.equal(feed.length, 300)
+  assert.equal(feed.at(-1).text, 'step 319')
+  assert.equal(feed[0].text, 'step 20')
+  await waitFor(() => B.agentFeedFor('alice').length === 300 && A.agentFeedFor('bob').length === 1)
+})
+
+test('pausing AI sharing stops entries and leaves markers', async () => {
+  A.setAgentSharing(false)
+  assert.equal(A.pushAgentEntries([{ id: 'hidden', kind: 'prompt', text: 'private thought' }]), 0)
+  A.setAgentSharing(true)
+  A.pushAgentEntries([{ id: 'after', kind: 'prompt', text: 'back again' }])
+  await waitFor(() => B.agentFeedFor('alice').at(-1)?.text === 'back again')
+  const kinds = B.agentFeedFor('alice').slice(-3).map((e) => e.kind)
+  assert.deepEqual(kinds, ['paused', 'resumed', 'prompt'])
+  assert.ok(!B.agentFeedFor('alice').some((e) => e.text === 'private thought'))
+  await waitFor(() => B.status().peers.find((p) => p.name === 'alice')?.agent?.sharing === true)
+})
+
+test('agent status is shared through presence', async () => {
+  A.setAgentState({ tool: 'Claude Code', status: 'working' })
+  await waitFor(() => B.status().peers.find((p) => p.name === 'alice')?.agent?.status === 'working')
+  A.setAgentSharing(false)
+  await waitFor(() => B.status().peers.find((p) => p.name === 'alice')?.agent?.sharing === false)
+  assert.equal(B.status().peers.find((p) => p.name === 'alice').agent.status, 'idle', 'a paused person\'s activity is hidden')
+  A.setAgentSharing(true)
+})
+
+test('file-changed fires for local and remote edits', async () => {
+  const seenA = []
+  const seenB = []
+  const la = (e) => seenA.push(e)
+  const lb = (e) => seenB.push(e)
+  A.on('file-changed', la)
+  B.on('file-changed', lb)
+  write(dirA, 'watched.txt', 'v1')
+  await waitFor(() => seenB.some((e) => e.path === 'watched.txt'))
+  assert.ok(seenA.some((e) => e.path === 'watched.txt' && e.by === 'alice'))
+  assert.equal(seenB.find((e) => e.path === 'watched.txt').by, 'alice')
+  A.off('file-changed', la)
+  B.off('file-changed', lb)
+})

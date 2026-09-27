@@ -16,7 +16,12 @@ const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'asse
 const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
-  '/app.css': ['app.css', 'text/css; charset=utf-8']
+  '/app.css': ['app.css', 'text/css; charset=utf-8'],
+  '/common.js': ['common.js', 'text/javascript; charset=utf-8'],
+  '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
+  '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
+  '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
+  '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8']
 }
 
 export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {}) {
@@ -89,6 +94,8 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     const s = entry.run.session
     s.on('status-changed', () => pushStatus(id))
     s.on('message', (m) => broadcast('message', { id, message: m }))
+    s.on('agent-feed', (entries) => broadcast('feed', { id, entries }))
+    s.on('file-changed', (e) => broadcast('file-changed', { id, ...e }))
     // Presence changes (e.g. focus, recently edited files) also refresh the view.
     s.conn.awareness.on('change', () => pushStatus(id))
     return summary(id)
@@ -137,6 +144,17 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'POST /api/sessions/:id/release': (b, id) => ({ released: get(id).release(b.pattern) }),
     'POST /api/sessions/:id/read': (b, id) => { get(id).messages({ limit: 500 }); pushStatus(id); return { ok: true } },
     'GET /api/sessions/:id/messages': (b, id) => ({ messages: get(id).messages({ limit: 200, markRead: false }) }),
+    'GET /api/sessions/:id/feed': (b, id, url) => {
+      const s = get(id)
+      return { entries: s.agentFeedFor(url.searchParams.get('who') || s.name) }
+    },
+    'GET /api/sessions/:id/tree': (b, id) => get(id).tree(),
+    'GET /api/sessions/:id/file': (b, id, url) => {
+      const f = get(id).readShared(url.searchParams.get('path'))
+      if (!f) throw httpError(404, 'That file is not in this session.')
+      return f
+    },
+    'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.
     'POST /api/shutdown': () => {

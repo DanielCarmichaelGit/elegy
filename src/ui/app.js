@@ -1,94 +1,7 @@
-// elegy local UI. Plain JS, no build step.
-
-// ---------------------------------------------------------------- token --
-const params = new URLSearchParams(location.search)
-if (params.get('t')) {
-  try { sessionStorage.setItem('elegy-token', params.get('t')) } catch {}
-  history.replaceState(null, '', '/')
-}
-let TOKEN = params.get('t')
-try { TOKEN = TOKEN || sessionStorage.getItem('elegy-token') } catch {}
-
-// ---------------------------------------------------------------- icons --
-const I = {
-  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
-  clip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>',
-  send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4z"/></svg>',
-  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
-  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
-  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
-  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>',
-  file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
-  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
-  power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>',
-  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>'
-}
-
-const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
-
-// ---------------------------------------------------------------- state --
-const state = {
-  loaded: false,
-  sessions: new Map(), // id -> summary
-  messages: new Map(), // id -> [message]
-  recent: [],
-  defaults: {},
-  relay: null,
-  maxFileBytes: 0,
-  view: 'home', // 'home' | session id
-  pane: 'chat', // mobile pane
-  to: '', // chat recipient ('' = everyone)
-  pending: [], // files queued in the composer
-  error: null
-}
-
-// -------------------------------------------------------------- helpers --
-const $ = (sel, root = document) => root.querySelector(sel)
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-const basename = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || p
-const bytes = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
-const ago = (ts) => {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
-  if (s < 45) return 'now'
-  if (s < 3600) return `${Math.round(s / 60)}m`
-  if (s < 86400) return `${Math.round(s / 3600)}h`
-  return new Date(ts).toLocaleDateString()
-}
-const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-const PALETTE = ['#e06c75', '#5b8def', '#3fae6b', '#b267e6', '#d8a23a', '#2fb3c4', '#e0864f']
-const colorFor = (name, given) => given || PALETTE[Math.abs([...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)) % PALETTE.length]
-const avatar = (name, color, online = false) =>
-  `<div class="avatar${online ? ' online' : ''}" style="background:${esc(colorFor(name, color))}">${esc(String(name || '?').slice(0, 1))}</div>`
-
-function toast (msg) {
-  const t = $('#toast')
-  t.textContent = msg
-  t.classList.add('show')
-  clearTimeout(toast.timer)
-  toast.timer = setTimeout(() => t.classList.remove('show'), 2400)
-}
-
-async function api (method, path, body, headers = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: { 'x-elegy-token': TOKEN || '', ...(body && !(body instanceof Blob) ? { 'content-type': 'application/json' } : {}), ...headers },
-    body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined
-  })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
-  return data
-}
-
-function decodeInvite (code) {
-  try {
-    const raw = code.trim().replace(/^elegy join\s+/, '')
-    const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')))
-    return j && j.s && j.r ? { server: j.s, room: j.r } : null
-  } catch { return null }
-}
-
-function remember (key, value) { try { localStorage.setItem(`elegy-${key}`, value) } catch {} }
-function recall (key, fallback = '') { try { return localStorage.getItem(`elegy-${key}`) ?? fallback } catch { return fallback } }
+// elegy app: boot, live events, home screen, folder picker and invites.
+// The session workspace lives in session.js. Plain ES modules, no build step.
+import { TOKEN, I, TOOLS, state, $, esc, basename, ago, toast, api, decodeInvite, remember, recall } from './common.js'
+import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 
 // ---------------------------------------------------------------- boot --
 async function boot () {
@@ -115,20 +28,28 @@ function connectEvents () {
   const es = state.events = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
   es.addEventListener('session', (e) => {
     const sum = JSON.parse(e.data)
-    const isNew = !state.sessions.has(sum.id)
-    state.sessions.set(sum.id, sum)
-    if (isNew) renderTopbar()
-    if (state.view === sum.id) renderSessionPanels()
+    const prev = state.sessions.get(sum.id)
+    // Session summaries don't carry the full log; keep what we have.
+    state.sessions.set(sum.id, prev ? { ...sum, logs: prev.logs } : sum)
+    if (state.view === sum.id) sessionUpdated(sum.id)
     else renderTabs()
+  })
+  es.addEventListener('feed', (e) => {
+    const { id, entries } = JSON.parse(e.data)
+    sessionFeed(id, entries)
+  })
+  es.addEventListener('file-changed', (e) => {
+    const { id, ...change } = JSON.parse(e.data)
+    sessionFileChanged(id, change)
   })
   es.addEventListener('message', (e) => {
     const { id, message } = JSON.parse(e.data)
     const list = state.messages.get(id)
     if (list && !list.some((m) => m.id === message.id)) list.push(message)
     if (state.view === id) {
-      renderMessages(true)
+      sessionMessage(id, message)
       if (document.visibilityState === 'visible') markRead(id)
-    }
+    } else renderTabs()
     if (message.by !== state.sessions.get(id)?.status.me.name && document.visibilityState !== 'visible') {
       document.title = `• ${message.by}: ${message.text || message.file?.name || ''}`.slice(0, 60)
     }
@@ -137,12 +58,14 @@ function connectEvents () {
     const { id, ts, line } = JSON.parse(e.data)
     const s = state.sessions.get(id)
     if (s) { s.logs.push({ ts, line }); if (s.logs.length > 200) s.logs.shift() }
-    if (state.view === id) renderLogs()
+    if (state.view === id) sessionLog(id)
   })
   es.addEventListener('stopped', (e) => {
     const { id } = JSON.parse(e.data)
     state.sessions.delete(id)
     state.messages.delete(id)
+    state.feeds.delete(id)
+    state.trees.delete(id)
     if (state.view === id) { state.view = 'home'; refreshRecent() }
     render()
   })
@@ -155,12 +78,12 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
-async function loadMessages (id) {
+export async function loadMessages (id) {
   const { messages } = await api('GET', `/api/sessions/${id}/messages`)
   state.messages.set(id, messages)
 }
 
-async function markRead (id) {
+export async function markRead (id) {
   const list = state.messages.get(id) || []
   if (!list.some((m) => m.unread)) return
   for (const m of list) m.unread = false
@@ -171,7 +94,7 @@ async function refreshRecent () {
   try { state.recent = (await api('GET', '/api/state')).recent } catch {}
 }
 
-async function go (view) {
+export async function go (view) {
   state.view = view
   state.pending = []
   state.to = ''
@@ -182,7 +105,7 @@ async function go (view) {
 }
 
 // --------------------------------------------------------------- render --
-async function shutdown () {
+export async function shutdown () {
   if (!confirm('Shut down elegy? This stops every session, the relay, and this app. Your files stay where they are.')) return
   try {
     await api('POST', '/api/shutdown')
@@ -195,22 +118,20 @@ async function shutdown () {
 
 document.addEventListener('click', (e) => { if (e.target.closest('[data-shutdown]')) shutdown() })
 
-function render () {
+export function render () {
   const app = $('#app')
+  sessionUnmount()
   if (state.view === 'home') {
     app.innerHTML = state.sessions.size ? `<div class="shell">${topbarHtml()}<div style="overflow:auto;flex:1">${homeHtml()}</div></div>` : homeHtml()
     bindHome()
     bindTopbar()
   } else {
-    app.innerHTML = `<div class="shell">${topbarHtml()}${sessionHtml()}</div>`
+    mountSession(state.view)
     bindTopbar()
-    bindSession()
-    renderSessionPanels()
-    renderMessages(false, true)
   }
 }
 
-function renderLocked (msg) {
+export function renderLocked (msg) {
   $('#app').innerHTML = `
     <div class="home"><div class="hero">
       <img src="/logo.svg" alt="">
@@ -229,11 +150,7 @@ function topbarHtml () {
     </header>`
 }
 
-function renderTopbar () {
-  if ($('.topbar')) renderTabs()
-}
-
-function renderTabs () {
+export function renderTabs () {
   const el = $('#tabs')
   if (!el) return
   el.innerHTML = [...state.sessions.values()].map((s) => {
@@ -246,7 +163,7 @@ function renderTabs () {
   }).join('')
 }
 
-function bindTopbar () {
+export function bindTopbar () {
   renderTabs()
   document.querySelectorAll('[data-go]').forEach((b) => { if (!b.closest('#tabs')) b.onclick = () => go(b.dataset.go) })
   $('#tabs')?.addEventListener('click', (e) => {
@@ -480,291 +397,9 @@ async function pickFolder (input) {
   $('#pick-path', back).focus()
 }
 
-// -------------------------------------------------------------- session --
-function sessionHtml () {
-  const s = state.sessions.get(state.view)
-  return `
-    <div class="subbar">
-      <div class="title">${esc(basename(s.dir))}</div>
-      <span class="pill" id="conn-pill"></span>
-      <div class="path" title="${esc(s.dir)}">${esc(s.dir)}</div>
-      <div class="spacer"></div>
-      <button class="btn sm" id="invite-btn">${I.link}<span>Invite</span></button>
-      <button class="btn sm ghost" id="leave-btn">Leave</button>
-    </div>
-    <div class="mobile-tabs"><div class="segmented" style="flex:1">
-      <button data-pane="people">People</button><button data-pane="chat">Chat</button><button data-pane="activity">Activity</button>
-    </div></div>
-    <div class="grid" data-pane="${state.pane}">
-      <aside class="col left">
-        <div class="panel">
-          <div class="panel-title">You</div>
-          <div id="me"></div>
-          <form id="focus-form" class="row" style="margin-top:8px">
-            <input class="input grow" id="focus-input" placeholder="What are you working on?" style="height:34px">
-          </form>
-        </div>
-        <div class="panel"><div class="panel-title">Online <span id="online-count"></span></div><div id="people"></div></div>
-        <div class="panel">
-          <div class="panel-title">Claimed files</div>
-          <div id="claims"></div>
-          <form id="claim-form" class="row" style="margin-top:8px">
-            <input class="input grow mono" id="claim-input" placeholder="src/auth/**" style="height:34px" aria-label="Path or glob to claim">
-            <button class="btn sm" type="submit">Claim</button>
-          </form>
-        </div>
-      </aside>
-      <section class="col center" id="center">
-        <div class="chat-head"><h3>Chat</h3><span class="hint" id="chat-sub"></span></div>
-        <div class="messages" id="messages"></div>
-        <div class="drop">Drop files to send</div>
-        <form class="composer" id="composer">
-          <div class="to"><label for="to-select">To</label><select id="to-select"></select></div>
-          <div class="attachments" id="attachments"></div>
-          <div class="box">
-            <button type="button" class="btn ghost icon" id="attach-btn" title="Send a file" aria-label="Send a file">${I.clip}</button>
-            <input type="file" id="file-input" multiple hidden>
-            <textarea id="msg-input" rows="1" placeholder="Message everyone…"></textarea>
-            <button type="submit" class="btn grad icon" id="send-btn" title="Send" aria-label="Send">${I.send}</button>
-          </div>
-        </form>
-      </section>
-      <aside class="col right">
-        <div class="panel"><div class="panel-title">Activity</div><div id="activity"></div></div>
-        <div class="panel"><div class="panel-title">Events</div><div id="logs"></div></div>
-      </aside>
-    </div>`
-}
-
-function bindSession () {
-  const id = state.view
-  $('#invite-btn').onclick = () => openInvite(id)
-  $('#leave-btn').onclick = async () => {
-    if (!confirm('Stop syncing this folder? Your files stay where they are, and you can rejoin later.')) return
-    await api('POST', `/api/sessions/${id}/stop`).catch((err) => toast(err.message))
-  }
-  document.querySelectorAll('[data-pane]').forEach((b) => {
-    if (b.tagName !== 'BUTTON') return
-    b.classList.toggle('on', b.dataset.pane === state.pane)
-    b.onclick = () => {
-      state.pane = b.dataset.pane
-      $('.grid').dataset.pane = state.pane
-      document.querySelectorAll('.mobile-tabs [data-pane]').forEach((x) => x.classList.toggle('on', x === b))
-    }
-  })
-
-  const focusInput = $('#focus-input')
-  focusInput.value = state.sessions.get(id).status.me.focus || ''
-  $('#focus-form').onsubmit = async (e) => {
-    e.preventDefault()
-    await api('POST', `/api/sessions/${id}/focus`, { text: focusInput.value })
-    focusInput.blur()
-    toast(focusInput.value ? 'Focus shared' : 'Focus cleared')
-  }
-  $('#claim-form').onsubmit = async (e) => {
-    e.preventDefault()
-    const pattern = $('#claim-input').value.trim()
-    if (!pattern) return
-    try {
-      const r = await api('POST', `/api/sessions/${id}/claim`, { pattern, note: focusInput.value })
-      $('#claim-input').value = ''
-      toast(r.overlapping?.length ? `Claimed, but it overlaps ${r.overlapping.map((c) => c.by).join(', ')}` : `Claimed ${pattern}`)
-    } catch (err) { toast(err.message) }
-  }
-  $('#claims').onclick = async (e) => {
-    const b = e.target.closest('[data-release]')
-    if (b) await api('POST', `/api/sessions/${id}/release`, { pattern: b.dataset.release }).catch((err) => toast(err.message))
-  }
-  $('#people').onclick = (e) => {
-    const b = e.target.closest('[data-dm]')
-    if (!b) return
-    state.to = b.dataset.dm
-    renderRecipients()
-    document.querySelector('.mobile-tabs [data-pane=chat]')?.click()
-    $('#msg-input').focus()
-  }
-
-  // composer
-  const input = $('#msg-input')
-  const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 160)}px` }
-  input.addEventListener('input', grow)
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit() }
-  })
-  $('#to-select').onchange = (e) => { state.to = e.target.value; updatePlaceholder() }
-  $('#attach-btn').onclick = () => $('#file-input').click()
-  $('#file-input').onchange = (e) => { addFiles(e.target.files); e.target.value = '' }
-  $('#attachments').onclick = (e) => {
-    const b = e.target.closest('[data-unqueue]')
-    if (b) { state.pending.splice(Number(b.dataset.unqueue), 1); renderAttachments() }
-  }
-  $('#composer').onsubmit = async (e) => {
-    e.preventDefault()
-    const text = input.value.trim()
-    const files = state.pending.slice()
-    if (!text && !files.length) return
-    $('#send-btn').disabled = true
-    try {
-      if (files.length) {
-        for (let i = 0; i < files.length; i++) {
-          const f = files[i]
-          await api('POST', `/api/sessions/${id}/send`, f, {
-            'x-filename': encodeURIComponent(f.name),
-            'x-to': encodeURIComponent(state.to),
-            'x-text': encodeURIComponent(i === 0 ? text : '')
-          })
-        }
-      } else {
-        const r = await api('POST', `/api/sessions/${id}/say`, { text, to: state.to || null })
-        if (state.to && !r.recipientOnline) toast(`${state.to} is offline. They'll see it when they’re back.`)
-      }
-      input.value = ''
-      state.pending = []
-      renderAttachments()
-      grow()
-    } catch (err) {
-      toast(err.message)
-    } finally {
-      $('#send-btn').disabled = false
-      input.focus()
-    }
-  }
-
-  // drag & drop
-  const center = $('#center')
-  let depth = 0
-  center.addEventListener('dragenter', (e) => { if (e.dataTransfer?.types.includes('Files')) { depth++; center.classList.add('dragging') } })
-  center.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) center.classList.remove('dragging') })
-  center.addEventListener('dragover', (e) => e.preventDefault())
-  center.addEventListener('drop', (e) => {
-    e.preventDefault()
-    depth = 0
-    center.classList.remove('dragging')
-    addFiles(e.dataTransfer.files)
-  })
-  // paste images/files
-  input.addEventListener('paste', (e) => {
-    if (e.clipboardData?.files?.length) { e.preventDefault(); addFiles(e.clipboardData.files) }
-  })
-}
-
-function addFiles (list) {
-  for (const f of list) {
-    if (state.maxFileBytes && f.size > state.maxFileBytes) { toast(`${f.name} is larger than ${bytes(state.maxFileBytes)}`); continue }
-    state.pending.push(f)
-  }
-  renderAttachments()
-  $('#msg-input').focus()
-}
-
-function renderAttachments () {
-  const el = $('#attachments')
-  if (!el) return
-  el.innerHTML = state.pending.map((f, i) => `<span class="tag">${esc(f.name)} · ${bytes(f.size)}<button type="button" data-unqueue="${i}" aria-label="Remove">×</button></span>`).join('')
-  updatePlaceholder()
-}
-
-function updatePlaceholder () {
-  const input = $('#msg-input')
-  if (!input) return
-  const who = state.to ? state.to : 'everyone'
-  input.placeholder = state.pending.length ? `Add a note for ${who} (optional)…` : `Message ${who}…`
-}
-
-function renderRecipients () {
-  const s = state.sessions.get(state.view)
-  const sel = $('#to-select')
-  if (!s || !sel) return
-  const names = new Set(s.status.peers.map((p) => p.name))
-  for (const m of state.messages.get(state.view) || []) {
-    if (m.by !== s.status.me.name) names.add(m.by)
-    if (m.to && m.to !== s.status.me.name) names.add(m.to)
-  }
-  if (state.to) names.add(state.to)
-  const online = new Set(s.status.peers.map((p) => p.name))
-  sel.innerHTML = `<option value="">Everyone</option>` + [...names].sort().map((n) =>
-    `<option value="${esc(n)}" ${n === state.to ? 'selected' : ''}>${esc(n)} (direct${online.has(n) ? '' : ', offline'})</option>`).join('')
-  sel.value = state.to
-  updatePlaceholder()
-}
-
-function renderSessionPanels () {
-  const s = state.sessions.get(state.view)
-  if (!s || !$('#people')) return
-  const st = s.status
-  renderTabs()
-
-  const pill = $('#conn-pill')
-  pill.className = `pill ${st.connected ? 'ok' : 'warn'}`
-  pill.innerHTML = `<span class="dot"></span>${st.connected ? 'Live' : 'Reconnecting…'}`
-
-  const tools = (p) => [...new Set([p.tool, ...(p.agents || [])].filter((t) => t && t !== 'unknown'))]
-  $('#me').innerHTML = `<div class="person">${avatar(st.me.name, st.me.color, st.connected)}<div>
-    <div class="who">${esc(st.me.name)} ${tools(st.me).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
-    <div class="hint">${st.fileCount} shared file${st.fileCount === 1 ? '' : 's'}</div></div></div>`
-  const focusInput = $('#focus-input')
-  if (document.activeElement !== focusInput) focusInput.value = st.me.focus || ''
-
-  $('#online-count').textContent = st.peers.length ? String(st.peers.length) : ''
-  $('#people').innerHTML = st.peers.length
-    ? st.peers.map((p) => `
-      <div class="person">${avatar(p.name, p.color, true)}<div style="min-width:0;flex:1">
-        <div class="who">${esc(p.name)} ${tools(p).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
-        <div class="focus ${p.focus ? '' : 'empty'}">${esc(p.focus || 'No focus set')}</div>
-        ${p.editing.length ? `<div class="files">${p.editing.slice(0, 4).map((e) => `<code title="${e.secondsAgo}s ago">${esc(e.path)}</code>`).join('')}</div>` : ''}
-        <button class="btn sm ghost" style="margin:6px 0 -4px -8px" data-dm="${esc(p.name)}">Message</button>
-      </div></div>`).join('')
-    : '<div class="empty-note">Nobody else is here yet. Click <b>Invite</b> to bring someone in.</div>'
-
-  $('#claims').innerHTML = st.claims.length
-    ? st.claims.map((c) => `<div class="claim"><div class="meta"><code>${esc(c.pattern)}</code>
-        <div class="sub">${c.by === st.me.name ? 'you' : esc(c.by)}${c.note ? ` · ${esc(c.note)}` : ''}</div></div>
-        ${c.by === st.me.name ? `<button class="btn sm ghost icon" data-release="${esc(c.pattern)}" title="Release" aria-label="Release">${I.x}</button>` : ''}</div>`).join('')
-    : '<div class="empty-note">Claim files you’re changing so nobody (human or agent) edits over you.</div>'
-
-  $('#activity').innerHTML = st.activity.length
-    ? st.activity.slice().reverse().slice(0, 40).map((a) => `<div class="feed-item"><span class="when">${esc(ago(a.ts))}</span>
-        <div><b>${a.by === st.me.name ? 'You' : esc(a.by)}</b> ${esc(a.kind)} <code>${esc(a.path)}</code> ${a.detail ? `<span class="detail">${esc(a.detail)}</span>` : ''}</div></div>`).join('')
-    : '<div class="empty-note">File changes will show up here.</div>'
-
-  $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'room ' + st.room
-  renderLogs()
-  renderRecipients()
-}
-
-function renderLogs () {
-  const s = state.sessions.get(state.view)
-  const el = $('#logs')
-  if (!s || !el) return
-  // Chat lines are already in the chat panel.
-  el.innerHTML = s.logs.filter((l) => !l.line.startsWith('💬')).slice(-25).reverse().map((l) => `<div class="log-line"><span class="hint">${esc(clock(l.ts))}</span> ${esc(l.line)}</div>`).join('') || '<div class="empty-note">Nothing yet.</div>'
-}
-
-function renderMessages (incoming = false, force = false) {
-  const el = $('#messages')
-  const s = state.sessions.get(state.view)
-  if (!el || !s) return
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  const list = state.messages.get(state.view) || []
-  const me = s.status.me.name
-  const colors = new Map(s.status.peers.map((p) => [p.name, p.color]))
-  colors.set(me, s.status.me.color)
-  el.innerHTML = list.length
-    ? list.map((m) => {
-      const mine = m.by === me
-      const dm = m.to ? `<span class="dm">${mine ? `to ${esc(m.to)}` : 'direct'}</span>` : ''
-      const file = m.file ? `<a class="file-card" href="/api/sessions/${state.view}/files/${m.id}?t=${encodeURIComponent(TOKEN)}" download="${esc(m.file.name)}">
-          <span class="fi">${I.file}</span><span style="min-width:0"><div class="fn">${esc(m.file.name)}</div><div class="fs">${bytes(m.file.size)} · ${mine ? 'sent' : 'download'}</div></span></a>` : ''
-      return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(m.by, colors.get(m.by))}
-        <div style="min-width:0"><div class="head"><b>${mine ? 'You' : esc(m.by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
-        <div class="bubble">${m.text ? `<div class="text">${esc(m.text)}</div>` : ''}${file}</div></div></div>`
-    }).join('')
-    : `<div class="day-empty"><img src="/logo.svg" alt=""><div><b>Say hi.</b></div><div class="hint">Messages, direct messages and files you share appear here. Drop a file anywhere in this panel to send it.</div></div>`
-  if (force || nearBottom || (incoming && list[list.length - 1]?.by === me)) el.scrollTop = el.scrollHeight
-}
 
 // --------------------------------------------------------------- invite --
-function openInvite (id) {
+export function openInvite (id) {
   const s = state.sessions.get(id)
   if (!s) return
   const d = decodeInvite(s.invite)
@@ -799,8 +434,5 @@ function openInvite (id) {
   back.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
   $('#inv-done', back).focus()
 }
-
-// Refresh relative times.
-setInterval(() => { if (state.view !== 'home') renderSessionPanels() }, 30000)
 
 boot()

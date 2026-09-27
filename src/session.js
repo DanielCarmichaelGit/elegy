@@ -20,9 +20,10 @@ import {
 const LOCAL = Symbol('local')
 const COLORS = ['#e06c75', '#61afef', '#98c379', '#c678dd', '#e5c07b', '#56b6c2', '#d19a66']
 const RECENT_MS = 2 * 60 * 1000
+const AGENT_FEED_CAP = 300
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote' }) {
+  constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -40,6 +41,7 @@ export class Session extends EventEmitter {
     this.claims = this.doc.getMap('claims') // pattern -> { by, pattern, note, ts }
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
+    this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
 
     this.ig = loadIgnore(this.root)
     this.lastKnown = new Map() // path -> text content, or "bin:<sha1>"
@@ -51,6 +53,9 @@ export class Session extends EventEmitter {
     this.warnedLarge = new Set()
     this.agents = new Set()
     this.focus = ''
+    this.kind = kind === 'agent' ? 'agent' : 'human' // an AI agent that joined by itself
+    this.agentSharing = shareAgent !== false
+    this.agentState = null
   }
 
   log (msg) { this.emit('log', msg) }
@@ -132,6 +137,11 @@ export class Session extends EventEmitter {
       this.scheduleStatusWrite()
     })
     this.activity.observe(() => this.scheduleStatusWrite())
+    this.agentFeed.observe((ev) => {
+      const added = []
+      for (const item of ev.changes.added) for (const e of item.content.getContent()) if (e && e.id) added.push(e)
+      if (added.length) this.emit('agent-feed', added)
+    })
     this.doc.on('update', () => this.scheduleStateSave())
     this.ready = true
     this.fetchMissedFiles()
@@ -319,6 +329,7 @@ export class Session extends EventEmitter {
 
   noteMyEdit (rel) {
     const now = Date.now()
+    this.emit('file-changed', { path: rel, by: this.name })
     this.myEdits.set(rel, now)
     const claim = this.claimFor(rel)
     if (claim && claim.by !== this.name) {
@@ -364,6 +375,7 @@ export class Session extends EventEmitter {
     if (rel === '.gitignore' || rel === '.elegyignore') this.ig = loadIgnore(this.root)
 
     if (this.ready) {
+      this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })
       const mine = this.myEdits.get(rel)
       if (mine && Date.now() - mine < RECENT_MS) {
         const who = this.lastEditorOf(rel)
@@ -408,7 +420,10 @@ export class Session extends EventEmitter {
 
   setupPresence () {
     const color = COLORS[Math.abs(hashCode(this.name)) % COLORS.length]
-    this.conn.awareness.setLocalState({ name: this.name, tool: this.tool, color, focus: '', editing: {}, agents: [] })
+    this.conn.awareness.setLocalState({
+      name: this.name, tool: this.tool, color, focus: '', editing: {}, agents: [], kind: this.kind,
+      agent: { tool: null, status: 'idle', sharing: this.agentSharing }
+    })
     this.conn.awareness.on('change', ({ added, removed }, origin) => {
       if (origin === 'local' || origin === 'connection') return
       for (const id of added) {
@@ -611,6 +626,124 @@ export class Session extends EventEmitter {
     })
   }
 
+  // ------------------------------------------------------------ AI feed --
+
+  /** Adds entries from this person's AI chat reader. Dedupes by id, keeps the newest 300 per person. */
+  pushAgentEntries (entries) {
+    if (!this.agentSharing || !entries || !entries.length) return 0
+    const mine = new Set()
+    for (const e of this.agentFeed) if (e && e.by === this.name) mine.add(e.id)
+    const fresh = []
+    for (const e of entries) {
+      if (!e || !e.id || mine.has(e.id)) continue
+      mine.add(e.id)
+      fresh.push({ id: String(e.id), by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text: String(e.text || ''), ts: e.ts || Date.now() })
+    }
+    if (!fresh.length) return 0
+    this.doc.transact(() => {
+      this.agentFeed.push(fresh)
+      this.trimAgentFeed()
+    }, LOCAL)
+    return fresh.length
+  }
+
+  trimAgentFeed (cap = AGENT_FEED_CAP) {
+    const idx = []
+    this.agentFeed.forEach((e, i) => { if (e && e.by === this.name) idx.push(i) })
+    const extra = idx.length - cap
+    // Delete from the end backwards so earlier indexes stay valid.
+    for (let k = extra - 1; k >= 0; k--) this.agentFeed.delete(idx[k], 1)
+  }
+
+  /** Turns sharing of your AI chat on or off, leaving a marker in the feed. */
+  setAgentSharing (on) {
+    on = !!on
+    if (on === this.agentSharing) return on
+    const marker = { id: `${on ? 'resumed' : 'paused'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, by: this.name, tool: null, conv: null, kind: on ? 'resumed' : 'paused', text: '', ts: Date.now() }
+    this.doc.transact(() => {
+      this.agentFeed.push([marker])
+      this.trimAgentFeed()
+    }, LOCAL)
+    this.agentSharing = on
+    this.publishAgentState()
+    try {
+      const file = path.join(this.stateDir, 'config.json')
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+      cfg.shareAgent = on
+      fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 })
+    } catch {}
+    this.scheduleStatusWrite()
+    return on
+  }
+
+  /** Live status from the AI chat reader ("working", "idle", "unavailable"). */
+  setAgentState (state) {
+    this.agentState = state ? { tool: state.tool || null, status: state.status || 'idle', ...(state.reason ? { reason: state.reason } : {}), ...(state.notes ? { notes: state.notes } : {}) } : null
+    this.publishAgentState()
+  }
+
+  publishAgentState () {
+    if (!this.conn) return
+    const st = this.agentState || { tool: null, status: 'idle' }
+    // While paused, partners only learn that sharing is off, not whether you're working.
+    const shared = this.agentSharing ? { ...st, sharing: true } : { tool: st.tool, status: 'idle', sharing: false }
+    this.conn.awareness.setLocalStateField('agent', shared)
+  }
+
+  /** One person's AI feed, oldest first. */
+  agentFeedFor (name, { limit = AGENT_FEED_CAP } = {}) {
+    return this.agentFeed.toArray().filter((e) => e && e.by === name).slice(-limit)
+  }
+
+  // ---------------------------------------------------------- shared files --
+
+  /**
+   * Every shared path with who last edited it (from activity and live
+   * presence) and the claim covering it. Read from the shared doc.
+   */
+  tree () {
+    const edited = new Map()
+    const note = (p, by, ts) => {
+      const cur = edited.get(p)
+      if (!cur || ts > cur.ts) edited.set(p, { by, ts })
+    }
+    for (const a of this.activity) if (a && a.path && a.kind !== 'deleted') note(a.path, a.by, a.ts)
+    const states = this.conn ? this.conn.awareness.getStates() : new Map()
+    for (const [id, st] of states) {
+      if (!st || !st.name) continue
+      const editing = id === this.doc.clientID ? Object.fromEntries(this.myEdits) : (st.editing || {})
+      for (const [p, ts] of Object.entries(editing)) note(p, st.name, ts)
+    }
+    const claims = [...this.claims.values()].map((c) => ({ ...c, match: globMatcher(c.pattern) }))
+    const claimFor = (p) => {
+      const c = claims.find((x) => x.match(p))
+      return c ? { by: c.by, pattern: c.pattern, note: c.note } : null
+    }
+    const out = []
+    for (const p of this.sharedPaths()) {
+      if (!isSafeRelPath(p)) continue
+      const blob = this.blobs.get(p)
+      out.push({ path: p, binary: !!blob && !this.files.has(p), edited: edited.get(p) || null, claim: claimFor(p) })
+    }
+    out.sort((a, b) => a.path.localeCompare(b.path))
+    return {
+      files: out,
+      // Claims on folders or globs that don't match a file yet still show up.
+      claims: [...this.claims.values()].map((c) => ({ by: c.by, pattern: c.pattern, note: c.note, ts: c.ts }))
+    }
+  }
+
+  /** Contents of one shared file, straight from the shared doc (never from disk). */
+  readShared (rel) {
+    rel = String(rel || '').replace(/^\.\//, '')
+    if (!isSafeRelPath(rel)) return null
+    const t = this.files.get(rel)
+    if (t) return { path: rel, text: t.toString() }
+    const b = this.blobs.get(rel)
+    if (b) return { path: rel, binary: true, size: Math.floor(b.data.length * 3 / 4) - (b.data.endsWith('==') ? 2 : b.data.endsWith('=') ? 1 : 0) }
+    return null
+  }
+
   status () {
     const now = Date.now()
     const states = this.conn ? this.conn.awareness.getStates() : new Map()
@@ -621,6 +754,8 @@ export class Session extends EventEmitter {
         name: s.name,
         tool: s.tool,
         color: s.color,
+        kind: s.kind || 'human',
+        agent: s.agent || null,
         agents: s.agents || [],
         focus: s.focus || '',
         editing: Object.entries(s.editing || {})
@@ -632,7 +767,15 @@ export class Session extends EventEmitter {
       room: this.room,
       server: this.server,
       connected: !!(this.conn && this.conn.connected),
-      me: { name: this.name, tool: this.tool, focus: this.focus, agents: [...this.agents], color: this.conn?.awareness.getLocalState()?.color },
+      me: {
+        name: this.name,
+        tool: this.tool,
+        kind: this.kind,
+        focus: this.focus,
+        agents: [...this.agents],
+        color: this.conn?.awareness.getLocalState()?.color,
+        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing }
+      },
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       activity: this.activity.toArray().slice(-30),

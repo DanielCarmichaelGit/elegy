@@ -7,6 +7,7 @@ import crypto from 'node:crypto'
 import { Session } from './session.js'
 import { startControl } from './control.js'
 import { renderStatus } from './status.js'
+import { startAgentReaders } from './agents/index.js'
 
 export const encodeInvite = (c) => Buffer.from(JSON.stringify({ s: c.server, r: c.room, k: c.secret })).toString('base64url')
 
@@ -50,7 +51,7 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, prefer = 'remote', inviteServer, onLog, onFatal, onDebug }) {
+export async function runSession ({ dir, conn, name, tool, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -60,12 +61,15 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
   const invite = encodeInvite({ ...conn, server: inviteServer || conn.server })
+  const previous = readConfig(dir)
+  // Sharing your AI chat is on by default; a pause is remembered for this folder.
+  const shareAgent = !(previous && previous.room === conn.room && previous.shareAgent === false)
   fs.mkdirSync(path.join(dir, '.elegy'), { recursive: true })
   fs.writeFileSync(path.join(dir, '.elegy', 'config.json'),
-    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined }, null, 2), { mode: 0o600 })
+    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent }, null, 2), { mode: 0o600 })
   ensureGitExclude(dir)
 
-  const session = new Session({ dir, ...conn, name, tool, prefer })
+  const session = new Session({ dir, ...conn, name, tool, prefer, kind, shareAgent })
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
@@ -83,6 +87,17 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   const control = await startControl(session)
   remember({ dir, room: conn.room, server: conn.server, name, tool })
 
+  // Share this person's AI chat (Claude Code, Cursor) with the room.
+  const readers = agentFeed
+    ? startAgentReaders({
+      dir,
+      ...readerOptions,
+      onEntries: (entries) => session.pushAgentEntries(entries),
+      onState: (state) => session.setAgentState(state),
+      onLog: (line) => onLog && onLog(line)
+    })
+    : null
+
   let stopped = false
   return {
     session,
@@ -91,6 +106,7 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
     stop: async () => {
       if (stopped) return
       stopped = true
+      if (readers) readers.stop()
       await control.close()
       await session.stop()
     }
