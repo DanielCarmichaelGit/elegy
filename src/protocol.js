@@ -9,6 +9,9 @@ export const MSG_SYNC = 0
 export const MSG_AWARENESS = 1
 export const MSG_QUERY_AWARENESS = 3
 
+// WebSocket close code the relay uses when a room is over its size quota.
+export const CLOSE_ROOM_FULL = 4413
+
 // Largest file that can be sent in chat.
 export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
 

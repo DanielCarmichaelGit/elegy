@@ -23,12 +23,13 @@ const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true }) {
+  constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
     this.room = room
     this.secret = secret
+    this.key = key
     this.name = name
     this.tool = tool
     this.prefer = prefer
@@ -68,6 +69,7 @@ export class Session extends EventEmitter {
       server: this.server,
       room: this.room,
       secret: this.secret,
+      key: this.key,
       doc: this.doc,
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
@@ -493,7 +495,7 @@ export class Session extends EventEmitter {
     if (st.size > MAX_SHARED_FILE_BYTES) throw new Error(`${filePath} is larger than ${MAX_SHARED_FILE_BYTES / 1024 / 1024} MB`)
     const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}`, {
       method: 'POST',
-      headers: { 'x-elegy-secret': this.secret, 'content-type': 'application/octet-stream' },
+      headers: { 'x-elegy-secret': this.secret, 'content-type': 'application/octet-stream', ...(this.key ? { 'x-elegy-key': this.key } : {}) },
       body: fs.readFileSync(abs)
     })
     if (!res.ok) throw new Error(`upload failed: ${await res.text()}`)

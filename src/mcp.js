@@ -11,6 +11,7 @@ import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
+import { defaultRelay, normalizeRelay, keyFor } from './settings.js'
 
 const NOT_RUNNING = 'There is no live elegy session for this project. If the user gave you an invite code, join with ' +
   'elegy_join_session. To start a new session, use elegy_start_session. A person can also run `elegy join` or `elegy ui`.'
@@ -214,7 +215,7 @@ export async function runMcp () {
   })
 
   server.registerTool('elegy_start_session', {
-    description: 'Start a new live elegy session for a folder, as an AI agent, and get an invite code for others. Needs a relay server address (ws:// or wss://), unless ELEGY_SERVER is set.',
+    description: 'Start a new live elegy session for a folder, as an AI agent, and get an invite code for others. Uses the user\'s default relay (set with `elegy relay set`) unless you pass one.',
     inputSchema: {
       relay: z.string().optional().describe('Relay address, e.g. wss://relay.example.com'),
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
@@ -222,9 +223,10 @@ export async function runMcp () {
     }
   }, async ({ relay, folder, name }) => {
     try {
-      const server_ = relay || process.env.ELEGY_SERVER
-      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or set ELEGY_SERVER.')
-      const r = await startAs({ conn: newConn(server_), folder: folder || '.', name })
+      const d = defaultRelay()
+      const server_ = relay ? normalizeRelay(relay) : d && d.relay
+      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or have them run `elegy relay set <url>`.')
+      const r = await startAs({ conn: newConn(server_, relay ? keyFor(server_) : d.key), folder: folder || '.', name })
       return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite code below with collaborators.`) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }

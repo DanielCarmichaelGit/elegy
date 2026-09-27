@@ -1,4 +1,8 @@
 node_modules
 .git
+.github
 test
+docs
 elegy-data
+.elegy
+*.md

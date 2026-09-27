@@ -10,6 +10,13 @@ import { fileURLToPath } from 'node:url'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions } from './runner.js'
 import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
+import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
+
+// The saved default relay, without its key.
+const savedRelay = () => {
+  const s = getSettings()
+  return s.relay ? { url: s.relay, hasKey: !!s.relayKey } : null
+}
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui')
 const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
@@ -41,7 +48,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   }
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
 
-  async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl }) {
+  async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault }) {
     if (!dir) throw new Error('Choose a project folder.')
     dir = path.resolve(expandHome(dir))
     const id = idFor(dir)
@@ -54,7 +61,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     } else if (mode === 'rejoin') {
       const saved = readConfig(dir)
       if (!saved) throw new Error('No previous session in that folder.')
-      conn = { server: saved.server, room: saved.room, secret: saved.secret }
+      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}) }
       inviteServer = saved.inviteServer
       name = name || saved.name
       tool = tool || saved.tool
@@ -67,7 +74,12 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
         if (!/^wss?:\/\//.test(inviteServer)) inviteServer = inviteServer.replace(/^http/, 'ws')
       } else {
         if (!server) throw new Error('Enter the relay address, or host one on this computer.')
-        conn = newConn(server.trim())
+        const url = normalizeRelay(server)
+        conn = newConn(url, relayKey || keyFor(url))
+        if (saveDefault) {
+          const prev = getSettings()
+          saveSettings({ relay: url, relayKey: relayKey || (prev.relay === url ? prev.relayKey : undefined) })
+        }
       }
     }
 
@@ -132,7 +144,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
       recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))),
-      defaults: { name: os.userInfo().username, home: os.homedir(), cwd: process.cwd() },
+      defaults: { name: os.userInfo().username, home: os.homedir(), cwd: process.cwd(), relay: savedRelay() },
       relay: relay ? { port: relay.port, lan: `ws://${lanAddress()}:${relay.port}` } : null,
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
@@ -155,6 +167,9 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       return f
     },
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
+    'POST /api/relay/check': async (b) => {
+      try { return await checkRelay(b.url) } catch (err) { throw httpError(400, err.message) }
+    },
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.
     'POST /api/shutdown': () => {

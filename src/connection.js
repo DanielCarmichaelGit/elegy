@@ -4,6 +4,7 @@
 import { EventEmitter } from 'node:events'
 import WebSocket from 'ws'
 import {
+  CLOSE_ROOM_FULL,
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage
@@ -20,9 +21,10 @@ export class Connection extends EventEmitter {
    * @param {import('yjs').Doc} opts.doc
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    */
-  constructor ({ server, room, secret, doc, beforeRemote }) {
+  constructor ({ server, room, secret, key, doc, beforeRemote }) {
     super()
-    this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?secret=${encodeURIComponent(secret || '')}`
+    // `key` is only needed to create a room on a relay that requires one.
+    this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?secret=${encodeURIComponent(secret || '')}${key ? `&key=${encodeURIComponent(key)}` : ''}`
     this.doc = doc
     this.beforeRemote = beforeRemote || (() => {})
     this.awareness = new awarenessProtocol.Awareness(doc)
@@ -68,9 +70,14 @@ export class Connection extends EventEmitter {
 
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
-      if (res.statusCode === 401 || res.statusCode === 400) {
+      if (res.statusCode === 403) {
+        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `elegy relay set <url> --key <key>`.'))
+        this.close()
+      } else if (res.statusCode === 401 || res.statusCode === 400) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))
         this.close()
+      } else if (res.statusCode === 429) {
+        this.emit('warn', 'relay says there are too many connections from this network; retrying')
       } else {
         this.emit('warn', `relay responded ${reason}`)
       }
@@ -78,7 +85,11 @@ export class Connection extends EventEmitter {
 
     ws.on('error', (err) => this.emit('warn', `connection error: ${err.message}`))
 
-    ws.on('close', () => {
+    ws.on('close', (code) => {
+      if (code === CLOSE_ROOM_FULL) {
+        this.emit('fatal', new Error('This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'))
+        this.closed = true
+      }
       const wasConnected = this.connected
       this.connected = false
       this.synced = false

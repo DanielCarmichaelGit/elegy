@@ -8,8 +8,10 @@ const HELP = `elegy: real-time pair vibe coding with any AI tool
 
 Usage:
   elegy ui                                            Open the app in your browser (start, join, chat)
-  elegy serve [--port 4321] [--data ./elegy-data]   Run a relay server
-  elegy join --server <ws(s)://relay>                 Start a new session in this folder
+  elegy serve [--port 4321] [--data ./elegy-data]   Run a relay server (see docs/hosting.md)
+  elegy relay set <url> [--key <key>]                 Use a hosted relay by default
+  elegy relay [check [url] | clear]                   Show, test, or forget the default relay
+  elegy join [--server <ws(s)://relay>]               Start a new session in this folder
   elegy join <invite-code>                            Join a partner's session in this folder
   elegy join                                          Rejoin this folder's last session
   elegy setup                                         Connect Claude Code / Cursor / others via MCP
@@ -43,6 +45,7 @@ async function main () {
   switch (cmd) {
     case 'serve': return serve()
     case 'ui': return ui()
+    case 'relay': return relayCmd()
     case 'join': return join()
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
@@ -66,12 +69,15 @@ async function main () {
 }
 
 async function serve () {
-  const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, data: { type: 'string' } } })
+  const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, data: { type: 'string' }, key: { type: 'string' } } })
   const { startServer } = await import('../src/server.js')
   const port = Number(values.port || process.env.PORT || 4321)
   const dataDir = path.resolve(values.data || process.env.ELEGY_DATA || './elegy-data')
-  const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir })
+  const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir, ...(values.key ? { relayKey: values.key } : {}) })
+  const c = srv.config
   console.log(`elegy relay listening on :${srv.port} (data: ${dataDir})`)
+  console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set ELEGY_RELAY_KEY to restrict)'}`)
+  console.log(`  limits: ${Math.round(c.maxRoomBytes / 1048576)} MB per session, ${Math.round(c.maxRoomFileBytes / 1048576)} MB of shared files, ${c.maxConnsPerIp} connections per address, idle sessions removed after ${c.roomTtlDays} days`)
   console.log(`start a session with:  elegy join --server ws://<this-host>:${srv.port}`)
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('relay', { port: srv.port, dataDir })
@@ -102,9 +108,13 @@ async function join () {
     if (values.room) conn.room = values.room
     if (values.secret || process.env.ELEGY_SECRET) conn.secret = values.secret || process.env.ELEGY_SECRET
   } else if (saved.server) {
-    conn = { server: saved.server, room: saved.room, secret: saved.secret }
+    conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}) }
   } else {
-    fail('Give a relay to start a session (elegy join --server wss://…) or an invite code to join one.\nOr run `elegy ui` to do it in your browser.')
+    const { defaultRelay } = await import('../src/settings.js')
+    const d = defaultRelay()
+    if (!d) fail('Give a relay to start a session (elegy join --server wss://…), set a default with `elegy relay set <url>`,\nor pass an invite code to join one. Or run `elegy ui` to do it in your browser.')
+    conn = newConn(d.relay, d.key)
+    console.log(`starting a new session on your default relay ${d.relay}`)
   }
 
   const stamp = () => new Date().toLocaleTimeString()
@@ -141,6 +151,42 @@ async function join () {
   }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
+}
+
+async function relayCmd () {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { key: { type: 'string' } } })
+  const { getSettings, saveSettings, normalizeRelay, checkRelay } = await import('../src/settings.js')
+  const [sub, arg] = positionals
+  const show = (h) => `ok · ${h.latencyMs} ms · ${h.connections} connection(s) · ${h.requiresKey ? 'starting sessions needs a relay key' : 'open to anyone'}`
+  if (sub === 'set') {
+    if (!arg) fail('usage: elegy relay set <url> [--key <key>]')
+    let url
+    try { url = normalizeRelay(arg) } catch (err) { fail(err.message) }
+    try {
+      const h = await checkRelay(url)
+      console.log(`${url}: ${show(h)}`)
+      if (h.requiresKey && !values.key && getSettings().relay !== url) console.log('note: this relay needs a key to start sessions; add --key <key> (joining others\' sessions works without it)')
+    } catch (err) {
+      console.log(`warning: ${err.message}. Saving it anyway.`)
+    }
+    const prev = getSettings()
+    saveSettings({ relay: url, relayKey: values.key ?? (prev.relay === url ? prev.relayKey : undefined) })
+    return console.log(`default relay set. \`elegy join\` and the app now start sessions on ${url}.`)
+  }
+  if (sub === 'clear') {
+    saveSettings({ relay: undefined, relayKey: undefined })
+    return console.log('default relay cleared')
+  }
+  const s = getSettings()
+  const url = sub === 'check' ? (arg || s.relay) : s.relay
+  if (!sub && !url) return console.log('no default relay. Set one with `elegy relay set wss://your-relay.example.com` (see docs/hosting.md).')
+  if (!url) fail('usage: elegy relay check <url>')
+  try {
+    const h = await checkRelay(url)
+    console.log(`${normalizeRelay(url)}${url === s.relay ? ' (default)' : ''}: ${show(h)}${url === s.relay && s.relayKey ? ' · key saved' : ''}`)
+  } catch (err) {
+    fail(`${url}: ${err.message}`)
+  }
 }
 
 async function ui () {

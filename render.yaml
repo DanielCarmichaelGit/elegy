@@ -1,0 +1,21 @@
+# Render Blueprint for an elegy relay. See docs/hosting.md.
+# New > Blueprint, pick this repo. Render generates the relay key; copy it
+# from the service's Environment tab.
+services:
+  - type: web
+    name: elegy-relay
+    runtime: docker
+    plan: starter # persistent disks need a paid instance
+    numInstances: 1 # rooms live in memory: exactly one instance
+    healthCheckPath: /healthz
+    envVars:
+      - key: ELEGY_DATA
+        value: /data
+      - key: ELEGY_TRUST_PROXY
+        value: "1"
+      - key: ELEGY_RELAY_KEY
+        generateValue: true
+    disk:
+      name: elegy-data
+      mountPath: /data
+      sizeGB: 5

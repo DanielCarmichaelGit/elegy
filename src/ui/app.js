@@ -180,7 +180,8 @@ function toolOptions (selected) {
 function homeHtml () {
   const name = recall('name', state.defaults.name || '')
   const tool = recall('tool', 'Claude Code')
-  const relayMode = recall('relayMode', 'host')
+  const saved = state.defaults.relay // your hosted relay, from `elegy relay set` or this form
+  const relayMode = recall('relayMode', saved ? 'remote' : 'host')
   const running = [...state.sessions.values()]
   return `
   <main class="home">
@@ -205,8 +206,8 @@ function homeHtml () {
         </div>
         <div class="relay-box">
           <div class="segmented" role="tablist">
+            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">Hosted relay</button>
             <button type="button" data-relay="host" class="${relayMode === 'host' ? 'on' : ''}">Host relay here</button>
-            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">Use a relay server</button>
           </div>
           <div id="relay-host" ${relayMode === 'host' ? '' : 'hidden'}>
             <div class="field">
@@ -218,8 +219,14 @@ function homeHtml () {
           <div id="relay-remote" ${relayMode === 'remote' ? '' : 'hidden'}>
             <div class="field">
               <label for="c-server">Relay address</label>
-              <input class="input" id="c-server" name="server" placeholder="wss://relay.example.com" value="${esc(recall('server'))}">
+              <input class="input" id="c-server" name="server" placeholder="wss://relay.example.com" value="${esc(saved ? saved.url : recall('server'))}" autocomplete="off" spellcheck="false">
+              <span class="hint" id="relay-check">${saved ? 'Your default relay' : 'Anyone you invite connects here too. See docs/hosting.md to run your own.'}</span>
             </div>
+            <div class="field">
+              <label for="c-key">Relay key <span class="hint">(only if your relay needs one)</span></label>
+              <input class="input" id="c-key" name="relayKey" type="password" autocomplete="off" placeholder="${saved && saved.hasKey ? 'Saved' : 'Not needed for most relays'}">
+            </div>
+            <label class="check"><input type="checkbox" name="saveDefault" ${saved ? '' : 'checked'}> Make this my default relay</label>
           </div>
         </div>
         <button class="btn grad full" type="submit">Start session</button>
@@ -278,7 +285,7 @@ function bindHome () {
   const join = $('#join-form')
   if (!create) return
 
-  let relayMode = recall('relayMode', 'host')
+  let relayMode = recall('relayMode', state.defaults.relay ? 'remote' : 'host')
   create.querySelectorAll('[data-relay]').forEach((b) => {
     b.onclick = () => {
       relayMode = b.dataset.relay
@@ -289,6 +296,26 @@ function bindHome () {
     }
   })
   document.querySelectorAll('[data-browse]').forEach((b) => { b.onclick = () => pickFolder($(`#${b.dataset.browse}`)) })
+
+  // Check the relay address as soon as it's entered.
+  const serverInput = $('#c-server')
+  const checkRelay = async () => {
+    const url = serverInput.value.trim()
+    const hint = $('#relay-check')
+    if (!url) return
+    hint.className = 'hint'
+    hint.textContent = 'Checking…'
+    try {
+      const r = await api('POST', '/api/relay/check', { url })
+      hint.className = 'hint ok'
+      hint.textContent = `✓ Online · ${r.latencyMs} ms${r.requiresKey ? ' · needs a relay key to start sessions' : ''}`
+    } catch (err) {
+      hint.className = 'hint warn'
+      hint.textContent = err.message
+    }
+  }
+  serverInput.addEventListener('change', checkRelay)
+  if (serverInput.value && relayMode === 'remote') checkRelay()
 
   $('#j-invite').addEventListener('input', (e) => {
     const inv = e.target.value.trim()
@@ -305,9 +332,11 @@ function bindHome () {
     const f = new FormData(create)
     remember('name', f.get('name')); remember('tool', f.get('tool')); remember('createDir', f.get('dir'))
     remember('publicUrl', f.get('publicUrl') || ''); remember('server', f.get('server') || '')
+    if (relayMode === 'remote' && f.get('saveDefault')) state.defaults.relay = { url: f.get('server'), hasKey: !!f.get('relayKey') || !!state.defaults.relay?.hasKey }
     await submit(create, '#create-error', {
       mode: 'create', dir: f.get('dir'), name: f.get('name'), tool: f.get('tool'),
-      hostRelay: relayMode === 'host', publicUrl: f.get('publicUrl'), server: f.get('server')
+      hostRelay: relayMode === 'host', publicUrl: f.get('publicUrl'), server: f.get('server'),
+      relayKey: f.get('relayKey') || undefined, saveDefault: !!f.get('saveDefault')
     }, true)
   }
   join.onsubmit = async (e) => {
