@@ -18,6 +18,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
+import { handleAgentMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
@@ -35,7 +36,15 @@ const MAX_SCOPES = 20
 const ROLES = ['editor', 'viewer']
 const MB = 1024 * 1024
 const DAY = 24 * 60 * 60 * 1000
-const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const LOGO = path.join(ROOT, 'assets', 'logo.svg')
+// The website: share a folder or join from an invite link, right in the browser.
+const WEB = {
+  '/': ['web/index.html', 'text/html; charset=utf-8'],
+  '/app.css': ['web/app.css', 'text/css; charset=utf-8'],
+  '/app.js': ['web/dist/app.js', 'text/javascript; charset=utf-8'],
+  '/app.js.map': ['web/dist/app.js.map', 'application/json']
+}
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest()
 const sameSecret = (a, b) => a.length === b.length && crypto.timingSafeEqual(a, b)
 
@@ -48,6 +57,7 @@ export function relayConfig (opts = {}) {
     maxRoomBytes: num(opts.maxRoomBytes ?? env.COWOVE_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
     maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.COWOVE_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
     maxConnsPerIp: num(opts.maxConnsPerIp ?? env.COWOVE_MAX_CONNS_PER_IP, 50),
+    maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.COWOVE_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.COWOVE_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
     trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.COWOVE_TRUST_PROXY || '')
@@ -530,6 +540,16 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const startedAt = Date.now()
   const rooms = new Map() // loaded rooms only
   const ipConns = new Map()
+  // Sessions anyone can start (no relay key) are rate-limited per address.
+  const newRooms = new Map() // ip -> creation timestamps in the last hour
+  const canCreate = (ip) => {
+    if (!cfg.maxNewRoomsPerHour) return true
+    const cutoff = Date.now() - 60 * 60 * 1000
+    const recent = (newRooms.get(ip) || []).filter((t) => t > cutoff)
+    if (recent.length) newRooms.set(ip, recent); else newRooms.delete(ip)
+    return recent.length < cfg.maxNewRoomsPerHour
+  }
+  const noteCreated = (ip) => newRooms.set(ip, [...(newRooms.get(ip) || []), Date.now()])
 
   const getRoom = (name) => {
     let room = rooms.get(name)
@@ -562,6 +582,25 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     return req.socket.remoteAddress || 'unknown'
   }
 
+  // AI links: a browser's token -> the session and name that browser is in now,
+  // so the person's AI can use /mcp/<token> (see relay-mcp.js). Tokens are stored hashed.
+  const linksFile = dataDir && path.join(dataDir, 'agent-links.json')
+  const links = new Map()
+  try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(linksFile, 'utf8')))) links.set(k, v) } catch {}
+  let linksTimer = null
+  const saveLinks = () => {
+    if (!linksFile || linksTimer) return
+    linksTimer = setTimeout(() => {
+      linksTimer = null
+      const cutoff = Date.now() - 30 * DAY
+      for (const [k, v] of links) if ((v.tabSeenAt || 0) < cutoff) links.delete(k)
+      try { fs.writeFileSync(linksFile, JSON.stringify(Object.fromEntries(links))) } catch {}
+    }, 2000)
+    linksTimer.unref()
+  }
+  const tokenKey = (t) => hash(t).toString('hex')
+  const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
+
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-relay-')), 'files')
 
@@ -588,16 +627,70 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
       return res.end(joinPage(j[1]))
     }
-    const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
-    if (!m) {
-      if (url.pathname !== '/') return text(404, 'not found')
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    if (url.pathname === '/status') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(statusPage(stats()))
     }
+    if (WEB[url.pathname] && req.method === 'GET') {
+      const [file, type] = WEB[url.pathname]
+      let body
+      try { body = fs.readFileSync(path.join(ROOT, file)) } catch {
+        // Not built (a git checkout without `npm run build`): the relay still works.
+        if (url.pathname !== '/') return text(404, 'not found')
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        return res.end(statusPage(stats()))
+      }
+      res.writeHead(200, {
+        'content-type': type,
+        'cache-control': url.pathname === '/' ? 'no-cache' : 'public, max-age=300',
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
+        ...(url.pathname === '/' ? { 'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'" } : {})
+      })
+      return res.end(body)
+    }
+    if (url.pathname === '/agent/link' && req.method === 'POST') {
+      return readJson(req, 4096, (err, body) => {
+        if (err) return text(400, err.message)
+        const { token, room: roomName, secret, name, tool } = body || {}
+        if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
+        const room = getRoom(roomName)
+        if (!room.exists || room.authorize(String(secret || ''), '') !== 'editor') { dropIfUnused(room); return text(403, 'wrong room secret') }
+        if (!room.conns.size) room.onEmpty && room.onEmpty()
+        const k = tokenKey(token)
+        const prev = links.get(k) || {}
+        links.set(k, { room: roomName, name: name.trim().slice(0, 60), tool: String(tool || '').slice(0, 40), tabSeenAt: Date.now(), aiSeenAt: prev.aiSeenAt || 0 })
+        saveLinks()
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ ok: true, aiSeenAt: prev.aiSeenAt || 0 }))
+      })
+    }
+    const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
+    if (mm) {
+      const k = tokenKey(mm[1])
+      const link = links.get(k) || null
+      let room = null
+      if (link) {
+        room = getRoom(link.room)
+        if (!room.exists) { dropIfUnused(room); room = null } else {
+          link.aiSeenAt = Date.now()
+          saveLinks()
+        }
+      }
+      handleAgentMcp({ req, res, room, link: room ? link : null, toolHint: url.searchParams.get('tool') || '' })
+        .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
+        .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
+      return
+    }
+    const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
+    if (!m) return text(404, 'not found')
 
     const [, name, id] = m
     const room = getRoom(name)
+    const creating = !room.exists
+    if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
     const auth = room.authorize(req.headers['x-cowove-secret'] || '', req.headers['x-cowove-key'] || '')
+    if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(clientIp(req))
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
@@ -632,7 +725,10 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const ip = clientIp(req)
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
+    const creating = !room.exists
+    if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret)
+    if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(ip)
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
@@ -717,6 +813,19 @@ function dirSize (dir) {
   let total = 0
   try { for (const f of fs.readdirSync(dir)) total += fs.statSync(path.join(dir, f)).size } catch {}
   return total
+}
+
+function readJson (req, limit, done) {
+  let size = 0
+  const chunks = []
+  req.on('data', (c) => {
+    size += c.length
+    if (size > limit) { req.destroy(); done(new Error('too large')) } else chunks.push(c)
+  })
+  req.on('end', () => {
+    if (size > limit) return
+    try { done(null, JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { done(new Error('bad json')) }
+  })
 }
 
 function receiveFile (req, dir, room, done) {

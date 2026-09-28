@@ -24,8 +24,9 @@ Usage:
   cowove focus <what you're doing>                     Tell collaborators what you're working on
   cowove claim <path|glob> [reason]                    Mark files as yours for now
   cowove release <path|glob|*>                         Release a claim
-  cowove invite                                        Print this session's invite link
+  cowove invite                                        Print this session's invite code
   cowove stop                                          Shut down everything cowove is running (relay, app, syncs)
+  cowove doctor [folder] [--watch 30]                  Check what cowove can see of your Claude Code / Cursor chats
   cowove mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
@@ -61,6 +62,12 @@ async function main () {
     case 'release': return simple('/release', { pattern: argv[0] || '*' }, (r) => `released ${r.released} claim(s)`)
     case 'invite': return invite()
     case 'stop': return stopAll()
+    case 'doctor': {
+      const i = argv.indexOf('--watch')
+      const secs = i >= 0 ? Number(argv[i + 1]) || 30 : 0
+      const dir = argv.find((a, k) => !a.startsWith('--') && !(i >= 0 && k === i + 1))
+      return (await import('../src/doctor.js')).doctor({ dir, watchSeconds: secs })
+    }
     case undefined: case '-h': case '--help': case 'help':
       process.stdout.write(HELP); return
     default:

@@ -13,20 +13,12 @@ import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
 import { defaultRelay, normalizeRelay, keyFor } from './settings.js'
+import { toolLabel } from './agents/common.js'
+
+export { toolLabel }
 
 const NOT_RUNNING = 'There is no live cowove session for this project. If the user gave you an invite link, join with ' +
   'cowove_join_session. To start a new session, use cowove_start_session. A person can also run `cowove join` or `cowove ui`.'
-
-/** "claude-code" -> "Claude Code" etc., from the MCP client's name. */
-export function toolLabel (client) {
-  const n = String(client || '')
-  if (/claude/i.test(n)) return 'Claude Code'
-  if (/cursor/i.test(n)) return 'Cursor'
-  if (/codex/i.test(n)) return 'Codex'
-  if (/windsurf|codeium/i.test(n)) return 'Windsurf'
-  if (/zed/i.test(n)) return 'Zed'
-  return n || 'AI agent'
-}
 
 export async function runMcp () {
   const server = new McpServer(
@@ -167,6 +159,8 @@ export async function runMcp () {
       kind: 'agent',
       joined: !inviteServer && !conn.viewSecret,
       inviteServer,
+      // This agent's own chat lives where it was started, which may be above the synced folder.
+      readerOptions: { chatDir: process.cwd() },
       onLog: (line) => { logs.push(line); if (logs.length > 50) logs.shift() },
       onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() }
     })

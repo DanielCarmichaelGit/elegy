@@ -7,8 +7,11 @@
     "cowove": "bin/cowove.js"
   },
   "scripts": {
+    "build": "node scripts/build-web.js",
+    "pretest": "node scripts/build-web.js",
     "test": "node --test test/*.test.js",
     "serve": "node bin/cowove.js serve",
+    "prepack": "node scripts/build-web.js",
     "app": "electron .",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
@@ -33,8 +36,15 @@
   },
   "devDependencies": {
     "electron": "^44.4.5",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2"
   },
+  "files": [
+    "bin",
+    "src",
+    "assets",
+    "web"
+  ],
   "main": "desktop/main.js",
   "build": {
     "appId": "dev.cowove.app",

@@ -1,4 +1,16 @@
-# cowove relay. Build: docker build -t cowove-relay .   Run: see docs/hosting.md
+# cowove relay + website. Build: docker build -t cowove-relay .   Run: see docs/hosting.md
+
+# Bundle the website (needs dev dependencies; they don't ship in the image).
+FROM node:22-alpine AS web
+WORKDIR /app
+COPY package.json package-lock.json ./
+# The desktop app's Electron is a dev dependency too; the website doesn't need it.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+RUN npm ci
+COPY scripts ./scripts
+COPY src ./src
+RUN npm run build
+
 FROM node:22-alpine
 ENV NODE_ENV=production
 WORKDIR /app
@@ -8,6 +20,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY bin ./bin
 COPY src ./src
 COPY assets ./assets
+COPY web ./web
+COPY --from=web /app/web/dist ./web/dist
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data && chown node:node /data
 ENV COWOVE_DATA=/data \

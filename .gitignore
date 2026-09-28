@@ -3,3 +3,4 @@ node_modules/
 cowove-data/
 .superpowers/
 dist/
+web/dist/

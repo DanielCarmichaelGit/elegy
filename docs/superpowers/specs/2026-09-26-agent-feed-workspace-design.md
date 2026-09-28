@@ -6,7 +6,7 @@ Status: draft, awaiting review
 ## Goal
 
 Let collaborators watch each other's AI coding conversations live, and see
-and claim the project's files, from the `elegy ui` session screen. elegy stays
+and claim the project's files, from the `cowove ui` session screen. cowove stays
 tool-agnostic for syncing; the feed is best-effort per tool, starting with
 Claude Code and Cursor.
 
@@ -29,7 +29,7 @@ Claude Code and Cursor.
 ```
   your machine                                         partner's machine
   ~/.claude/projects/…/*.jsonl ─┐
-  Cursor state.vscdb ───────────┤ agent readers          elegy ui
+  Cursor state.vscdb ───────────┤ agent readers          cowove ui
                                 ▼ (src/agents/)            ▲ feed, tree, file view
                            Session.agentFeed  ──Yjs──►  Session.agentFeed
                            awareness.agent    ──────►   awareness.agent
@@ -37,8 +37,8 @@ Claude Code and Cursor.
 
 ### 1. Agent readers (`src/agents/`)
 
-Each reader runs inside the process that syncs a folder (`elegy join` or
-`elegy ui`), watches only its own user's tool, and emits normalized entries.
+Each reader runs inside the process that syncs a folder (`cowove join` or
+`cowove ui`), watches only its own user's tool, and emits normalized entries.
 
 ```js
 // src/agents/index.js
@@ -88,9 +88,21 @@ Verified against Cursor's storage on this machine (composerData `_v: 3`):
   - `bubbleId:<id>:<bubbleId>` → `{ type: 1|2, text, toolFormerData? }`.
     `type 1` → `prompt`; `type 2` with `text` → `reply`; `toolFormerData.name`
     → `action`.
-- Open both databases read-only with `node:sqlite`
-  (`new DatabaseSync(path, { readOnly: true })`) and poll every 2 seconds for
-  composers whose `lastUpdatedAt` changed.
+- Newer Cursor versions also list conversations globally: global `ItemTable`
+  key `composer.composerHeaders` → `allComposers[]` tagged with
+  `workspaceIdentifier` (matched to this workspace's id or folder). Both lists
+  are read, and every workspace folder that matches the synced folder is used.
+- Open the databases read-only with `node:sqlite` and poll every second. A
+  poll only reads when `PRAGMA data_version` says Cursor wrote something. The
+  workspace list's `lastUpdatedAt` is written lazily, so it is **not** used to
+  decide whether to re-read: the most recent and recently active
+  conversations' `composerData` are re-read on every change.
+- A bubble is shared as soon as a later bubble exists; the newest one (still
+  streaming) is shared once it hasn't changed for 2.5 seconds. Bubbles listed
+  before they're written are picked up on a later poll.
+- Cursor writes these databases constantly while streaming, so "database is
+  locked" and similar errors are transient: the poll is skipped and retried
+  (busy timeout 200 ms, since `node:sqlite` blocks).
 - `node:sqlite` needs Node 22.13+. If it is missing, or the layout doesn't
   match (missing table/keys, JSON parse errors), the reader reports
   `unavailable` with a reason, logs once, and stops. Syncing is unaffected.
@@ -122,7 +134,7 @@ flags, tokens, URLs and paths are never shared.
   entries.
 - `setAgentSharing(on)`: when turned off, new entries are dropped and one
   `{ kind: 'paused' }` entry is pushed; turning it back on pushes
-  `{ kind: 'resumed' }`. The choice is saved in `.elegy/config.json`
+  `{ kind: 'resumed' }`. The choice is saved in `.cowove/config.json`
   (`shareAgent: false`) so it survives restarts.
 - Awareness gains `agent: { tool, status, sharing, reason? }` for the live
   "working…" indicator and the people menu.
@@ -131,7 +143,7 @@ flags, tokens, URLs and paths are never shared.
   side, so open file tabs refresh.
 
 The session starts the readers in `runSession` (`src/runner.js`) and stops
-them in `run.stop()`, so `elegy join` and `elegy ui` behave the same.
+them in `run.stop()`, so `cowove join` and `cowove ui` behave the same.
 
 ### 3. Local app API (`src/ui-server.js`)
 
@@ -225,7 +237,7 @@ top bar.
 - `test/ui.test.js` additions: `/tree`, `/file` (text, binary, rejected
   `../` and unknown paths), folder claim via the existing route, `/sharing`,
   `/feed`.
-- Manual: two `elegy ui` sessions on this machine, one driven by a real
+- Manual: two `cowove ui` sessions on this machine, one driven by a real
   Claude Code conversation, checked in the browser.
 
 ## Out of scope

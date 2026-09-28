@@ -7,7 +7,6 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import * as Y from 'yjs'
-import diff from 'fast-diff'
 import { watch } from 'chokidar'
 import { Connection } from './connection.js'
 import { loadIdentity } from './identity.js'
@@ -17,6 +16,9 @@ import {
   loadIgnore, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
   toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES
 } from './fsutil.js'
+import { applyTextDiff } from './textdiff.js'
+
+export { applyTextDiff }
 
 const LOCAL = Symbol('local')
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
@@ -1108,18 +1110,6 @@ export class Session extends EventEmitter {
   }
 }
 
-/** Applies the minimal set of inserts/deletes to turn ytext into `next`. */
-export function applyTextDiff (ytext, next) {
-  const prev = ytext.toString()
-  if (prev === next) return ''
-  let pos = 0; let added = 0; let removed = 0
-  for (const [op, str] of diff(prev, next)) {
-    if (op === diff.EQUAL) pos += str.length
-    else if (op === diff.DELETE) { ytext.delete(pos, str.length); removed += countLines(str) } else { ytext.insert(pos, str); pos += str.length; added += countLines(str) }
-  }
-  return `+${added} -${removed}`
-}
-
 export function formatMessage (m) {
   const head = m.to ? `${m.by} → ${m.to} (direct)` : m.by
   const file = m.file ? ` 📎 ${m.file.name} (${formatBytes(m.file.size)})` : ''
@@ -1129,11 +1119,6 @@ export function formatMessage (m) {
 function safeName (name) {
   const base = path.basename(String(name)).replace(/[^A-Za-z0-9._ -]/g, '_').replace(/^\.+/, '')
   return base.slice(0, 120) || 'file'
-}
-
-function countLines (s) {
-  const n = s.split('\n').length - 1
-  return n || 1
 }
 
 function hashCode (s) {

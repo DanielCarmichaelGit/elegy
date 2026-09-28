@@ -43,6 +43,23 @@ within milliseconds. Your agents can also see what the other agents are doing.
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `cowove` CLI or read `.cowove/STATUS.md`.
 
+## The website (no install)
+
+Any relay started with `cowove serve` also serves the cowove website. Open it
+in Chrome, Edge, Brave or Arc, type your name, click **Share a folder**, and
+send the invite link it gives you. Whoever opens the link picks a folder, and
+the project appears there and stays in sync. Keep the tab open while you
+work. People using the website and people using `cowove join` can be in the
+same session, and `cowove join` accepts the website's invite links.
+
+In a session, the **Connect your AI** card links your AI tool to cowove with
+one click for Cursor ("Add to Cursor") or one command for Claude Code. It uses
+an MCP server the relay hosts, so nothing is installed, and you set it up once
+for every session. Your AI then shares what it's working on, sees what others
+are doing, and can message and claim files.
+
+To run it from a checkout, build the site once: `npm install && npm run build && cowove serve`.
+
 ## Quick start
 
 ### Download the app
@@ -151,6 +168,7 @@ pick up the MCP server.
 | `cowove get <message-id> [dest]` | Download a shared file again |
 | `cowove setup` | Wire up MCP + agent instructions |
 | `cowove mcp` | The MCP server itself (your AI tool launches this) |
+| `cowove doctor [--watch 30]` | Check what cowove can see of your Claude Code / Cursor chats (safe to share: no chat text) |
 
 ### MCP tools for agents
 

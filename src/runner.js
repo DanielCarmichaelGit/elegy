@@ -31,7 +31,8 @@ export function decodeInvite (code) {
   }
   let j
   try {
-    j = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
+    // A website invite link carries the code after "#": https://host/#<code>
+    j = JSON.parse(Buffer.from(raw.includes('#') ? raw.slice(raw.indexOf('#') + 1) : raw, 'base64url').toString('utf8'))
   } catch {}
   if (!j || !j.s || !j.r) throw new Error('That invite link is not valid. Copy the whole link they sent.')
   return { server: j.s, room: j.r, secret: j.k || '' }

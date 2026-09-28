@@ -21,22 +21,18 @@ About $2–5 a month for a small always-on machine with a 3 GB volume.
 fly auth login
 fly launch --copy-config --no-deploy      # choose a unique app name when asked
 fly volumes create cowove_data --size 3
-fly secrets set COWOVE_RELAY_KEY=$(openssl rand -base64 24)
 fly deploy
-fly secrets list                          # the key is stored; keep your copy
 ```
 
-Your relay is at `wss://<app-name>.fly.dev`.
+The website is at `https://<app-name>.fly.dev` (and the relay at `wss://<app-name>.fly.dev`).
 
 ### Render
 
 1. In Render, choose **New → Blueprint** and pick this repository. It uses
    [`render.yaml`](../render.yaml): a Docker web service with a 5 GB disk.
    Disks need a paid instance type.
-2. Render generates `COWOVE_RELAY_KEY` for you. Copy it from the service's
-   **Environment** tab.
-
-Your relay is at `wss://<service-name>.onrender.com`.
+2. Deploy. The website is at `https://<service-name>.onrender.com` (and the
+   relay at `wss://<service-name>.onrender.com`).
 
 ### Any Linux server (VPS) with Docker
 
@@ -101,12 +97,21 @@ All settings are environment variables on the relay.
 | `COWOVE_MAX_ROOM_MB` | `256` | Size limit for one session's shared project. Past it, the session stays readable, but new changes are refused. |
 | `COWOVE_MAX_ROOM_FILES_MB` | `2048` | Storage for files shared in one session's chat (each file is at most 100 MB). |
 | `COWOVE_MAX_CONNS_PER_IP` | `50` | Connections allowed from one address. |
+| `COWOVE_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one address can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
 | `COWOVE_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
 | `COWOVE_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
 
+## The website
+
+The relay also serves the cowove website at `https://your-relay/`, where people
+can share a folder or join from an invite link in the browser. For anonymous
+use (anyone can start a session on the website), run the relay **without**
+`COWOVE_RELAY_KEY`; with a key set, the website asks for it when starting a
+session. Joining never needs it.
+
 ## Checking on it
 
-- `https://your-relay/` shows a small status page.
+- `https://your-relay/status` shows a small status page.
 - `https://your-relay/healthz` returns JSON for monitoring (`ok`, uptime,
   connections, loaded rooms).
 - `cowove relay check wss://your-relay` tests it from any machine.
