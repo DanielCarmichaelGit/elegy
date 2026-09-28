@@ -419,3 +419,14 @@ test('file-changed fires for local and remote edits', async () => {
   A.off('file-changed', la)
   B.off('file-changed', lb)
 })
+
+test('changes the file watcher never reports still sync', async () => {
+  // macOS can drop fs events outright; simulate that by silencing A's watcher.
+  await A.watcher.close()
+  write(dirA, 'unseen/deep/new.txt', 'created unseen\n')
+  write(dirA, 'watched.txt', 'v2')
+  fs.rmSync(path.join(dirA, 'README.md'))
+  await waitFor(() => read(dirB, 'unseen/deep/new.txt') === 'created unseen\n')
+  await waitFor(() => read(dirB, 'watched.txt') === 'v2')
+  await waitFor(() => read(dirB, 'README.md') === null)
+})

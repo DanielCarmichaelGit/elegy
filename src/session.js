@@ -25,6 +25,11 @@ const AGENT_FEED_CAP = 300
 // chokidar drops a 'change' for a path within 50ms of the previous one (no
 // trailing event), so each change is re-checked once that window has passed.
 const WATCH_RECHECK_MS = 80
+// On macOS, Node's fs.watch shares one FSEvents stream per process and
+// rebuilds it whenever a watch is added (a new folder, another session), so an
+// event in that gap is never delivered. The folder is re-scanned this often
+// to catch anything the watcher missed.
+const RECONCILE_MS = 1000
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
@@ -57,6 +62,8 @@ export class Session extends EventEmitter {
     this.pending = new Set()
     this.flushTimer = null
     this.rechecks = new Map() // path -> timer
+    this.diskStats = new Map() // path -> stat signature, for the periodic re-scan
+    this.reconcileTimer = null
     this.ready = false
     this.myEdits = new Map() // path -> ts of my last edit
     this.lastActivityPush = new Map()
@@ -456,6 +463,7 @@ export class Session extends EventEmitter {
   // --------------------------------------------------------------- watcher --
 
   async startWatcher () {
+    this.scanDisk({ baseline: true }) // the folder was just reconciled; the first re-scan catches anything since
     this.watcher = watch(this.root, {
       ignoreInitial: true,
       followSymlinks: false,
@@ -482,6 +490,26 @@ export class Session extends EventEmitter {
     })
     this.watcher.on('error', (err) => this.log(`watcher error: ${err.message}`))
     await new Promise((resolve) => this.watcher.once('ready', resolve))
+    this.reconcileTimer = setInterval(() => { if (this.ready) this.scanDisk() }, RECONCILE_MS)
+    this.reconcileTimer.unref()
+    this.scanDisk()
+  }
+
+  /** Stats the folder and queues every path that appeared, changed or vanished since the last scan. */
+  scanDisk ({ baseline = false } = {}) {
+    const seen = new Set()
+    for (const rel of walk(this.root, this.ig)) {
+      let st
+      try { st = fs.lstatSync(path.join(this.root, ...rel.split('/'))) } catch { continue }
+      seen.add(rel)
+      const sig = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`
+      if (this.diskStats.get(rel) === sig) continue
+      if (!baseline) this.queue(rel)
+      this.diskStats.set(rel, sig)
+    }
+    for (const rel of this.diskStats.keys()) {
+      if (!seen.has(rel)) { this.diskStats.delete(rel); this.queue(rel) }
+    }
   }
 
   // ----------------------------------------------------- presence & social --
@@ -878,6 +906,7 @@ export class Session extends EventEmitter {
     if (this.watcher) await this.watcher.close()
     for (const t of this.rechecks.values()) clearTimeout(t)
     this.rechecks.clear()
+    clearInterval(this.reconcileTimer)
     this.flushPending()
     clearTimeout(this.statusTimer)
     clearTimeout(this.presenceTimer)
