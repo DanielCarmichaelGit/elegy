@@ -149,3 +149,25 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
   assert.deepEqual(feed.body.entries.slice(-2).map((e) => e.kind), ['paused', 'resumed'])
   await api('POST', `/api/sessions/${id}/stop`)
 })
+
+test('hosted relay: check it, start a session on it, and save it as the default', async () => {
+  const { startServer } = await import('../src/server.js')
+  const relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, relayKey: 'k1' })
+  const url = `http://127.0.0.1:${relay.port}`
+  const check = await api('POST', '/api/relay/check', { url })
+  assert.equal(check.status, 200)
+  assert.equal(check.body.requiresKey, true)
+  const bad = await api('POST', '/api/relay/check', { url: 'ws://127.0.0.1:9' })
+  assert.equal(bad.status, 400)
+
+  const dir = path.join(home, 'hosted')
+  const noKey = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'sam', server: url })
+  assert.equal(noKey.status, 400)
+  assert.match(noKey.body.error, /relay key/)
+  const ok = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'sam', server: url, relayKey: 'k1', saveDefault: true })
+  assert.equal(ok.status, 200, JSON.stringify(ok.body))
+  const st = await api('GET', '/api/state')
+  assert.deepEqual(st.body.defaults.relay, { url: `ws://127.0.0.1:${relay.port}`, hasKey: true })
+  await api('POST', `/api/sessions/${ok.body.id}/stop`)
+  await relay.close()
+})

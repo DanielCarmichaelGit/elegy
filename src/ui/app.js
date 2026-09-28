@@ -188,16 +188,21 @@ const me = () => ({
 
 const tildify = (p) => state.defaults.home && p.startsWith(state.defaults.home) ? `~${p.slice(state.defaults.home.length)}` : p
 
+const hostOf = (url) => { try { return new URL(url.replace(/^ws/, 'http')).host } catch { return url } }
+
 function relaySummary () {
-  const mode = recall('relayMode', 'host')
-  if (mode === 'remote' && recall('server')) return `Relay: ${esc(recall('server'))}`
+  const saved = state.defaults.relay
+  const mode = recall('relayMode', saved ? 'remote' : 'host')
+  const server = saved ? saved.url : recall('server')
+  if (mode === 'remote' && server) return `Relay: ${esc(hostOf(server))} (works from anywhere)`
   if (recall('publicUrl')) return `Relay: this computer, via ${esc(recall('publicUrl'))}`
   return 'Relay: this computer (same network)'
 }
 
 function homeHtml () {
   const { name, tool } = me()
-  const relayMode = recall('relayMode', 'host')
+  const saved = state.defaults.relay // your hosted relay, from `cowove relay set` or this form
+  const relayMode = recall('relayMode', saved ? 'remote' : 'host')
   const running = [...state.sessions.values()]
   const recent = state.recent.slice(0, 3)
   return `
@@ -241,8 +246,8 @@ function homeHtml () {
         <details class="more">
           <summary><span id="relay-summary">${relaySummary()}</span> · <u>change</u></summary>
           <div class="segmented" role="tablist">
+            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">Hosted relay</button>
             <button type="button" data-relay="host" class="${relayMode === 'host' ? 'on' : ''}">This computer</button>
-            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">A relay server</button>
           </div>
           <div id="relay-host" ${relayMode === 'host' ? '' : 'hidden'}>
             <div class="field">
@@ -254,8 +259,14 @@ function homeHtml () {
           <div id="relay-remote" ${relayMode === 'remote' ? '' : 'hidden'}>
             <div class="field">
               <label for="c-server">Relay address</label>
-              <input class="input" id="c-server" name="server" placeholder="wss://relay.example.com" value="${esc(recall('server'))}">
+              <input class="input" id="c-server" name="server" placeholder="wss://relay.example.com" value="${esc(saved ? saved.url : recall('server'))}" autocomplete="off" spellcheck="false">
+              <span class="hint" id="relay-check">${saved ? 'Your default relay' : 'Anyone you invite connects here too. See docs/hosting.md to run your own.'}</span>
             </div>
+            <div class="field">
+              <label for="c-key">Relay key <span class="hint">(only if your relay needs one)</span></label>
+              <input class="input" id="c-key" name="relayKey" type="password" autocomplete="off" placeholder="${saved && saved.hasKey ? 'Saved' : 'Not needed for most relays'}">
+            </div>
+            <label class="check"><input type="checkbox" name="saveDefault" ${saved ? '' : 'checked'}> Make this my default relay</label>
           </div>
         </details>
       </form>
@@ -302,7 +313,7 @@ function bindHome () {
   const join = $('#join-form')
   if (!create) return
 
-  let relayMode = recall('relayMode', 'host')
+  let relayMode = recall('relayMode', state.defaults.relay ? 'remote' : 'host')
   const updateRelay = () => { $('#relay-summary').innerHTML = relaySummary() }
   create.querySelectorAll('[data-relay]').forEach((b) => {
     b.onclick = () => {
@@ -315,7 +326,23 @@ function bindHome () {
     }
   })
   $('#c-public').onchange = (e) => { remember('publicUrl', e.target.value.trim()); updateRelay() }
-  $('#c-server').onchange = (e) => { remember('server', e.target.value.trim()); updateRelay() }
+  const serverInput = $('#c-server')
+  const checkRelay = async () => {
+    const url = serverInput.value.trim()
+    const hint = $('#relay-check')
+    if (!url) return
+    hint.className = 'hint'
+    hint.textContent = 'Checking…'
+    try {
+      const r = await api('POST', '/api/relay/check', { url })
+      hint.className = 'hint ok'
+      hint.textContent = `✓ Online · ${r.latencyMs} ms${r.requiresKey ? ' · needs a relay key to start sessions' : ''}`
+    } catch (err) {
+      hint.className = 'hint warn'
+      hint.textContent = err.message
+    }
+  }
+  serverInput.onchange = () => { remember('server', serverInput.value.trim()); updateRelay(); checkRelay() }
   document.querySelectorAll('[data-browse]').forEach((b) => {
     b.onclick = async () => {
       const input = $(`#${b.dataset.browse}`)
@@ -352,9 +379,13 @@ function bindHome () {
     const f = new FormData(create)
     const who = me()
     remember('createDir', f.get('dir'))
+    const server = (f.get('server') || '').trim()
+    const saveDefault = relayMode === 'remote' && !!f.get('saveDefault') && !!server
+    if (saveDefault) state.defaults.relay = { url: server, hasKey: !!f.get('relayKey') || !!state.defaults.relay?.hasKey }
     await submit(create, '#create-error', {
       mode: 'create', dir: f.get('dir'), name: who.name, tool: who.tool,
-      hostRelay: relayMode === 'host', publicUrl: recall('publicUrl'), server: recall('server')
+      hostRelay: relayMode === 'host', publicUrl: recall('publicUrl'), server,
+      relayKey: f.get('relayKey') || undefined, saveDefault
     })
   }
   join.onsubmit = async (e) => {

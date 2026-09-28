@@ -113,7 +113,9 @@ pick up the MCP server.
 |---|---|
 | `cowove ui` | Open the app (start, join, chat, files) |
 | `cowove serve [--port 4321] [--data ./cowove-data]` | Run a relay |
-| `cowove join --server <url>` | Start a new session for this folder |
+| `cowove relay set <url> [--key <key>]` | Use your hosted relay by default |
+| `cowove relay` / `cowove relay check <url>` / `cowove relay clear` | Show and test the default relay, test any relay, or forget it |
+| `cowove join` / `cowove join --server <url>` | Start a new session for this folder (on your default relay, or the one given) |
 | `cowove join <invite>` | Join a session |
 | `cowove join` | Rejoin this folder's last session (merges offline edits) |
 | `cowove invite` | Print the invite code again |
@@ -217,15 +219,36 @@ screens, not from the relay operator.
 
 ## Hosting the relay
 
-The relay is one small Node process. It needs to be reachable by both of you.
+Host a relay once, and starting a session becomes one click: no tunnels, and
+friends just paste an invite code. The relay is a single small process. It
+comes ready to deploy with a Fly.io config (`fly.toml`, about $2–5/month), a
+Render blueprint (`render.yaml`), a docker-compose file with automatic HTTPS
+for any server (`deploy/`), and a prebuilt image published by CI
+(`ghcr.io/danielcarmichaelgit/cowove-relay`).
 
-- **Quickest, from your laptop:** `cowove serve`, then in another terminal
-  `cloudflared tunnel --url http://localhost:4321`. Use the printed
-  `https://….trycloudflare.com` URL as `wss://….trycloudflare.com`.
-  (ngrok or Tailscale work too; with Tailscale use `ws://<tailscale-ip>:4321`.)
-- **Always-on:** deploy the included `Dockerfile` to Fly.io, Render, Railway,
-  or any VPS. Mount a volume at `/data` so rooms survive restarts, and put it
-  behind TLS so you can use `wss://`.
+**[docs/hosting.md](docs/hosting.md)** walks through each option. Once it's
+running:
+
+```bash
+cowove relay set wss://your-relay.example.com --key <relay key>
+```
+
+From then on, `cowove join`, the app and agents start sessions there by default.
+The relay key stops strangers from starting sessions on your relay. People you
+invite never need it.
+
+Hosted relays are built for the public internet:
+
+- Each session has its own secret, and starting sessions can require a key.
+- Sessions have size quotas and shared-file quotas, and there's a
+  connection limit per address.
+- Idle sessions are unloaded from memory, and sessions nobody opens for 30
+  days are deleted.
+- It serves a health check at `/healthz` and a status page at `/`.
+
+No server handy? `cowove ui` → **Host relay here** runs one on your computer.
+Use `cloudflared tunnel --url http://localhost:4321` for partners who aren't
+on your network.
 
 ## What syncs (and what doesn't)
 

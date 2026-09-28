@@ -17,6 +17,9 @@ export const MSG_CLAIMS = 12 // relay -> client: JSON { claims, reply?: { id, ok
 export const CLOSE_AUTH_FAILED = 4401
 export const CLOSE_NAME_TAKEN = 4403
 
+// WebSocket close code the relay uses when a room is over its size quota.
+export const CLOSE_ROOM_FULL = 4413
+
 // Largest file that can be sent in chat.
 export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
 

@@ -1,4 +1,8 @@
 node_modules
 .git
+.github
 test
+docs
 cowove-data
+.cowove
+*.md

@@ -8,6 +8,7 @@ import { Session } from './session.js'
 import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
+import { keyFor } from './settings.js'
 
 export const encodeInvite = (c) => Buffer.from(JSON.stringify({ s: c.server, r: c.room, k: c.secret })).toString('base64url')
 
@@ -22,9 +23,10 @@ export function decodeInvite (code) {
   return { server: j.s, room: j.r, secret: j.k || '' }
 }
 
-export function newConn (server) {
+export function newConn (server, key = keyFor(server)) {
   return {
     server,
+    ...(key ? { key } : {}),
     room: `room-${crypto.randomBytes(4).toString('hex')}`,
     secret: crypto.randomBytes(18).toString('base64url')
   }

@@ -1,17 +1,20 @@
 // Relay server: holds one shared Yjs document per room, relays updates and
-// presence between clients, and persists room state to disk. It also checks
-// who each client is (see identity.js) and owns the room's claims, so only
-// the person who made a claim can release it.
+// presence between clients, stores files shared in chat, and persists rooms
+// to disk. It checks who each client is (see identity.js) and owns the
+// room's claims, so only the person who made a claim can release it. Safe to
+// run on the public internet: rooms need their secret, creating rooms can
+// require a relay key, and rooms have size quotas.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -21,11 +24,31 @@ import { patternsOverlap } from './fsutil.js'
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
 const MAX_PATTERN = 500
-const hash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
+const MB = 1024 * 1024
+const DAY = 24 * 60 * 60 * 1000
+const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
+const hash = (s) => crypto.createHash('sha256').update(String(s)).digest()
+const sameSecret = (a, b) => a.length === b.length && crypto.timingSafeEqual(a, b)
+
+/** Relay settings, from options or environment variables. */
+export function relayConfig (opts = {}) {
+  const env = process.env
+  const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v))
+  return {
+    relayKey: opts.relayKey ?? env.COWOVE_RELAY_KEY ?? '',
+    maxRoomBytes: num(opts.maxRoomBytes ?? env.COWOVE_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
+    maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.COWOVE_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
+    maxConnsPerIp: num(opts.maxConnsPerIp ?? env.COWOVE_MAX_CONNS_PER_IP, 50),
+    roomTtlDays: num(opts.roomTtlDays ?? env.COWOVE_ROOM_TTL_DAYS, 30),
+    idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
+    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.COWOVE_TRUST_PROXY || '')
+  }
+}
 
 class Room {
-  constructor (name, dataDir, log) {
+  constructor (name, dataDir, cfg, log) {
     this.name = name
+    this.cfg = cfg
     this.log = log
     this.doc = new Y.Doc()
     this.awareness = new awarenessProtocol.Awareness(this.doc)
@@ -35,17 +58,30 @@ class Room {
     this.docFile = dataDir && path.join(dataDir, `${name}.ydoc`)
     this.metaFile = dataDir && path.join(dataDir, `${name}.json`)
     this.meta = {}
+    this.bytes = 0
+    this.full = false
     if (dataDir) {
-      if (fs.existsSync(this.docFile)) Y.applyUpdate(this.doc, fs.readFileSync(this.docFile))
+      if (fs.existsSync(this.docFile)) {
+        const buf = fs.readFileSync(this.docFile)
+        Y.applyUpdate(this.doc, buf)
+        this.bytes = buf.length
+      }
       if (fs.existsSync(this.metaFile)) this.meta = JSON.parse(fs.readFileSync(this.metaFile, 'utf8'))
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, pattern, note, ts }
+    this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
+    this.unloadTimer = null
 
     this.doc.on('update', (update, origin) => {
       const msg = updateMessage(update)
       for (const ws of this.conns.keys()) if (ws !== origin) send(ws, msg)
+      this.bytes += update.length
+      if (!this.full && this.bytes > cfg.maxRoomBytes) {
+        this.full = true
+        this.log(`[${name}] over the size limit; further edits are refused`)
+      }
       this.scheduleSave()
     })
     this.awareness.on('update', ({ added, updated, removed }, origin) => {
@@ -60,14 +96,26 @@ class Room {
     })
   }
 
-  // First client to open a room sets its secret; later clients must match.
-  authorize (secret) {
+  get exists () { return !!this.meta.secretHash }
+
+  /**
+   * First client to open a room sets its secret; later clients must match.
+   * Returns 'ok', 'bad-secret' or 'need-key' (creating rooms needs the relay key).
+   */
+  authorize (secret, key) {
     if (!this.meta.secretHash) {
-      this.meta.secretHash = hash(secret || '')
-      this.saveMeta()
-      return true
+      if (this.cfg.relayKey && !sameSecret(hash(key || ''), hash(this.cfg.relayKey))) return 'need-key'
+      this.meta.secretHash = hash(secret || '').toString('hex')
+      this.meta.createdAt = Date.now()
+      this.touch()
+      return 'ok'
     }
-    return this.meta.secretHash === hash(secret || '')
+    return sameSecret(hash(secret || ''), Buffer.from(this.meta.secretHash, 'hex')) ? 'ok' : 'bad-secret'
+  }
+
+  touch () {
+    this.meta.lastActive = Date.now()
+    this.saveMeta()
   }
 
   /** A name belongs to the first key that signs in with it. */
@@ -142,9 +190,11 @@ class Room {
   save () {
     clearTimeout(this.saveTimer)
     this.saveTimer = null
-    if (!this.docFile) return
+    if (!this.docFile || !this.exists) return
+    const state = Y.encodeStateAsUpdate(this.doc)
+    this.bytes = state.length
     const tmp = this.docFile + '.tmp'
-    fs.writeFileSync(tmp, Y.encodeStateAsUpdate(this.doc))
+    fs.writeFileSync(tmp, state)
     fs.renameSync(tmp, this.docFile)
   }
 
@@ -153,6 +203,7 @@ class Room {
    * it into the room. Nothing else is accepted until then.
    */
   admit (ws, name, publicKey, key, onJoin) {
+    clearTimeout(this.unloadTimer)
     const nonce = crypto.randomBytes(32)
     let joined = false
     ws.on('message', (data) => {
@@ -187,6 +238,7 @@ class Room {
     const states = [...this.awareness.getStates().keys()]
     if (states.length) send(ws, awarenessMessage(this.awareness, states))
     send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList() }))
+    this.touch()
   }
 
   leave (ws) {
@@ -194,13 +246,25 @@ class Room {
     this.conns.delete(ws)
     this.names.delete(ws)
     if (ids && ids.size) awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null)
-    if (this.conns.size === 0) this.save()
+    if (this.conns.size === 0) {
+      this.save()
+      this.touch()
+      this.onEmpty && this.onEmpty()
+    }
   }
 
   handle (ws, buf) {
     const dec = decoding.createDecoder(buf)
     const type = decoding.readVarUint(dec)
     if (type === MSG_SYNC) {
+      if (this.full) {
+        // Over quota: still answer "what do you have?" so people can read, but refuse new data.
+        const sub = decoding.readVarUint(decoding.createDecoder(buf.subarray(1)))
+        if (sub !== syncProtocol.messageYjsSyncStep1) {
+          ws.close(CLOSE_ROOM_FULL, 'room is over the size limit')
+          return
+        }
+      }
       const enc = encoding.createEncoder()
       encoding.writeVarUint(enc, MSG_SYNC)
       syncProtocol.readSyncMessage(dec, enc, this.doc, ws)
@@ -227,6 +291,13 @@ class Room {
       }
     }
   }
+
+  destroy () {
+    clearTimeout(this.unloadTimer)
+    this.save()
+    this.awareness.destroy()
+    this.doc.destroy()
+  }
 }
 
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
@@ -235,28 +306,86 @@ function send (ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(msg, (err) => { if (err) ws.terminate() })
 }
 
-export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log } = {}) {
+export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, ...opts } = {}) {
+  const cfg = relayConfig(opts)
   if (dataDir) fs.mkdirSync(dataDir, { recursive: true })
-  const rooms = new Map()
+  const startedAt = Date.now()
+  const rooms = new Map() // loaded rooms only
+  const ipConns = new Map()
+
   const getRoom = (name) => {
-    if (!rooms.has(name)) rooms.set(name, new Room(name, dataDir, log))
-    return rooms.get(name)
+    let room = rooms.get(name)
+    if (!room) {
+      room = new Room(name, dataDir, cfg, log)
+      rooms.set(name, room)
+      // Idle rooms are saved and dropped from memory (only when they're on disk).
+      room.onEmpty = () => {
+        if (!dataDir) return
+        clearTimeout(room.unloadTimer)
+        room.unloadTimer = setTimeout(() => {
+          if (room.conns.size || rooms.get(name) !== room) return
+          room.destroy()
+          rooms.delete(name)
+        }, cfg.idleUnloadMs)
+      }
+    }
+    return room
+  }
+  // A room that was probed but never created (bad secret / no key) shouldn't linger.
+  const dropIfUnused = (room) => {
+    if (!room.exists && !room.conns.size) { room.destroy(); rooms.delete(room.name) }
+  }
+
+  const clientIp = (req) => {
+    if (cfg.trustProxy) {
+      const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+      if (fwd) return fwd
+    }
+    return req.socket.remoteAddress || 'unknown'
   }
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-relay-')), 'files')
+
+  const stats = () => {
+    let connections = 0
+    for (const r of rooms.values()) connections += r.conns.size
+    return { ok: true, version: 1, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), roomsLoaded: rooms.size, connections, requiresKey: !!cfg.relayKey }
+  }
+
   const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x')
+    const text = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8' }); res.end(msg) }
+
+    if (url.pathname === '/healthz') {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      return res.end(JSON.stringify(stats()))
+    }
+    if (url.pathname === '/logo.svg') {
+      res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' })
+      return res.end(fs.readFileSync(LOGO))
+    }
     const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
     if (!m) {
-      res.writeHead(200, { 'content-type': 'text/plain' })
-      return res.end('cowove relay ok\n')
+      if (url.pathname !== '/') return text(404, 'not found')
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      return res.end(statusPage(stats()))
     }
+
     const [, name, id] = m
-    const text = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain' }); res.end(msg) }
-    if (!getRoom(name).authorize(req.headers['x-cowove-secret'] || '')) return text(401, 'wrong room secret')
+    const room = getRoom(name)
+    const auth = room.authorize(req.headers['x-cowove-secret'] || '', req.headers['x-cowove-key'] || '')
+    if (auth !== 'ok') {
+      dropIfUnused(room)
+      return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
+    }
     const dir = path.join(filesDir, name)
-    if (req.method === 'POST' && !id) return receiveFile(req, dir, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))
+    if (req.method === 'POST' && !id) {
+      const used = dirSize(dir)
+      const incoming = Number(req.headers['content-length'] || 0)
+      if (used + incoming > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
+      return receiveFile(req, dir, cfg.maxRoomFileBytes - used, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))
+    }
     if (req.method === 'GET' && id) {
       const file = path.join(dir, id)
       if (!fs.existsSync(file)) return text(404, 'no such file')
@@ -265,7 +394,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     text(405, 'method not allowed')
   })
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * MB })
 
   httpServer.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x')
@@ -273,19 +402,33 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const secret = url.searchParams.get('secret') || ''
     const person = (url.searchParams.get('name') || '').trim()
     const publicKey = url.searchParams.get('key') || ''
+    const relayKey = url.searchParams.get('relayKey') || req.headers['x-cowove-key'] || ''
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
+    const ip = clientIp(req)
+    if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
-    if (!room.authorize(secret)) return reject(socket, 401, 'Wrong room secret')
+    const auth = room.authorize(secret, relayKey)
+    if (auth !== 'ok') {
+      dropIfUnused(room)
+      return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
+    }
     if (!publicKey) return reject(socket, 400, 'This relay needs a newer cowove; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ipConns.set(ip, (ipConns.get(ip) || 0) + 1)
       ws.isAlive = true
       ws.on('pong', () => { ws.isAlive = true })
+      ws.on('close', () => {
+        const n = (ipConns.get(ip) || 1) - 1
+        if (n) ipConns.set(ip, n)
+        else ipConns.delete(ip)
+      })
       room.admit(ws, person, publicKey, key, () => {
         log(`[${name}] ${person} connected (${room.conns.size} online)`)
         ws.on('close', () => log(`[${name}] ${person} left (${room.conns.size} online)`))
+        if (room.full) log(`[${name}] ${person} joined while over quota (read-only)`)
       })
     })
   })
@@ -298,16 +441,45 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
   }, 30000)
 
+  // Delete rooms nobody has opened for a while (hosted relays shouldn't grow forever).
+  const sweep = () => {
+    if (!dataDir || !cfg.roomTtlDays) return
+    const cutoff = Date.now() - cfg.roomTtlDays * DAY
+    let removed = 0
+    for (const f of fs.readdirSync(dataDir)) {
+      if (!f.endsWith('.json')) continue
+      const name = f.slice(0, -5)
+      if (rooms.has(name)) continue
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))
+        if ((meta.lastActive || meta.createdAt || 0) > cutoff) continue
+      } catch {}
+      fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
+      fs.rmSync(path.join(dataDir, f), { force: true })
+      fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+      removed++
+    }
+    if (removed) log(`removed ${removed} room(s) idle for more than ${cfg.roomTtlDays} days`)
+  }
+  sweep()
+  const sweeper = setInterval(sweep, 6 * 60 * 60 * 1000)
+  sweeper.unref()
+
   return new Promise((resolve, reject) => {
-    httpServer.once('error', (err) => { clearInterval(heartbeat); reject(err) })
+    httpServer.once('error', (err) => { clearInterval(heartbeat); clearInterval(sweeper); reject(err) })
     httpServer.listen(port, host, () => {
       const actualPort = httpServer.address().port
       resolve({
         port: actualPort,
+        config: cfg,
+        rooms, // exposed for tests
+        sweep,
         close: () => new Promise((resolve) => {
           clearInterval(heartbeat)
+          clearInterval(sweeper)
           for (const ws of wss.clients) ws.terminate()
-          for (const room of rooms.values()) { room.save(); room.awareness.destroy() }
+          for (const room of rooms.values()) room.destroy()
+          rooms.clear()
           wss.close()
           httpServer.close(() => resolve())
         })
@@ -316,11 +488,18 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   })
 }
 
-function receiveFile (req, dir, done) {
+function dirSize (dir) {
+  let total = 0
+  try { for (const f of fs.readdirSync(dir)) total += fs.statSync(path.join(dir, f)).size } catch {}
+  return total
+}
+
+function receiveFile (req, dir, room, done) {
   fs.mkdirSync(dir, { recursive: true })
   const id = crypto.randomBytes(16).toString('hex')
   const file = path.join(dir, id)
   const out = fs.createWriteStream(file)
+  const limit = Math.min(MAX_SHARED_FILE_BYTES, room)
   let size = 0
   let failed = false
   const fail = (code, message) => {
@@ -332,7 +511,7 @@ function receiveFile (req, dir, done) {
   }
   req.on('data', (chunk) => {
     size += chunk.length
-    if (size > MAX_SHARED_FILE_BYTES) { fail(413, 'file too large'); req.destroy() }
+    if (size > limit) { fail(413, limit < MAX_SHARED_FILE_BYTES ? 'this room has used its file storage quota' : 'file too large'); req.destroy() }
   })
   req.on('error', () => fail(400, 'upload interrupted'))
   req.pipe(out)
@@ -343,4 +522,21 @@ function receiveFile (req, dir, done) {
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
+}
+
+function statusPage (s) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cowove relay</title><link rel="icon" href="/logo.svg">
+<style>
+:root{--bg:#f6f4f0;--card:#fff;--text:#1c1929;--muted:#6d6882;--ok:#22a06b;--border:#e7e2da}
+@media (prefers-color-scheme:dark){:root{--bg:#0e0c17;--card:#161327;--text:#f0edf8;--muted:#a09ab8;--border:#2a2542}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;max-width:440px;text-align:center}
+img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.02em}
+.ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+p{color:var(--muted);margin:12px 0 0}code{font-size:13px}
+</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>cowove relay</h1>
+<div class="ok"><i></i>Running</div>
+<p>${s.connections} connection${s.connections === 1 ? '' : 's'} · ${s.roomsLoaded} active room${s.roomsLoaded === 1 ? '' : 's'}${s.requiresKey ? ' · starting sessions needs a relay key' : ''}</p>
+<p>Point cowove at this relay with<br><code>cowove relay set wss://&lt;this address&gt;</code></p></div></body></html>`
 }

@@ -6,7 +6,7 @@ import WebSocket from 'ws'
 import crypto from 'node:crypto'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -27,9 +27,11 @@ export class Connection extends EventEmitter {
    * @param {import('yjs').Doc} opts.doc
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    */
-  constructor ({ server, room, secret, name, identity, doc, beforeRemote }) {
+  constructor ({ server, room, secret, key, name, identity, doc, beforeRemote }) {
     super()
+    // `key` (the relay key) is only needed to create a room on a relay that requires one.
     const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey })
+    if (key) q.set('relayKey', key)
     this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
     this.room = room
     this.identity = identity
@@ -72,9 +74,14 @@ export class Connection extends EventEmitter {
 
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
-      if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
+      if (res.statusCode === 403 && /relay key/i.test(reason)) {
+        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `cowove relay set <url> --key <key>`.'))
+        this.close()
+      } else if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))
         this.close()
+      } else if (res.statusCode === 429) {
+        this.emit('warn', 'relay says there are too many connections from this network; retrying')
       } else {
         this.emit('warn', `relay responded ${reason}`)
       }
@@ -86,6 +93,9 @@ export class Connection extends EventEmitter {
       if (code === CLOSE_AUTH_FAILED || code === CLOSE_NAME_TAKEN) {
         this.emit('fatal', new Error(`Relay refused connection: ${String(reason) || 'identity check failed'}`))
         this.close()
+      } else if (code === CLOSE_ROOM_FULL) {
+        this.emit('fatal', new Error('This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'))
+        this.closed = true
       }
       const wasConnected = this.connected
       this.connected = false

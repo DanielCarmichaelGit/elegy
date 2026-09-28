@@ -27,12 +27,13 @@ const AGENT_FEED_CAP = 300
 const WATCH_RECHECK_MS = 80
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
+  constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
     this.room = room
     this.secret = secret
+    this.key = key
     this.name = name
     this.identity = identity
     this.tool = tool
@@ -77,6 +78,7 @@ export class Session extends EventEmitter {
       server: this.server,
       room: this.room,
       secret: this.secret,
+      key: this.key,
       name: this.name,
       identity: this.identity || loadIdentity(),
       doc: this.doc,
@@ -558,7 +560,7 @@ export class Session extends EventEmitter {
     if (st.size > MAX_SHARED_FILE_BYTES) throw new Error(`${filePath} is larger than ${MAX_SHARED_FILE_BYTES / 1024 / 1024} MB`)
     const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}`, {
       method: 'POST',
-      headers: { 'x-cowove-secret': this.secret, 'content-type': 'application/octet-stream' },
+      headers: { 'x-cowove-secret': this.secret, 'content-type': 'application/octet-stream', ...(this.key ? { 'x-cowove-key': this.key } : {}) },
       body: fs.readFileSync(abs)
     })
     if (!res.ok) throw new Error(`upload failed: ${await res.text()}`)
