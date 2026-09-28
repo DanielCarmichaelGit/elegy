@@ -39,7 +39,9 @@ function shortError (text) {
 export async function checkBranchName (name) {
   name = String(name || '').trim()
   if (!name) throw new Error('Enter a branch name.')
-  if (name.startsWith('-') || (await run('git', ['check-ref-format', '--branch', name], { allowFail: true })) === null) {
+  // Not `--branch`: it expands @{-N} using the current folder's repo, so the
+  // answer would depend on where cowove happens to run.
+  if (name.startsWith('-') || name === 'HEAD' || (await run('git', ['check-ref-format', `refs/heads/${name}`], { allowFail: true })) === null) {
     throw new Error(`"${name}" isn't a valid branch name.`)
   }
   return name
