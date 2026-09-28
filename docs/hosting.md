@@ -1,4 +1,4 @@
-# Hosting an elegy relay
+# Hosting a cowove relay
 
 The relay is the one piece everyone in a session connects to. Host it once,
 and starting a session becomes one click with no tunnels or networking to
@@ -20,7 +20,7 @@ About $2–5 a month for a small always-on machine with a 3 GB volume.
 ```bash
 fly auth login
 fly launch --copy-config --no-deploy      # choose a unique app name when asked
-fly volumes create elegy_data --size 3
+fly volumes create cowove_data --size 3
 fly deploy
 ```
 
@@ -40,9 +40,9 @@ This setup includes Caddy, which gets and renews an HTTPS certificate
 automatically. Point a DNS name at the server first, then:
 
 ```bash
-git clone <this repo> && cd elegy/deploy
-export ELEGY_DOMAIN=relay.example.com
-export ELEGY_RELAY_KEY=$(openssl rand -base64 24); echo "$ELEGY_RELAY_KEY"
+git clone <this repo> && cd cowove/deploy
+export COWOVE_DOMAIN=relay.example.com
+export COWOVE_RELAY_KEY=$(openssl rand -base64 24); echo "$COWOVE_RELAY_KEY"
 docker compose up -d
 ```
 
@@ -53,30 +53,30 @@ Your relay is at `wss://relay.example.com`.
 A prebuilt image is published from this repo's `main` branch:
 
 ```bash
-docker run -d --name elegy-relay -p 4321:4321 -v elegy-data:/data \
-  -e ELEGY_RELAY_KEY=... ghcr.io/danielcarmichaelgit/elegy-relay:latest
+docker run -d --name cowove-relay -p 4321:4321 -v cowove-data:/data \
+  -e COWOVE_RELAY_KEY=... ghcr.io/danielcarmichaelgit/cowove-relay:latest
 ```
 
 Put it behind HTTPS (Caddy, nginx, or your platform's proxy) so clients can
 use `wss://`. The first time the image is published, GitHub makes the package
 private. To pull it without logging in, make it public under your GitHub
-profile → **Packages** → `elegy-relay` → **Package settings**. You can also build it yourself with `docker build -t elegy-relay .`
+profile → **Packages** → `cowove-relay` → **Package settings**. You can also build it yourself with `docker build -t cowove-relay .`
 
-## 2. Point elegy at it
+## 2. Point cowove at it
 
 On your machine:
 
 ```bash
-elegy relay set wss://your-relay.example.com --key <your relay key>
-elegy relay            # check it: "ok · 40 ms · …"
+cowove relay set wss://your-relay.example.com --key <your relay key>
+cowove relay            # check it: "ok · 40 ms · …"
 ```
 
 From then on:
 
-- `elegy join` in a folder starts a new session on your relay.
-- The app (`elegy ui`) has it selected under **Hosted relay** when you start a
+- `cowove join` in a folder starts a new session on your relay.
+- The app (`cowove ui`) has it selected under **Hosted relay** when you start a
   session.
-- Agents calling `elegy_start_session` use it too.
+- Agents calling `cowove_start_session` use it too.
 
 You can also set it from the app: enter the address and key when starting a
 session and leave **Make this my default relay** ticked.
@@ -91,22 +91,22 @@ All settings are environment variables on the relay.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `ELEGY_RELAY_KEY` | *(none)* | Required to **start** sessions. Without it, anyone who can reach the relay can start sessions on it. |
+| `COWOVE_RELAY_KEY` | *(none)* | Required to **start** sessions. Without it, anyone who can reach the relay can start sessions on it. |
 | `PORT` | `4321` | Port to listen on (Render and Fly set this for you). |
-| `ELEGY_DATA` | `/data` in Docker | Where sessions and shared files are stored. |
-| `ELEGY_MAX_ROOM_MB` | `256` | Size limit for one session's shared project. Past it, the session stays readable, but new changes are refused. |
-| `ELEGY_MAX_ROOM_FILES_MB` | `2048` | Storage for files shared in one session's chat (each file is at most 100 MB). |
-| `ELEGY_MAX_CONNS_PER_IP` | `50` | Connections allowed from one address. |
-| `ELEGY_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one address can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
-| `ELEGY_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
-| `ELEGY_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
+| `COWOVE_DATA` | `/data` in Docker | Where sessions and shared files are stored. |
+| `COWOVE_MAX_ROOM_MB` | `256` | Size limit for one session's shared project. Past it, the session stays readable, but new changes are refused. |
+| `COWOVE_MAX_ROOM_FILES_MB` | `2048` | Storage for files shared in one session's chat (each file is at most 100 MB). |
+| `COWOVE_MAX_CONNS_PER_IP` | `50` | Connections allowed from one address. |
+| `COWOVE_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one address can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
+| `COWOVE_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
+| `COWOVE_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
 
 ## The website
 
-The relay also serves the elegy website at `https://your-relay/`, where people
+The relay also serves the cowove website at `https://your-relay/`, where people
 can share a folder or join from an invite link in the browser. For anonymous
 use (anyone can start a session on the website), run the relay **without**
-`ELEGY_RELAY_KEY`; with a key set, the website asks for it when starting a
+`COWOVE_RELAY_KEY`; with a key set, the website asks for it when starting a
 session. Joining never needs it.
 
 ## Checking on it
@@ -114,7 +114,7 @@ session. Joining never needs it.
 - `https://your-relay/status` shows a small status page.
 - `https://your-relay/healthz` returns JSON for monitoring (`ok`, uptime,
   connections, loaded rooms).
-- `elegy relay check wss://your-relay` tests it from any machine.
+- `cowove relay check wss://your-relay` tests it from any machine.
 - Logs show sessions connecting and leaving, but never their contents.
 
 ## Good to know

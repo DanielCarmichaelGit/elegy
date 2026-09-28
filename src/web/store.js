@@ -1,7 +1,7 @@
 // Sessions this browser has been in, with the folder each one syncs, kept in
 // IndexedDB (folder handles can be stored there, not in localStorage). Every
 // call fails soft: private windows may have no storage.
-const DB = 'elegy'
+const DB = 'cowove'
 const STORE = 'sessions'
 
 function db () {
@@ -40,6 +40,6 @@ export async function forgetSession (room) {
 }
 
 export const prefs = {
-  get (k, d = '') { try { return localStorage.getItem(`elegy.${k}`) ?? d } catch { return d } },
-  set (k, v) { try { localStorage.setItem(`elegy.${k}`, v) } catch {} }
+  get (k, d = '') { try { return localStorage.getItem(`cowove.${k}`) ?? d } catch { return d } },
+  set (k, v) { try { localStorage.setItem(`cowove.${k}`, v) } catch {} }
 }

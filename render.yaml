@@ -1,20 +1,20 @@
-# Render Blueprint for the elegy website + relay. See docs/hosting.md.
+# Render Blueprint for the cowove website + relay. See docs/hosting.md.
 # New > Blueprint, pick this repo. The site is at https://<service>.onrender.com.
 # It runs anonymously (anyone can start a session on the website). To require
-# a key for starting sessions instead, add ELEGY_RELAY_KEY in the Environment tab.
+# a key for starting sessions instead, add COWOVE_RELAY_KEY in the Environment tab.
 services:
   - type: web
-    name: elegy-relay
+    name: cowove-relay
     runtime: docker
     plan: starter # persistent disks need a paid instance
     numInstances: 1 # rooms live in memory: exactly one instance
     healthCheckPath: /healthz
     envVars:
-      - key: ELEGY_DATA
+      - key: COWOVE_DATA
         value: /data
-      - key: ELEGY_TRUST_PROXY
+      - key: COWOVE_TRUST_PROXY
         value: "1"
     disk:
-      name: elegy-data
+      name: cowove-data
       mountPath: /data
       sizeGB: 5

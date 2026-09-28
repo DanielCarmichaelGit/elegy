@@ -1,7 +1,7 @@
 // The web app's sync engine: mirrors a folder the person picked in their
 // browser into the shared Yjs document and back. It speaks exactly the same
 // document layout as src/session.js, so people in the browser and people
-// running `elegy join` can be in the same session.
+// running `cowove join` can be in the same session.
 //
 // Differences from the CLI, because a web page can't watch the disk:
 // - Local changes are found by polling (size + modified time) every second.
@@ -18,7 +18,7 @@ import { makeIgnore, isIgnored, isSafeRelPath, globMatcher, MAX_TEXT_BYTES, MAX_
 const LOCAL = Symbol('local')
 const COLORS = ['#e06c75', '#61afef', '#98c379', '#c678dd', '#e5c07b', '#56b6c2', '#d19a66']
 const RECENT_MS = 2 * 60 * 1000
-const STATE_DIR = '.elegy'
+const STATE_DIR = '.cowove'
 const enc = new TextEncoder()
 
 export class WebSession extends Emitter {
@@ -115,7 +115,7 @@ export class WebSession extends Emitter {
     this.blobs.observe((ev, tr) => { if (tr.origin !== LOCAL) remote(ev.changes.keys.keys()) })
     for (const arr of [this.chat, this.activity]) arr.observe(() => this.emit('change'))
     this.agentFeed.observe((ev) => {
-      // My AI shared something through elegy's MCP link: show it as working.
+      // My AI shared something through cowove's MCP link: show it as working.
       for (const item of ev.changes.added) {
         for (const e of item.content.getContent()) {
           if (e && e.by === this.name && e.tool && Date.now() - (e.ts || 0) < 2 * 60 * 1000) this.markAiActive(e.tool)
@@ -139,7 +139,7 @@ export class WebSession extends Emitter {
 
   async loadIgnore () {
     const texts = []
-    for (const f of ['.gitignore', '.elegyignore']) {
+    for (const f of ['.gitignore', '.cowoveignore']) {
       const b = await this.folder.read(f).catch(() => null)
       if (b) texts.push(new TextDecoder().decode(b))
     }
@@ -210,7 +210,7 @@ export class WebSession extends Emitter {
       pulled++
     }
     for (const rel of onDisk) if (await this.ingest(rel)) pushed++
-    this.log(`initial sync: ${pulled} file(s) pulled, ${pushed} pushed` + (backedUp ? `, ${backedUp} of your versions saved in .elegy/conflicts` : ''))
+    this.log(`initial sync: ${pulled} file(s) pulled, ${pushed} pushed` + (backedUp ? `, ${backedUp} of your versions saved in .cowove/conflicts` : ''))
   }
 
   sharedKey (rel) {
@@ -264,7 +264,7 @@ export class WebSession extends Emitter {
       if (disk.tooLarge && !this.warnedLarge.has(rel)) { this.warnedLarge.add(rel); this.log(`skipping ${rel}: too large to sync`) }
       return false
     }
-    if (rel === '.gitignore' || rel === '.elegyignore') await this.loadIgnore()
+    if (rel === '.gitignore' || rel === '.cowoveignore') await this.loadIgnore()
     const shared = this.sharedKey(rel)
     if (shared !== this.lastKnown.get(rel)) {
       // Someone else changed it and we haven't written that out yet. Writing
@@ -356,7 +356,7 @@ export class WebSession extends Emitter {
         this.seen.set(rel, disk.stamp)
       }
     }
-    if (rel === '.gitignore' || rel === '.elegyignore') await this.loadIgnore()
+    if (rel === '.gitignore' || rel === '.cowoveignore') await this.loadIgnore()
     if (this.ready) this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })
   }
 

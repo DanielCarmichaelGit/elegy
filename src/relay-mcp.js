@@ -1,4 +1,4 @@
-// MCP server hosted by the relay, for people who use elegy from the website.
+// MCP server hosted by the relay, for people who use cowove from the website.
 // Their AI (Cursor, Claude Code, ...) connects to https://<relay>/mcp/<token>
 // with nothing installed. The token belongs to one browser; the website tells
 // the relay which session and name it's in right now (see server.js), so the
@@ -19,14 +19,14 @@ const TAB_STALE_MS = 3 * 60 * 1000
 const AGENT = 'agent-mcp' // transaction origin
 
 const INSTRUCTIONS =
-  'You are in a live elegy session: other people, each with their own AI, are editing this same project right now, ' +
+  'You are in a live cowove session: other people, each with their own AI, are editing this same project right now, ' +
   'and their changes appear in your files as they happen. ' +
-  'When your user asks for something, call elegy_share with their request and a short plan before you start, and call it ' +
+  'When your user asks for something, call cowove_share with their request and a short plan before you start, and call it ' +
   'again with a short summary when you finish, so collaborators can follow along. ' +
-  'Before starting a task, call elegy_status to see who is working on what. Do not edit files someone else has claimed; ' +
-  'message them with elegy_message instead. Claim files before larger changes. Always re-read a file right before editing it.'
+  'Before starting a task, call cowove_status to see who is working on what. Do not edit files someone else has claimed; ' +
+  'message them with cowove_message instead. Claim files before larger changes. Always re-read a file right before editing it.'
 
-const NOT_LINKED = 'Your user is not in an elegy session in their browser right now. Ask them to open elegy in their ' +
+const NOT_LINKED = 'Your user is not in a cowove session in their browser right now. Ask them to open cowove in their ' +
   'browser and share a folder or join one from an invite link, then try again. (This link is theirs and works for every session.)'
 
 const id = () => crypto.randomBytes(8).toString('hex')
@@ -48,7 +48,7 @@ function ago (ts) {
  * @param {string} [o.toolHint] tool name from the URL (?tool=Cursor)
  */
 export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
-  const mcp = new McpServer({ name: 'elegy', version: '0.1.0' }, { instructions: INSTRUCTIONS })
+  const mcp = new McpServer({ name: 'cowove', version: '0.1.0' }, { instructions: INSTRUCTIONS })
   // Until the person is in a session in their browser, every tool says how to get there.
   const server = {
     server: mcp.server,
@@ -65,7 +65,7 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
   const tool = () => toolHint || toolLabel(server.server.getClientVersion()?.name)
 
   const tabWarning = () => Date.now() - (link.tabSeenAt || 0) > TAB_STALE_MS
-    ? `\n\n⚠️ ${me}'s elegy browser tab doesn't seem to be open, so file changes aren't syncing. Ask your user to reopen elegy in their browser.`
+    ? `\n\n⚠️ ${me}'s cowove browser tab doesn't seem to be open, so file changes aren't syncing. Ask your user to reopen cowove in their browser.`
     : ''
   const writable = () => room.full ? 'This session is over its size limit, so nothing new can be saved.' : null
 
@@ -78,11 +78,11 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
   const visible = (m) => m && m.id && (!m.to || m.to === me || m.by === me)
   const fmtMsg = (m) => `- ${m.by}${m.to ? ` → ${m.to} (direct)` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}`
 
-  server.registerTool('elegy_status', {
+  server.registerTool('cowove_status', {
     description: 'See who else is in the live session, what they and their AIs are doing, recent file changes, claimed files and recent messages. Call this before starting a task.',
     inputSchema: {}
   }, () => {
-    const lines = [`You are working for ${me} in a live elegy session.`, '', '## People online']
+    const lines = [`You are working for ${me} in a live cowove session.`, '', '## People online']
     const ps = peers()
     if (!ps.length) lines.push('- Nobody else right now.')
     for (const p of ps) {
@@ -100,8 +100,8 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     return text(lines.join('\n') + tabWarning())
   })
 
-  server.registerTool('elegy_share', {
-    description: 'Share what you are doing with your collaborators; it appears live in their elegy feed. Call it when you start on a request ' +
+  server.registerTool('cowove_share', {
+    description: 'Share what you are doing with your collaborators; it appears live in their cowove feed. Call it when you start on a request ' +
       '(`request`: what your user asked, in a sentence; `summary`: your plan) and again when you finish (`summary`: what you did; ' +
       '`files`: files you changed). Keep it short and never include secrets, keys or file contents.',
     inputSchema: {
@@ -133,7 +133,7 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     return text(`Shared with the session.${tabWarning()}`)
   })
 
-  server.registerTool('elegy_partner_feed', {
+  server.registerTool('cowove_partner_feed', {
     description: 'Read what a collaborator\'s AI has been doing: their prompts, the AI\'s replies and actions. Without `who`, lists whose feeds exist.',
     inputSchema: {
       who: z.string().optional().describe('Collaborator name'),
@@ -155,7 +155,7 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     }).join('\n'))
   })
 
-  server.registerTool('elegy_message', {
+  server.registerTool('cowove_message', {
     description: 'Send a chat message to everyone in the session, or to one person with `to`. It is sent as your user.',
     inputSchema: {
       text: z.string().min(1).max(4000),
@@ -172,7 +172,7 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     return text(to ? `Sent to ${to}.` : 'Sent to everyone.')
   })
 
-  server.registerTool('elegy_read_messages', {
+  server.registerTool('cowove_read_messages', {
     description: 'Read recent chat messages in the session (including direct messages to your user).',
     inputSchema: { limit: z.number().int().min(1).max(100).optional() }
   }, ({ limit }) => {
@@ -180,7 +180,7 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     return text(msgs.length ? msgs.map(fmtMsg).join('\n') : 'No messages yet.')
   })
 
-  server.registerTool('elegy_list_files', {
+  server.registerTool('cowove_list_files', {
     description: 'List the shared project files with who is working on them (claims).',
     inputSchema: { under: z.string().optional().describe('Only files under this folder') }
   }, ({ under }) => {
@@ -194,7 +194,7 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     return text(paths.length ? shown.join('\n') + (paths.length > 500 ? `\n… and ${paths.length - 500} more` : '') : 'No files.')
   })
 
-  server.registerTool('elegy_claim', {
+  server.registerTool('cowove_claim', {
     description: 'Claim files or folders (a path or glob like src/auth/**) before a larger change, so others know not to edit them.',
     inputSchema: {
       pattern: z.string().min(1).max(300),
@@ -207,10 +207,10 @@ export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
     const existing = claims.get(pattern)
     if (existing && existing.by !== me) return fail(`${pattern} is already claimed by ${existing.by}.`)
     doc.transact(() => claims.set(pattern, { by: me, pattern, note: note || '', ts: Date.now() }), AGENT)
-    return text(`Claimed ${pattern}. Release it with elegy_release when done.`)
+    return text(`Claimed ${pattern}. Release it with cowove_release when done.`)
   })
 
-  server.registerTool('elegy_release', {
+  server.registerTool('cowove_release', {
     description: 'Release a claim (or all of your user\'s claims when no pattern is given).',
     inputSchema: { pattern: z.string().optional() }
   }, ({ pattern }) => {

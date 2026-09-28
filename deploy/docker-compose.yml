@@ -1,21 +1,21 @@
 # Any Linux server with Docker: relay + Caddy for automatic HTTPS.
 #   1. Point a DNS name (e.g. relay.example.com) at the server.
-#   2. ELEGY_DOMAIN=relay.example.com ELEGY_RELAY_KEY=$(openssl rand -base64 24) docker compose up -d
+#   2. COWOVE_DOMAIN=relay.example.com COWOVE_RELAY_KEY=$(openssl rand -base64 24) docker compose up -d
 # See docs/hosting.md.
 services:
   relay:
-    image: ghcr.io/danielcarmichaelgit/elegy-relay:latest
+    image: ghcr.io/danielcarmichaelgit/cowove-relay:latest
     build: ..
     restart: unless-stopped
     environment:
-      ELEGY_RELAY_KEY: ${ELEGY_RELAY_KEY:-}
-      ELEGY_TRUST_PROXY: "1"
+      COWOVE_RELAY_KEY: ${COWOVE_RELAY_KEY:-}
+      COWOVE_TRUST_PROXY: "1"
     volumes:
-      - elegy-data:/data
+      - cowove-data:/data
   caddy:
     image: caddy:2
     restart: unless-stopped
-    command: caddy reverse-proxy --from ${ELEGY_DOMAIN:?set ELEGY_DOMAIN to your relay's domain} --to relay:4321
+    command: caddy reverse-proxy --from ${COWOVE_DOMAIN:?set COWOVE_DOMAIN to your relay's domain} --to relay:4321
     ports:
       - "80:80"
       - "443:443"
@@ -24,5 +24,5 @@ services:
     depends_on:
       - relay
 volumes:
-  elegy-data:
+  cowove-data:
   caddy-data:

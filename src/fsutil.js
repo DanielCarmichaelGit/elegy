@@ -9,10 +9,10 @@ export function toPosix (p) {
   return p.split(path.sep).join('/')
 }
 
-/** Builds the ignore matcher from built-ins, .gitignore and .elegyignore. */
+/** Builds the ignore matcher from built-ins, .gitignore and .cowoveignore. */
 export function loadIgnore (root) {
   const texts = []
-  for (const file of ['.gitignore', '.elegyignore']) {
+  for (const file of ['.gitignore', '.cowoveignore']) {
     try { texts.push(fs.readFileSync(path.join(root, file), 'utf8')) } catch {}
   }
   return makeIgnore(texts)

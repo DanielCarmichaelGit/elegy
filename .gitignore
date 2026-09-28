@@ -1,5 +1,5 @@
 node_modules/
-.elegy/
-elegy-data/
+.cowove/
+cowove-data/
 .superpowers/
 web/dist/

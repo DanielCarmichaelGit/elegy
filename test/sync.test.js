@@ -10,7 +10,7 @@ import { isSafeRelPath, globMatcher } from '../src/fsutil.js'
 
 let srv, server
 const sessions = []
-const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `elegy-${name}-`))
+const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-${name}-`))
 const read = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel), 'utf8') } catch { return null } }
 const write = (dir, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
@@ -93,10 +93,10 @@ test('binary files sync byte for byte', async () => {
 })
 
 test('unsafe paths from a peer are never written', async () => {
-  const evil = path.join(path.dirname(dirB), 'elegy-escape.txt')
+  const evil = path.join(path.dirname(dirB), 'cowove-escape.txt')
   fs.rmSync(evil, { force: true })
   A.doc.transact(() => {
-    A.files.set('../elegy-escape.txt', new Y.Text('pwned'))
+    A.files.set('../cowove-escape.txt', new Y.Text('pwned'))
     A.files.set('.git/hooks/pre-commit', new Y.Text('pwned'))
     A.files.set('.env', new Y.Text('pwned'))
   })
@@ -155,13 +155,13 @@ test('files sent in chat are delivered without touching the project', async () =
   B.on('log', (m) => received.push(m))
   const sent = await A.sendFile(path.join(outside, 'shot.png'), { text: 'look at this' })
   assert.equal(sent.file.name, 'shot.png')
-  // Bob's session downloads it into .elegy/inbox automatically.
+  // Bob's session downloads it into .cowove/inbox automatically.
   const inboxFile = await waitFor(() => {
     const m = B.messages({ markRead: false }).find((x) => x.id === sent.id)
     return m && m.file.localPath
   })
   assert.ok(fs.readFileSync(path.join(dirB, inboxFile)).equals(payload))
-  assert.ok(inboxFile.startsWith('.elegy/inbox/'))
+  assert.ok(inboxFile.startsWith('.cowove/inbox/'))
   assert.equal(read(dirB, 'shot.png'), null, 'shared files must not land in the project tree')
   assert.ok(received.some((l) => l.includes('received shot.png')))
   // Fetch it again somewhere else.
@@ -173,7 +173,7 @@ test('files sent in chat are delivered without touching the project', async () =
 })
 
 test('relay rejects file access with the wrong secret', async () => {
-  const res = await fetch(`http://127.0.0.1:${srv.port}/files/test`, { method: 'POST', headers: { 'x-elegy-secret': 'nope' }, body: 'x' })
+  const res = await fetch(`http://127.0.0.1:${srv.port}/files/test`, { method: 'POST', headers: { 'x-cowove-secret': 'nope' }, body: 'x' })
   assert.equal(res.status, 401)
 })
 
@@ -202,7 +202,7 @@ test('first join backs up conflicting local files and takes the session version'
   write(dirC, 'README.md', 'my own readme\n')
   const C = await open(dirC, 'carol')
   assert.equal(read(dirC, 'README.md'), '# hello\n')
-  const conflicts = path.join(dirC, '.elegy', 'conflicts')
+  const conflicts = path.join(dirC, '.cowove', 'conflicts')
   const [stamp] = fs.readdirSync(conflicts)
   assert.equal(read(path.join(conflicts, stamp), 'README.md'), 'my own readme\n')
   await C.stop()

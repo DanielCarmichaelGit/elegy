@@ -13,7 +13,7 @@ const skip = !sqlite && 'node:sqlite not available'
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function makeCursor () {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-cursor-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-cursor-'))
   const userDir = path.join(root, 'User')
   const project = path.join(root, 'proj')
   const otherProject = path.join(root, 'other')
@@ -212,7 +212,7 @@ test('reads every Cursor workspace for the folder, not just the first one found'
   assert.deepEqual(f.texts().sort(), ['current window', 'old window'])
 })
 
-test('elegy doctor reports what it sees without printing chat text', { skip }, async () => {
+test('cowove doctor reports what it sees without printing chat text', { skip }, async () => {
   const { doctor } = await import('../src/doctor.js')
   const c = makeCursor()
   c.addBubble('c1', 'b1', { type: 1, text: 'my secret prompt' })

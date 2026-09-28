@@ -1,4 +1,4 @@
-// The default ("hosted") relay: saved once, then used by `elegy join`,
+// The default ("hosted") relay: saved once, then used by `cowove join`,
 // the app, and agents; its key is used to create rooms but never shared.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -12,9 +12,9 @@ import { startServer } from '../src/server.js'
 import { normalizeRelay } from '../src/settings.js'
 import { decodeInvite } from '../src/runner.js'
 
-const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'elegy.js')
+const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cowove.js')
 const run = promisify(execFile)
-const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `elegy-settings-${n}-`))
+const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-settings-${n}-`))
 
 test('relay addresses are normalized', () => {
   assert.equal(normalizeRelay('https://relay.example.com/'), 'wss://relay.example.com')
@@ -24,16 +24,16 @@ test('relay addresses are normalized', () => {
   assert.throws(() => normalizeRelay(''), /relay address/)
 })
 
-test('elegy relay set/check, then elegy join starts on the default relay with its key', async () => {
+test('cowove relay set/check, then cowove join starts on the default relay with its key', async () => {
   const home = tmp('home')
-  const env = { ...process.env, HOME: home, ELEGY_SERVER: '', ELEGY_RELAY_KEY: '' }
+  const env = { ...process.env, HOME: home, COWOVE_SERVER: '', COWOVE_RELAY_KEY: '' }
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, relayKey: 'team-key' })
   const url = `ws://127.0.0.1:${srv.port}`
 
   const set = await run(process.execPath, [BIN, 'relay', 'set', `http://127.0.0.1:${srv.port}`, '--key', 'team-key'], { env })
   assert.match(set.stdout, /needs a relay key/)
   assert.match(set.stdout, /default relay set/)
-  const saved = JSON.parse(fs.readFileSync(path.join(home, '.elegy', 'settings.json'), 'utf8'))
+  const saved = JSON.parse(fs.readFileSync(path.join(home, '.cowove', 'settings.json'), 'utf8'))
   assert.deepEqual(saved, { relay: url, relayKey: 'team-key' })
   assert.match((await run(process.execPath, [BIN, 'relay'], { env })).stdout, /\(default\).*key saved/)
 
@@ -46,7 +46,7 @@ test('elegy relay set/check, then elegy join starts on the default relay with it
     const t = setTimeout(() => reject(new Error('join did not start:\n' + out)), 10000)
     const onData = (d) => {
       out += d
-      const m = out.match(/elegy join ([A-Za-z0-9_-]{20,})/)
+      const m = out.match(/cowove join ([A-Za-z0-9_-]{20,})/)
       if (m) { clearTimeout(t); resolve(m[1]) }
     }
     child.stdout.on('data', onData)
@@ -60,7 +60,7 @@ test('elegy relay set/check, then elegy join starts on the default relay with it
   await new Promise((r) => child.on('exit', r))
 
   await run(process.execPath, [BIN, 'relay', 'clear'], { env })
-  assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.elegy', 'settings.json'), 'utf8')).relay, undefined)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.cowove', 'settings.json'), 'utf8')).relay, undefined)
   await srv.close()
 })
 

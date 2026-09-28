@@ -1,4 +1,4 @@
-// elegy app: boot, live events, home screen, folder picker and invites.
+// cowove app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
 import { TOKEN, I, TOOLS, state, $, esc, basename, ago, toast, api, decodeInvite, remember, recall } from './common.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
@@ -73,7 +73,7 @@ function connectEvents () {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    document.title = 'elegy'
+    document.title = 'cowove'
     if (state.view !== 'home') markRead(state.view)
   }
 })
@@ -106,11 +106,11 @@ export async function go (view) {
 
 // --------------------------------------------------------------- render --
 export async function shutdown () {
-  if (!confirm('Shut down elegy? This stops every session, the relay, and this app. Your files stay where they are.')) return
+  if (!confirm('Shut down cowove? This stops every session, the relay, and this app. Your files stay where they are.')) return
   try {
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop
-    renderLocked('elegy is shut down. You can close this tab.')
+    renderLocked('cowove is shut down. You can close this tab.')
   } catch (err) {
     toast(err.message)
   }
@@ -135,18 +135,18 @@ export function renderLocked (msg) {
   $('#app').innerHTML = `
     <div class="home"><div class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark"><span>elegy</span></div>
-      <p class="tagline">${esc(msg || 'Open elegy using the link printed in your terminal by')} ${msg ? '' : '<code>elegy ui</code>.'}</p>
+      <div class="wordmark"><span>cowove</span></div>
+      <p class="tagline">${esc(msg || 'Open cowove using the link printed in your terminal by')} ${msg ? '' : '<code>cowove ui</code>.'}</p>
     </div></div>`
 }
 
 function topbarHtml () {
   return `
     <header class="topbar">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt="">elegy</button>
+      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt="">cowove</button>
       <nav class="tabs" id="tabs"></nav>
       <button class="btn sm" data-go="home">${I.plus}<span>New</span></button>
-      <button class="btn sm ghost icon" data-shutdown title="Shut down elegy" aria-label="Shut down elegy">${I.power}</button>
+      <button class="btn sm ghost icon" data-shutdown title="Shut down cowove" aria-label="Shut down cowove">${I.power}</button>
     </header>`
 }
 
@@ -180,14 +180,14 @@ function toolOptions (selected) {
 function homeHtml () {
   const name = recall('name', state.defaults.name || '')
   const tool = recall('tool', 'Claude Code')
-  const saved = state.defaults.relay // your hosted relay, from `elegy relay set` or this form
+  const saved = state.defaults.relay // your hosted relay, from `cowove relay set` or this form
   const relayMode = recall('relayMode', saved ? 'remote' : 'host')
   const running = [...state.sessions.values()]
   return `
   <main class="home">
     <section class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark"><span>elegy</span></div>
+      <div class="wordmark"><span>cowove</span></div>
       <p class="tagline">Vibe code together in real time, from anywhere, each in whatever AI tool you like.</p>
     </section>
 
@@ -238,7 +238,7 @@ function homeHtml () {
         <p>Paste the invite your partner sent you.</p>
         <div class="field">
           <label for="j-invite">Invite code</label>
-          <textarea class="input mono" id="j-invite" name="invite" rows="3" placeholder="elegy join eyJz…" required></textarea>
+          <textarea class="input mono" id="j-invite" name="invite" rows="3" placeholder="cowove join eyJz…" required></textarea>
           <span class="hint" id="invite-hint">&nbsp;</span>
         </div>
         <div class="field">
@@ -276,7 +276,7 @@ function homeHtml () {
         </div>`).join('')}</div>` : ''}
 
     <p class="footer-note">Files sync live between everyone in a session. Chat, direct messages and file sharing live inside each session.</p>
-    ${running.length ? '' : `<p class="footer-note" style="margin-top:12px"><button class="btn sm ghost" data-shutdown>${I.power}<span>Shut down elegy</span></button></p>`}
+    ${running.length ? '' : `<p class="footer-note" style="margin-top:12px"><button class="btn sm ghost" data-shutdown>${I.power}<span>Shut down cowove</span></button></p>`}
   </main>`
 }
 
@@ -323,8 +323,8 @@ function bindHome () {
     if (!inv) { hint.innerHTML = '&nbsp;'; hint.className = 'hint'; return }
     const d = decodeInvite(inv)
     hint.className = d ? 'hint' : 'hint warn'
-    hint.textContent = d ? `Room ${d.room} on ${d.server}` : 'That doesn’t look like an elegy invite.'
-    if (d && !$('#j-dir').value) $('#j-dir').value = `${state.defaults.home}/elegy/${d.room}`
+    hint.textContent = d ? `Room ${d.room} on ${d.server}` : 'That doesn’t look like a cowove invite.'
+    if (d && !$('#j-dir').value) $('#j-dir').value = `${state.defaults.home}/cowove/${d.room}`
   })
 
   create.onsubmit = async (e) => {
@@ -407,7 +407,7 @@ async function pickFolder (input) {
       $('#pick-list', back).innerHTML = d.dirs.length
         ? d.dirs.map((n) => `<button data-dir="${esc(n)}">${I.folder}<span>${esc(n)}</span></button>`).join('')
         : '<div class="empty-note" style="padding:14px">No subfolders</div>'
-      $('#pick-note', back).textContent = d.hasSession ? 'This folder has been used with elegy before.' : d.isEmpty ? 'This folder is empty.' : ''
+      $('#pick-note', back).textContent = d.hasSession ? 'This folder has been used with cowove before.' : d.isEmpty ? 'This folder is empty.' : ''
       $('#pick-list', back).querySelectorAll('[data-dir]').forEach((b) => {
         b.onclick = () => load(`${d.path.replace(/[\\/]$/, '')}/${b.dataset.dir}`)
       })
@@ -437,11 +437,11 @@ export function openInvite (id) {
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
     <h3 id="inv-title">Invite someone</h3>
-    <p class="lead">Send them this code. They paste it into <b>Join a session</b> in elegy, or run the command in a terminal.</p>
+    <p class="lead">Send them this code. They paste it into <b>Join a session</b> in cowove, or run the command in a terminal.</p>
     <div class="label" style="margin-bottom:6px">Invite code</div>
     <div class="codebox"><code id="inv-code">${esc(s.invite)}</code><button class="btn icon" data-copy="inv-code" title="Copy" aria-label="Copy invite code">${I.copy}</button></div>
     <div class="label" style="margin-bottom:6px">Or in a terminal</div>
-    <div class="codebox"><code id="inv-cmd">elegy join ${esc(s.invite)}</code><button class="btn icon" data-copy="inv-cmd" title="Copy" aria-label="Copy command">${I.copy}</button></div>
+    <div class="codebox"><code id="inv-cmd">cowove join ${esc(s.invite)}</code><button class="btn icon" data-copy="inv-cmd" title="Copy" aria-label="Copy command">${I.copy}</button></div>
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
     ${local ? '<p class="hint warn">This is a local-network address. If your partner is somewhere else, run <code>cloudflared tunnel --url http://localhost:4321</code> and start a new session with the tunnel address as the public address (or use a hosted relay).</p>' : ''}
     <p class="hint">Anyone with this code can edit the project. Only share it with people you trust.</p>

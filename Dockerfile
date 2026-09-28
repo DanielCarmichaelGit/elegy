@@ -1,4 +1,4 @@
-# elegy relay + website. Build: docker build -t elegy-relay .   Run: see docs/hosting.md
+# cowove relay + website. Build: docker build -t cowove-relay .   Run: see docs/hosting.md
 
 # Bundle the website (needs dev dependencies; they don't ship in the image).
 FROM node:22-alpine AS web
@@ -22,11 +22,11 @@ COPY web ./web
 COPY --from=web /app/web/dist ./web/dist
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data && chown node:node /data
-ENV ELEGY_DATA=/data \
+ENV COWOVE_DATA=/data \
     PORT=4321
 VOLUME /data
 EXPOSE 4321
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD wget -qO- "http://127.0.0.1:${PORT}/healthz" >/dev/null || exit 1
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "bin/elegy.js", "serve"]
+CMD ["node", "bin/cowove.js", "serve"]

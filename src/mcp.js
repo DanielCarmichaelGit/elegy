@@ -1,7 +1,7 @@
 // MCP server (stdio) that lets any MCP-capable agent (Claude Code, Cursor,
 // Windsurf, Codex, ...) take part in a live session: see what collaborators
 // and their AIs are doing, coordinate, and even join or start a session by
-// itself. It forwards to the local `elegy join` process for the project, or
+// itself. It forwards to the local `cowove join` process for the project, or
 // runs the session itself when the agent joins on its own.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -16,17 +16,17 @@ import { toolLabel } from './agents/common.js'
 
 export { toolLabel }
 
-const NOT_RUNNING = 'There is no live elegy session for this project. If the user gave you an invite code, join with ' +
-  'elegy_join_session. To start a new session, use elegy_start_session. A person can also run `elegy join` or `elegy ui`.'
+const NOT_RUNNING = 'There is no live cowove session for this project. If the user gave you an invite code, join with ' +
+  'cowove_join_session. To start a new session, use cowove_start_session. A person can also run `cowove join` or `cowove ui`.'
 
 export async function runMcp () {
   const server = new McpServer(
-    { name: 'elegy', version: '0.1.0' },
+    { name: 'cowove', version: '0.1.0' },
     {
-      instructions: 'elegy lets several people (and their AI agents) edit one project live, each in their own tool. ' +
-        'If you are given an elegy invite code, join with elegy_join_session. In a session, files may change underneath ' +
-        'you at any time. Call elegy_status before starting a task; use elegy_partner_feed to see what a partner\'s AI is ' +
-        'doing; announce your task with elegy_set_focus; claim files or folders before larger changes and do not edit files ' +
+      instructions: 'cowove lets several people (and their AI agents) edit one project live, each in their own tool. ' +
+        'If you are given a cowove invite code, join with cowove_join_session. In a session, files may change underneath ' +
+        'you at any time. Call cowove_status before starting a task; use cowove_partner_feed to see what a partner\'s AI is ' +
+        'doing; announce your task with cowove_set_focus; claim files or folders before larger changes and do not edit files ' +
         'someone else has claimed. Always re-read a file right before you edit it.'
     }
   )
@@ -46,12 +46,12 @@ export async function runMcp () {
     }
   }
 
-  server.registerTool('elegy_status', {
+  server.registerTool('cowove_status', {
     description: 'See who else is in the live session, what they are working on, which files they recently edited or claimed, and recent messages. Call this before starting work.',
     inputSchema: {}
   }, () => withDaemon(async (d) => (await call(d, 'GET', '/status')).markdown))
 
-  server.registerTool('elegy_set_focus', {
+  server.registerTool('cowove_set_focus', {
     description: 'Tell collaborators what you are working on right now (e.g. "adding dark mode to the settings page"). Shown to them live.',
     inputSchema: { focus: z.string().describe('Short description of the current task') }
   }, ({ focus }) => withDaemon(async (d) => {
@@ -59,7 +59,7 @@ export async function runMcp () {
     return `Focus set: ${focus}`
   }))
 
-  server.registerTool('elegy_claim', {
+  server.registerTool('cowove_claim', {
     description: 'Claim files so collaborators (and their agents) know to stay out of them while you work. Accepts a file path, a folder, or a glob like "src/auth/**".',
     inputSchema: {
       pattern: z.string().describe('File path, folder, or glob'),
@@ -73,7 +73,7 @@ export async function runMcp () {
     return `Claimed ${pattern}.${warn}`
   }))
 
-  server.registerTool('elegy_release', {
+  server.registerTool('cowove_release', {
     description: 'Release a claim you made (or "*" for all of yours) once you are done.',
     inputSchema: { pattern: z.string().describe('The claimed pattern, or "*"') }
   }, ({ pattern }) => withDaemon(async (d) => {
@@ -81,7 +81,7 @@ export async function runMcp () {
     return `Released ${r.released} claim(s).`
   }))
 
-  server.registerTool('elegy_message', {
+  server.registerTool('cowove_message', {
     description: 'Send a chat message to collaborators, e.g. to ask a question, hand off work, or warn about a breaking change. Set "to" to message one person directly.',
     inputSchema: {
       text: z.string(),
@@ -92,7 +92,7 @@ export async function runMcp () {
     return to && !r.recipientOnline ? `Sent. (${to} is offline and will see it when they reconnect.)` : 'Sent.'
   }))
 
-  server.registerTool('elegy_read_messages', {
+  server.registerTool('cowove_read_messages', {
     description: 'Read chat messages from collaborators, including direct messages and shared files (with the local path each file was saved to). By default returns only unread messages.',
     inputSchema: {
       all: z.boolean().optional().describe('Return recent messages, not just unread ones'),
@@ -105,7 +105,7 @@ export async function runMcp () {
     return messages.map((m) => `- ${renderMessage(m, me)}`).join('\n')
   }))
 
-  server.registerTool('elegy_send_file', {
+  server.registerTool('cowove_send_file', {
     description: 'Send a file from this project to collaborators through chat, without adding it to the shared project (useful for screenshots, logs, exports, or drafts). The file must be inside the project folder.',
     inputSchema: {
       path: z.string().describe('Path relative to the project root'),
@@ -118,11 +118,11 @@ export async function runMcp () {
     return `Sent ${r.file.name}${to ? ` to ${to}` : ''}.`
   }))
 
-  server.registerTool('elegy_get_file', {
-    description: 'Download a file someone shared in chat. Received files are normally saved automatically (see elegy_read_messages); use this to fetch one again or save it into the project.',
+  server.registerTool('cowove_get_file', {
+    description: 'Download a file someone shared in chat. Received files are normally saved automatically (see cowove_read_messages); use this to fetch one again or save it into the project.',
     inputSchema: {
       id: z.string().describe('The message id shown next to the file'),
-      dest: z.string().optional().describe('Destination path or folder inside the project (default: .elegy/inbox/)')
+      dest: z.string().optional().describe('Destination path or folder inside the project (default: .cowove/inbox/)')
     }
   }, ({ id, dest }) => withDaemon(async (d) => {
     const r = await call(d, 'POST', '/get', { id, dest: dest ? insideProject(d.dir, dest) : undefined })
@@ -132,14 +132,14 @@ export async function runMcp () {
   // ------------------------------------------------ joining as an agent --
 
   const startAs = async ({ conn, folder, name, inviteServer }) => {
-    if (joined) throw new Error(`Already in session ${path.basename(joined.dir)} (${joined.dir}). Call elegy_leave_session first.`)
-    const cwd = process.env.ELEGY_DIR || process.cwd()
+    if (joined) throw new Error(`Already in session ${path.basename(joined.dir)} (${joined.dir}). Call cowove_leave_session first.`)
+    const cwd = process.env.COWOVE_DIR || process.cwd()
     let dir = folder ? path.resolve(cwd, folder) : null
     if (!dir) {
       // Join into the current folder only if it's empty or already this room's folder.
       const saved = readConfig(cwd)
-      const empty = !fs.existsSync(cwd) || fs.readdirSync(cwd).filter((n) => n !== '.elegy' && n !== '.DS_Store').length === 0
-      dir = empty || (saved && saved.room === conn.room) ? cwd : path.join(cwd, `elegy-${conn.room}`)
+      const empty = !fs.existsSync(cwd) || fs.readdirSync(cwd).filter((n) => n !== '.cowove' && n !== '.DS_Store').length === 0
+      dir = empty || (saved && saved.room === conn.room) ? cwd : path.join(cwd, `cowove-${conn.room}`)
     }
     // A person is already syncing this folder: work through their session.
     if (runningElsewhere(dir)) {
@@ -148,7 +148,7 @@ export async function runMcp () {
         joined = { dir, attached: true }
         return { dir, attached: true }
       }
-      throw new Error(`${dir} is already synced by another elegy session. Choose another folder.`)
+      throw new Error(`${dir} is already synced by another cowove session. Choose another folder.`)
     }
     const tool = clientTool()
     logs = []
@@ -184,14 +184,14 @@ export async function runMcp () {
     if (info) lines.push(`Project folder: ${info.dir}`, `You appear as: ${info.name}${info.kind === 'agent' ? ' (AI agent)' : ''}`)
     if (st) lines.push(`Shared files: ${st.fileCount}`, `People online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
     if (info && info.invite) lines.push(`Invite code (for others to join): ${info.invite}`)
-    if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with elegy_leave_session.')
+    if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with cowove_leave_session.')
     return lines.filter(Boolean).join('\n')
   }
 
-  server.registerTool('elegy_join_session', {
-    description: 'Join a live elegy session from an invite code, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "elegy-<room>" subfolder) and kept in sync live. Other people see you in the session.',
+  server.registerTool('cowove_join_session', {
+    description: 'Join a live cowove session from an invite code, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "cowove-<room>" subfolder) and kept in sync live. Other people see you in the session.',
     inputSchema: {
-      invite: z.string().describe('The invite code (or the full "elegy join <code>" command)'),
+      invite: z.string().describe('The invite code (or the full "cowove join <code>" command)'),
       folder: z.string().optional().describe('Where to put the project, relative to the current folder'),
       name: z.string().optional().describe('Name to show to others (default: "<tool> agent")')
     }
@@ -200,7 +200,7 @@ export async function runMcp () {
       const conn = decodeInvite(invite)
       const r = await startAs({ conn, folder, name })
       const text = await describeSession(r.dir, r.attached
-        ? `This folder is already in the session (someone runs elegy here), so you're working through their session.`
+        ? `This folder is already in the session (someone runs cowove here), so you're working through their session.`
         : `Joined room ${conn.room}. Files are synced into ${r.dir}; edit them there.`)
       return { content: [{ type: 'text', text }] }
     } catch (err) {
@@ -208,8 +208,8 @@ export async function runMcp () {
     }
   })
 
-  server.registerTool('elegy_start_session', {
-    description: 'Start a new live elegy session for a folder, as an AI agent, and get an invite code for others. Uses the user\'s default relay (set with `elegy relay set`) unless you pass one.',
+  server.registerTool('cowove_start_session', {
+    description: 'Start a new live cowove session for a folder, as an AI agent, and get an invite code for others. Uses the user\'s default relay (set with `cowove relay set`) unless you pass one.',
     inputSchema: {
       relay: z.string().optional().describe('Relay address, e.g. wss://relay.example.com'),
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
@@ -219,7 +219,7 @@ export async function runMcp () {
     try {
       const d = defaultRelay()
       const server_ = relay ? normalizeRelay(relay) : d && d.relay
-      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or have them run `elegy relay set <url>`.')
+      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or have them run `cowove relay set <url>`.')
       const r = await startAs({ conn: newConn(server_, relay ? keyFor(server_) : d.key), folder: folder || '.', name })
       return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite code below with collaborators.`) }] }
     } catch (err) {
@@ -227,7 +227,7 @@ export async function runMcp () {
     }
   })
 
-  server.registerTool('elegy_leave_session', {
+  server.registerTool('cowove_leave_session', {
     description: 'Leave the session this agent joined or started. Files stay on disk.',
     inputSchema: {}
   }, async () => {
@@ -235,14 +235,14 @@ export async function runMcp () {
     return { content: [{ type: 'text', text: left ? 'Left the session. The files stay where they are.' : 'You have not joined a session from here.' }] }
   })
 
-  server.registerTool('elegy_session_info', {
+  server.registerTool('cowove_session_info', {
     description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite code.',
     inputSchema: {}
   }, () => withDaemon(async (d) => describeSession(d.dir)))
 
   // ------------------------------------------------- the workspace, for agents --
 
-  server.registerTool('elegy_partner_feed', {
+  server.registerTool('cowove_partner_feed', {
     description: 'Read what a collaborator\'s AI is doing: their prompts, the AI\'s replies, and one-line actions like "Edited src/app.ts". Without "who", lists collaborators and their AI status. Use it to avoid duplicating or conflicting with their work.',
     inputSchema: {
       who: z.string().optional().describe('Collaborator name'),
@@ -276,7 +276,7 @@ export async function runMcp () {
     return out.join('\n')
   }))
 
-  server.registerTool('elegy_list_files', {
+  server.registerTool('cowove_list_files', {
     description: 'List the shared project\'s files with who edited each one recently and any claims, so you can see where others are working.',
     inputSchema: { prefix: z.string().optional().describe('Only paths under this folder, e.g. "src/auth"') }
   }, ({ prefix }) => withDaemon(async (d) => {

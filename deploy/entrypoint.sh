@@ -3,8 +3,8 @@
 # folder, then run the relay as the unprivileged "node" user.
 set -e
 if [ "$(id -u)" = "0" ]; then
-  mkdir -p "${ELEGY_DATA:-/data}"
-  chown -R node:node "${ELEGY_DATA:-/data}"
+  mkdir -p "${COWOVE_DATA:-/data}"
+  chown -R node:node "${COWOVE_DATA:-/data}"
   exec su-exec node "$@"
 fi
 exec "$@"

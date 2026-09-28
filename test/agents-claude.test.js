@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startClaudeCodeReader, slugFor } from '../src/agents/claude-code.js'
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-cc-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-cc-'))
 const project = path.join(home, 'code', 'my-app')
 fs.mkdirSync(path.join(project, 'web'), { recursive: true })
 const projDir = path.join(home, '.claude', 'projects', slugFor(project))
@@ -101,8 +101,8 @@ test('old conversations are not backfilled, and long text is truncated', async (
 })
 
 test('an agent that synced into a subfolder shares its own chat (chatDir)', async () => {
-  // e.g. Claude Code in the cloud runs in the repo, and elegy_join_session synced into ./elegy-<room>.
-  const synced = path.join(project, 'elegy-room1')
+  // e.g. Claude Code in the cloud runs in the repo, and cowove_join_session synced into ./cowove-<room>.
+  const synced = path.join(project, 'cowove-room1')
   fs.mkdirSync(synced, { recursive: true })
   fs.writeFileSync(path.join(projDir, 'agent.jsonl'), lines(
     user('Fix the header', { sessionId: 'agent' }),

@@ -11,7 +11,7 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 
-const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `elegy-relay-${n}-`))
+const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-relay-${n}-`))
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 async function waitFor (fn, ms = 5000) {
   const t = Date.now()
@@ -26,7 +26,7 @@ test('health endpoint and status page', async () => {
   assert.equal(h.ok, true)
   assert.equal(h.requiresKey, true)
   const page = await (await fetch(`http://127.0.0.1:${srv.port}/status`)).text()
-  assert.match(page, /elegy relay/)
+  assert.match(page, /cowove relay/)
   assert.match(page, /Running/)
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/nope`)).status, 404)
   await srv.close()
@@ -44,7 +44,7 @@ test('a relay key is needed to create rooms, not to join them', async () => {
   await host.start({ waitTimeoutMs: 3000 })
   const guest = new Session({ dir: tmp('g'), server, room: 'r1', secret: 'x', name: 'guest' })
   await guest.start({ waitTimeoutMs: 3000 })
-  const up = await fetch(`http://127.0.0.1:${srv.port}/files/other-room`, { method: 'POST', headers: { 'x-elegy-secret': 'x' }, body: 'hi' })
+  const up = await fetch(`http://127.0.0.1:${srv.port}/files/other-room`, { method: 'POST', headers: { 'x-cowove-secret': 'x' }, body: 'hi' })
   assert.equal(up.status, 403)
   await guest.stop(); await host.stop(); await srv.close()
 })
@@ -79,7 +79,7 @@ test('a room over its size quota refuses new edits', async () => {
 
 test('file storage quota per room', async () => {
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomFileBytes: 1000 })
-  const post = (body) => fetch(`http://127.0.0.1:${srv.port}/files/fq`, { method: 'POST', headers: { 'x-elegy-secret': 's' }, body })
+  const post = (body) => fetch(`http://127.0.0.1:${srv.port}/files/fq`, { method: 'POST', headers: { 'x-cowove-secret': 's' }, body })
   assert.equal((await post('x'.repeat(600))).status, 201)
   const r = await post('x'.repeat(600))
   assert.equal(r.status, 413)

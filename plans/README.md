@@ -6,6 +6,6 @@ problem it solves, the proposed shape, and the open questions. Move a plan to
 
 | Plan | Status |
 |---|---|
-| [The elegy website](hosted-website.md) | Prototype built; website first, anonymous |
+| [The cowove website](hosted-website.md) | Prototype built; website first, anonymous |
 | [Agents as first-class participants](agents-in-sessions.md) | Proposed, pairs with the website |
 | [Summaries of other people's AI chats](chat-summaries.md) | Benched until an LLM key is wired up |

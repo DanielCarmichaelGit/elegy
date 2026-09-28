@@ -1,5 +1,5 @@
-// Starting and stopping a session for a folder. Shared by `elegy join` and
-// `elegy ui` so both behave identically (config, STATUS.md, control API).
+// Starting and stopping a session for a folder. Shared by `cowove join` and
+// `cowove ui` so both behave identically (config, STATUS.md, control API).
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,7 +17,7 @@ export function decodeInvite (code) {
   try {
     let c = String(code).trim()
     if (c.includes('#')) c = c.slice(c.indexOf('#') + 1) // a website invite link: https://host/#<code>
-    j = JSON.parse(Buffer.from(c.replace(/^elegy join\s+/, '').replace(/^elegy:/, ''), 'base64url').toString('utf8'))
+    j = JSON.parse(Buffer.from(c.replace(/^cowove join\s+/, '').replace(/^cowove:/, ''), 'base64url').toString('utf8'))
   } catch {
     throw new Error('That invite code is not valid.')
   }
@@ -35,13 +35,13 @@ export function newConn (server, key = keyFor(server)) {
 }
 
 export function readConfig (dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, '.elegy', 'config.json'), 'utf8')) } catch { return null }
+  try { return JSON.parse(fs.readFileSync(path.join(dir, '.cowove', 'config.json'), 'utf8')) } catch { return null }
 }
 
 /** True if another process is already syncing this exact folder. */
 export function runningElsewhere (dir) {
   try {
-    const info = JSON.parse(fs.readFileSync(path.join(dir, '.elegy', 'daemon.json'), 'utf8'))
+    const info = JSON.parse(fs.readFileSync(path.join(dir, '.cowove', 'daemon.json'), 'utf8'))
     if (info.pid === process.pid) return false
     process.kill(info.pid, 0)
     return true
@@ -60,7 +60,7 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder`)
-  if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another elegy process.')
+  if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another cowove process.')
 
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
@@ -68,8 +68,8 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   const previous = readConfig(dir)
   // Sharing your AI chat is on by default; a pause is remembered for this folder.
   const shareAgent = !(previous && previous.room === conn.room && previous.shareAgent === false)
-  fs.mkdirSync(path.join(dir, '.elegy'), { recursive: true })
-  fs.writeFileSync(path.join(dir, '.elegy', 'config.json'),
+  fs.mkdirSync(path.join(dir, '.cowove'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.cowove', 'config.json'),
     JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent }, null, 2), { mode: 0o600 })
   ensureGitExclude(dir)
 
@@ -77,7 +77,7 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
-  const statusFile = path.join(dir, '.elegy', 'STATUS.md')
+  const statusFile = path.join(dir, '.cowove', 'STATUS.md')
   session.on('status-changed', () => {
     try { fs.writeFileSync(statusFile, renderStatus(session.status())) } catch {}
   })
@@ -117,25 +117,25 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   }
 }
 
-/** Keep .elegy/ out of git without editing the (synced) .gitignore. */
+/** Keep .cowove/ out of git without editing the (synced) .gitignore. */
 function ensureGitExclude (dir) {
   const exclude = path.join(dir, '.git', 'info', 'exclude')
   try {
     if (!fs.existsSync(path.join(dir, '.git'))) return
     const text = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
-    if (!text.split('\n').includes('.elegy/')) {
+    if (!text.split('\n').includes('.cowove/')) {
       fs.mkdirSync(path.dirname(exclude), { recursive: true })
-      fs.appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}.elegy/\n`)
+      fs.appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}.cowove/\n`)
     }
   } catch {}
 }
 
 // Recently used folders, for the UI's "rejoin" list.
-const recentFile = () => path.join(os.homedir(), '.elegy', 'recent.json')
+const recentFile = () => path.join(os.homedir(), '.cowove', 'recent.json')
 
 export function recentSessions () {
   try {
-    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => fs.existsSync(path.join(r.dir, '.elegy', 'config.json')))
+    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => fs.existsSync(path.join(r.dir, '.cowove', 'config.json')))
   } catch {
     return []
   }

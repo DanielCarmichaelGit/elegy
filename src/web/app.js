@@ -1,4 +1,4 @@
-// The elegy website: share a folder or join one from an invite link, then
+// The cowove website: share a folder or join one from an invite link, then
 // keep the tab open while it syncs. No accounts: a session is its link.
 import { WebSession } from './engine.js'
 import { handleFolder } from './folders.js'
@@ -50,7 +50,7 @@ async function pickFolder () {
     const root = await navigator.storage.getDirectory()
     return root.getDirectoryHandle(testFolder, { create: true })
   }
-  return window.showDirectoryPicker({ id: 'elegy', mode: 'readwrite' })
+  return window.showDirectoryPicker({ id: 'cowove', mode: 'readwrite' })
 }
 
 async function ensurePermission (handle) {
@@ -101,7 +101,7 @@ function readIdentity () {
 function unsupported () {
   return `<div class="notice">
     <strong>This browser can't open folders.</strong>
-    elegy syncs a folder on your computer, which only Chrome, Edge, Brave and Arc allow websites to do.
+    cowove syncs a folder on your computer, which only Chrome, Edge, Brave and Arc allow websites to do.
     Open this page in one of those to take part.</div>`
 }
 
@@ -115,7 +115,7 @@ async function renderHome () {
     </header>
     <section class="card">
       ${canPickFolders || testFolder ? identityFields() : unsupported()}
-      ${canPickFolders || testFolder ? '<button id="share" class="btn grad big">Share a folder</button><p class="fine">You\'ll pick your project folder and allow elegy to edit it. Nothing to install.</p>' : ''}
+      ${canPickFolders || testFolder ? '<button id="share" class="btn grad big">Share a folder</button><p class="fine">You\'ll pick your project folder and allow cowove to edit it. Nothing to install.</p>' : ''}
     </section>
     ${recent.length ? `<section class="card recent"><h2>Your sessions</h2>
       ${recent.map((r) => `<div class="row-item">
@@ -149,7 +149,7 @@ async function renderJoin (conn) {
     </header>
     <section class="card">
       ${canPickFolders || testFolder ? identityFields() : unsupported()}
-      ${canPickFolders || testFolder ? '<button id="join" class="btn grad big">Choose a folder for the project</button><p class="fine">Best in an empty folder. If files are already there, the session\'s versions win and yours are kept in <code>.elegy/conflicts</code>.</p>' : ''}
+      ${canPickFolders || testFolder ? '<button id="join" class="btn grad big">Choose a folder for the project</button><p class="fine">Best in an empty folder. If files are already there, the session\'s versions win and yours are kept in <code>.cowove/conflicts</code>.</p>' : ''}
     </section>
     <footer class="foot"><a href="/">Start your own session instead</a></footer>
   </main>`
@@ -179,7 +179,7 @@ async function resume (room) {
   const s = await getSession(room)
   if (!s || !s.handle) return toast('That session is no longer saved here')
   try {
-    if (!(await ensurePermission(s.handle))) return toast('elegy needs permission to edit the folder')
+    if (!(await ensurePermission(s.handle))) return toast('cowove needs permission to edit the folder')
   } catch { return toast('That folder is no longer available') }
   await begin({ conn: { server: s.server, room: s.room, secret: s.secret, key: s.key }, handle: s.handle, name: s.name, tool: s.tool })
 }
@@ -193,7 +193,7 @@ async function begin ({ conn, handle, name, tool, key, started = false }) {
   session = new WebSession({ folder: handleFolder(handle), server: conn.server, room: conn.room, secret: conn.secret, key: current.key, name, tool })
   const logs = []
   session.on('log', (l) => { logs.push(l); if (logs.length > 30) logs.shift() })
-  window.elegyLogs = logs // for troubleshooting from the console
+  window.cowoveLogs = logs // for troubleshooting from the console
   session.on('fatal', (err) => { toast(err.message); session.stop(); session = null; renderError(err.message) })
   try {
     await session.start()
@@ -235,7 +235,7 @@ function renderSession () {
   app.innerHTML = `
   <div class="shell">
     <header class="top">
-      <a href="/" class="brand" id="home">${logo}<span>elegy</span></a>
+      <a href="/" class="brand" id="home">${logo}<span>cowove</span></a>
       <div class="where"><span class="dot" id="dot"></span><strong>${esc(current.folderName)}</strong><span class="muted" id="conn"></span></div>
       <div class="grow"></div>
       <button class="btn sm grad" id="invite">Invite</button>
@@ -290,8 +290,8 @@ function aiToken () {
 }
 
 const mcpUrl = (tool) => `${location.origin}/mcp/${aiToken()}?tool=${encodeURIComponent(tool)}`
-const cursorLink = () => `cursor://anysphere.cursor-deeplink/mcp/install?name=elegy&config=${encodeURIComponent(btoa(JSON.stringify({ url: mcpUrl('Cursor') })))}`
-const claudeCommand = () => `claude mcp add --transport http --scope user elegy "${mcpUrl('Claude Code')}"`
+const cursorLink = () => `cursor://anysphere.cursor-deeplink/mcp/install?name=cowove&config=${encodeURIComponent(btoa(JSON.stringify({ url: mcpUrl('Cursor') })))}`
+const claudeCommand = () => `claude mcp add --transport http --scope user cowove "${mcpUrl('Claude Code')}"`
 
 function startAiLink () {
   clearInterval(ai.timer)
@@ -319,7 +319,7 @@ function renderAiCard () {
   const first = current.tool === 'Claude Code' ? 'claude' : 'cursor'
   const cursorBlock = `<div class="ai-opt"><strong>Cursor</strong>
       <a class="btn sm${first === 'cursor' ? ' primary' : ''}" href="${esc(cursorLink())}">Add to Cursor</a>
-      <p class="sub">Cursor asks to install "elegy". Then start a new chat.</p></div>`
+      <p class="sub">Cursor asks to install "cowove". Then start a new chat.</p></div>`
   const claudeBlock = `<div class="ai-opt"><strong>Claude Code</strong>
       <div class="cmd"><code id="cc-cmd">${esc(claudeCommand())}</code><button class="btn sm${first === 'claude' ? ' primary' : ''}" data-copy="cc">Copy</button></div>
       <p class="sub">Paste it once in any terminal, then restart Claude Code.</p></div>`

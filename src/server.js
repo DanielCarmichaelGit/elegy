@@ -37,14 +37,14 @@ export function relayConfig (opts = {}) {
   const env = process.env
   const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v))
   return {
-    relayKey: opts.relayKey ?? env.ELEGY_RELAY_KEY ?? '',
-    maxRoomBytes: num(opts.maxRoomBytes ?? env.ELEGY_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
-    maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.ELEGY_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
-    maxConnsPerIp: num(opts.maxConnsPerIp ?? env.ELEGY_MAX_CONNS_PER_IP, 50),
-    maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.ELEGY_MAX_NEW_ROOMS_PER_HOUR, 30),
-    roomTtlDays: num(opts.roomTtlDays ?? env.ELEGY_ROOM_TTL_DAYS, 30),
+    relayKey: opts.relayKey ?? env.COWOVE_RELAY_KEY ?? '',
+    maxRoomBytes: num(opts.maxRoomBytes ?? env.COWOVE_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
+    maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.COWOVE_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
+    maxConnsPerIp: num(opts.maxConnsPerIp ?? env.COWOVE_MAX_CONNS_PER_IP, 50),
+    maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.COWOVE_MAX_NEW_ROOMS_PER_HOUR, 30),
+    roomTtlDays: num(opts.roomTtlDays ?? env.COWOVE_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
-    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.ELEGY_TRUST_PROXY || '')
+    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.COWOVE_TRUST_PROXY || '')
   }
 }
 
@@ -265,7 +265,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
 
   // Files shared in chat are stored on the relay, not in the synced project.
-  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-relay-')), 'files')
+  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-relay-')), 'files')
 
   const stats = () => {
     let connections = 0
@@ -347,7 +347,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const room = getRoom(name)
     const creating = !room.exists
     if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
-    const auth = room.authorize(req.headers['x-elegy-secret'] || '', req.headers['x-elegy-key'] || '')
+    const auth = room.authorize(req.headers['x-cowove-secret'] || '', req.headers['x-cowove-key'] || '')
     if (auth === 'ok' && creating) noteCreated(clientIp(req))
     if (auth !== 'ok') {
       dropIfUnused(room)
@@ -379,7 +379,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const room = getRoom(name)
     const creating = !room.exists
     if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
-    const auth = room.authorize(url.searchParams.get('secret') || '', url.searchParams.get('key') || req.headers['x-elegy-key'] || '')
+    const auth = room.authorize(url.searchParams.get('secret') || '', url.searchParams.get('key') || req.headers['x-cowove-key'] || '')
     if (auth === 'ok' && creating) noteCreated(ip)
     if (auth !== 'ok') {
       dropIfUnused(room)
@@ -507,7 +507,7 @@ function reject (socket, code, message) {
 
 function statusPage (s) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>elegy relay</title><link rel="icon" href="/logo.svg">
+<title>cowove relay</title><link rel="icon" href="/logo.svg">
 <style>
 :root{--bg:#f6f4f0;--card:#fff;--text:#1c1929;--muted:#6d6882;--ok:#22a06b;--border:#e7e2da}
 @media (prefers-color-scheme:dark){:root{--bg:#0e0c17;--card:#161327;--text:#f0edf8;--muted:#a09ab8;--border:#2a2542}}
@@ -516,8 +516,8 @@ body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--
 img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.02em}
 .ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
 p{color:var(--muted);margin:12px 0 0}code{font-size:13px}
-</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>elegy relay</h1>
+</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>cowove relay</h1>
 <div class="ok"><i></i>Running</div>
 <p>${s.connections} connection${s.connections === 1 ? '' : 's'} · ${s.roomsLoaded} active room${s.roomsLoaded === 1 ? '' : 's'}${s.requiresKey ? ' · starting sessions needs a relay key' : ''}</p>
-<p>Point elegy at this relay with<br><code>elegy relay set wss://&lt;this address&gt;</code></p></div></body></html>`
+<p>Point cowove at this relay with<br><code>cowove relay set wss://&lt;this address&gt;</code></p></div></body></html>`
 }

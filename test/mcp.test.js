@@ -1,5 +1,5 @@
 // An AI agent joins a session on its own through the MCP server, then uses
-// the workspace tools. Runs the real `elegy mcp` over stdio.
+// the workspace tools. Runs the real `cowove mcp` over stdio.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -12,8 +12,8 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { encodeInvite } from '../src/runner.js'
 
-const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'elegy.js')
-const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `elegy-mcp-${n}-`))
+const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cowove.js')
+const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-mcp-${n}-`))
 let relay, human, client, humanDir, agentCwd
 const text = (r) => r.content.map((c) => c.text).join('\n')
 const call = async (name, args = {}) => client.callTool({ name, arguments: args })
@@ -44,20 +44,20 @@ after(async () => {
 
 test('exposes the join and workspace tools', async () => {
   const names = (await client.listTools()).tools.map((t) => t.name)
-  for (const n of ['elegy_join_session', 'elegy_start_session', 'elegy_leave_session', 'elegy_session_info', 'elegy_partner_feed', 'elegy_list_files', 'elegy_status', 'elegy_claim']) {
+  for (const n of ['cowove_join_session', 'cowove_start_session', 'cowove_leave_session', 'cowove_session_info', 'cowove_partner_feed', 'cowove_list_files', 'cowove_status', 'cowove_claim']) {
     assert.ok(names.includes(n), n)
   }
 })
 
 test('without a session, tools explain how to join', async () => {
-  const r = await call('elegy_status')
+  const r = await call('cowove_status')
   assert.equal(r.isError, true)
-  assert.match(text(r), /elegy_join_session/)
+  assert.match(text(r), /cowove_join_session/)
 })
 
 test('an agent joins by invite and shows up as an agent', async () => {
   const invite = encodeInvite({ server: `ws://127.0.0.1:${relay.port}`, room: 'pair', secret: 's3cret' })
-  const r = await call('elegy_join_session', { invite: `elegy join ${invite}` })
+  const r = await call('cowove_join_session', { invite: `cowove join ${invite}` })
   assert.ok(!r.isError, text(r))
   assert.match(text(r), /Joined room pair/)
   // The empty current folder became the project folder, and files arrived.
@@ -66,7 +66,7 @@ test('an agent joins by invite and shows up as an agent', async () => {
   assert.equal(peer.name, 'Claude Code agent')
   assert.equal(peer.tool, 'Claude Code')
   // Joining twice is refused.
-  assert.equal((await call('elegy_join_session', { invite })).isError, true)
+  assert.equal((await call('cowove_join_session', { invite })).isError, true)
 })
 
 test('the agent can read a partner\'s AI feed and the file tree', async () => {
@@ -75,22 +75,22 @@ test('the agent can read a partner\'s AI feed and the file tree', async () => {
     { id: 'a', tool: 'Cursor', conv: 'c', kind: 'action', text: 'Edited src/auth.js', ts: Date.now() }
   ])
   human.claim('src/auth', 'refactoring')
-  const list = await waitFor(async () => { const t = text(await call('elegy_partner_feed')); return t.includes('dana') && t })
+  const list = await waitFor(async () => { const t = text(await call('cowove_partner_feed')); return t.includes('dana') && t })
   assert.match(list, /dana/)
-  const feed = await waitFor(async () => { const t = text(await call('elegy_partner_feed', { who: 'dana' })); return t.includes('Refactor') && t })
+  const feed = await waitFor(async () => { const t = text(await call('cowove_partner_feed', { who: 'dana' })); return t.includes('Refactor') && t })
   assert.match(feed, /dana asked: Refactor the auth module/)
   assert.match(feed, /· Edited src\/auth.js/)
-  const files = text(await call('elegy_list_files'))
+  const files = text(await call('cowove_list_files'))
   assert.match(files, /src\/app\.js/)
   assert.match(files, /Claims: src\/auth \(dana: refactoring\)/)
-  assert.match(text(await call('elegy_status')), /dana/)
+  assert.match(text(await call('cowove_status')), /dana/)
 })
 
 test('agent edits sync back to people, and leaving removes the agent', async () => {
   fs.writeFileSync(path.join(agentCwd, 'src', 'app.js'), 'console.log("hi from the agent")\n')
   await waitFor(() => fs.readFileSync(path.join(humanDir, 'src', 'app.js'), 'utf8').includes('agent'))
-  const info = text(await call('elegy_session_info'))
+  const info = text(await call('cowove_session_info'))
   assert.match(info, /Invite code/)
-  assert.match(text(await call('elegy_leave_session')), /Left the session/)
+  assert.match(text(await call('cowove_leave_session')), /Left the session/)
   await waitFor(() => !human.status().peers.some((p) => p.kind === 'agent'))
 })

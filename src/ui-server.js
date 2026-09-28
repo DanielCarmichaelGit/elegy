@@ -124,10 +124,10 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   async function ensureRelay () {
     if (relay) return relay
     try {
-      relay = await startServer({ port: relayPort, dataDir: path.join(os.homedir(), '.elegy', 'relay-data'), log: () => {} })
+      relay = await startServer({ port: relayPort, dataDir: path.join(os.homedir(), '.cowove', 'relay-data'), log: () => {} })
     } catch (err) {
       if (err.code === 'EADDRINUSE') {
-        // Probably an `elegy serve` already running here; use it.
+        // Probably an `cowove serve` already running here; use it.
         relay = { port: relayPort, external: true }
       } else throw err
     }
@@ -197,8 +197,8 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       return res.end(fs.readFileSync(LOGO))
     }
 
-    const supplied = req.headers['x-elegy-token'] || url.searchParams.get('t')
-    if (supplied !== token) return json(401, { error: 'Open elegy from the link printed by `elegy ui`.' })
+    const supplied = req.headers['x-cowove-token'] || url.searchParams.get('t')
+    if (supplied !== token) return json(401, { error: 'Open cowove from the link printed by `cowove ui`.' })
 
     try {
       if (req.method === 'GET' && url.pathname === '/api/events') return events(req, res)
@@ -230,7 +230,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
 
   async function receiveUpload (req, session) {
     const name = path.basename(decodeURIComponent(req.headers['x-filename'] || 'file')) || 'file'
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-up-'))
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-up-'))
     const file = path.join(dir, name)
     try {
       let size = 0
@@ -294,7 +294,7 @@ function listDir (p) {
     path: dir,
     parent: path.dirname(dir) !== dir ? path.dirname(dir) : null,
     dirs,
-    hasSession: fs.existsSync(path.join(dir, '.elegy', 'config.json')),
+    hasSession: fs.existsSync(path.join(dir, '.cowove', 'config.json')),
     isEmpty: entries.filter((e) => e.name !== '.DS_Store').length === 0
   }
 }

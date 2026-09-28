@@ -1,5 +1,5 @@
 // The web app's sync engine, driven through a real relay alongside a CLI
-// session, so browser users and `elegy join` users interoperate.
+// session, so browser users and `cowove join` users interoperate.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -13,7 +13,7 @@ import { nodeFolder } from './helpers/node-folder.js'
 
 let srv, server
 const open = []
-const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `elegy-web-${name}-`))
+const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-web-${name}-`))
 const read = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel), 'utf8') } catch { return null } }
 const write = (dir, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
@@ -128,8 +128,8 @@ test('joining a non-empty folder keeps the local version as a conflict copy', as
   await cli(c, 'carl', 'r3')
   await web(w, 'wendy', 'r3')
   assert.equal(read(w, 'a.txt'), 'shared\n')
-  const conflicts = fs.readdirSync(path.join(w, '.elegy', 'conflicts'))
-  assert.equal(read(path.join(w, '.elegy', 'conflicts', conflicts[0]), 'a.txt'), 'mine\n')
+  const conflicts = fs.readdirSync(path.join(w, '.cowove', 'conflicts'))
+  assert.equal(read(path.join(w, '.cowove', 'conflicts', conflicts[0]), 'a.txt'), 'mine\n')
   await waitFor(() => read(c, 'only-mine.txt') === 'local only\n')
 })
 
@@ -163,7 +163,7 @@ test('a local edit racing a remote edit to the same file is kept as a conflict c
   write(w, 'race.txt', 'wendy was here\n') // not polled yet...
   write(c, 'race.txt', 'carl was here\n') // ...when carl's edit arrives
   await waitFor(() => read(w, 'race.txt') === 'carl was here\n')
-  const dir = path.join(w, '.elegy', 'conflicts')
+  const dir = path.join(w, '.cowove', 'conflicts')
   await waitFor(() => fs.existsSync(dir))
   const copy = read(path.join(dir, fs.readdirSync(dir)[0]), 'race.txt')
   assert.equal(copy, 'wendy was here\n')
@@ -174,14 +174,14 @@ test('a local edit racing a remote edit to the same file is kept as a conflict c
 test('website invite links work in the CLI, and CLI codes in the website', async () => {
   const { decodeInvite: cliDecode, encodeInvite: cliEncode } = await import('../src/runner.js')
   const web = await import('../src/web/invite.js')
-  const conn = web.newRoom('wss://elegy.example')
-  const link = web.inviteLink('https://elegy.example/', conn)
-  assert.match(link, /^https:\/\/elegy\.example\/#/)
+  const conn = web.newRoom('wss://cowove.example')
+  const link = web.inviteLink('https://cowove.example/', conn)
+  assert.match(link, /^https:\/\/cowove\.example\/#/)
   assert.deepEqual(cliDecode(link), conn)
-  assert.deepEqual(cliDecode(`elegy join ${web.encodeInvite(conn)}`), conn)
+  assert.deepEqual(cliDecode(`cowove join ${web.encodeInvite(conn)}`), conn)
   assert.deepEqual(web.decodeInvite(cliEncode(conn)), conn)
-  assert.deepEqual(web.decodeInvite(`elegy join ${cliEncode(conn)}`), conn)
-  assert.equal(web.decodeInvite('https://elegy.example/#garbage'), null)
+  assert.deepEqual(web.decodeInvite(`cowove join ${cliEncode(conn)}`), conn)
+  assert.equal(web.decodeInvite('https://cowove.example/#garbage'), null)
 })
 
 test('the relay serves the website', async () => {

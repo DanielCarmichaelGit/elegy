@@ -8,12 +8,12 @@ export const MAX_BINARY_BYTES = 8 * 1024 * 1024
 // Never synced, regardless of .gitignore. .env files are excluded so secrets
 // stay on each person's machine.
 export const ALWAYS_IGNORED = [
-  '.git', '.elegy', 'node_modules', '.DS_Store', 'Thumbs.db',
+  '.git', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db',
   '.env', '.env.*', '!.env.example',
   '*.swp', '*.swo', '*~', '.#*'
 ]
 
-/** An ignore matcher from the built-ins plus the text of .gitignore / .elegyignore files. */
+/** An ignore matcher from the built-ins plus the text of .gitignore / .cowoveignore files. */
 export function makeIgnore (texts = []) {
   const ig = ignore().add(ALWAYS_IGNORED)
   for (const t of texts) if (t) ig.add(t)
@@ -45,7 +45,7 @@ export function isSafeRelPath (rel) {
     if (part === '' || part === '.' || part === '..') return false
   }
   const first = parts[0].toLowerCase()
-  if (first === '.git' || first === '.elegy') return false
+  if (first === '.git' || first === '.cowove') return false
   return true
 }
 

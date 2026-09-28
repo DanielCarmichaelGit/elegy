@@ -8,7 +8,7 @@ export function encodeInvite ({ server, room, secret }) {
 export function decodeInvite (text) {
   let code = String(text || '').trim()
   if (code.includes('#')) code = code.slice(code.indexOf('#') + 1)
-  code = code.replace(/^elegy join\s+/, '').replace(/^join=/, '')
+  code = code.replace(/^cowove join\s+/, '').replace(/^join=/, '')
   try {
     const j = JSON.parse(new TextDecoder().decode(unb64url(code)))
     if (j && j.s && j.r) return { server: j.s, room: j.r, secret: j.k || '' }

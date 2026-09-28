@@ -71,7 +71,7 @@ export class Connection extends EventEmitter {
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
       if (res.statusCode === 403) {
-        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `elegy relay set <url> --key <key>`.'))
+        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `cowove relay set <url> --key <key>`.'))
         this.close()
       } else if (res.statusCode === 401 || res.statusCode === 400) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))

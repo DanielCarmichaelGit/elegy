@@ -3,7 +3,7 @@ node_modules
 .github
 test
 docs
-elegy-data
-.elegy
+cowove-data
+.cowove
 *.md
 web/dist

@@ -6,8 +6,8 @@ import path from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'elegy.js')
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-home-'))
+const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cowove.js')
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-home-'))
 const env = { ...process.env, HOME: home }
 
 const waitFor = async (fn, ms = 5000) => {
@@ -18,10 +18,10 @@ const waitFor = async (fn, ms = 5000) => {
   }
 }
 
-test('elegy stop shuts down a running relay', async () => {
+test('cowove stop shuts down a running relay', async () => {
   const relay = spawn(process.execPath, [BIN, 'serve', '--port', '0', '--data', path.join(home, 'data')], { env, stdio: 'ignore' })
   const exited = new Promise((resolve) => relay.on('exit', resolve))
-  const procs = path.join(home, '.elegy', 'procs')
+  const procs = path.join(home, '.cowove', 'procs')
   await waitFor(() => fs.existsSync(path.join(procs, `${relay.pid}.json`)))
 
   const out = execFileSync(process.execPath, [BIN, 'stop'], { env, encoding: 'utf8' })
@@ -34,7 +34,7 @@ test('elegy stop shuts down a running relay', async () => {
 })
 
 test('stale registry entries are ignored and removed', async () => {
-  const procs = path.join(home, '.elegy', 'procs')
+  const procs = path.join(home, '.cowove', 'procs')
   fs.mkdirSync(procs, { recursive: true })
   fs.writeFileSync(path.join(procs, '999999.json'), JSON.stringify({ pid: 999999, kind: 'relay', port: 1, startedAt: 0 }))
   const { listProcesses } = await import('../src/procs.js')

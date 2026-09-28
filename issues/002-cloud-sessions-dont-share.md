@@ -8,25 +8,25 @@ agents), nothing it does shows up in the session: no feed, no presence.
 
 ## What should happen
 A cloud AI session shows up like a local one: its prompts, replies and actions
-appear in the feed, and it can coordinate through elegy's tools.
+appear in the feed, and it can coordinate through cowove's tools.
 
 ## What we know
 - A cloud session runs in its own container. Its chat history lives **only in
-  that container** (`~/.claude/projects/...`). An `elegy join` or website tab
+  that container** (`~/.claude/projects/...`). An `cowove join` or website tab
   on your own computer can never see it.
-- elegy's reader works in a cloud container. `elegy doctor --watch` run inside
+- cowove's reader works in a cloud container. `cowove doctor --watch` run inside
   a Claude Code cloud session on 2026-09-28 found the conversation and produced
   50 feed entries. Reading isn't the problem.
-- Nothing starts elegy inside the container. The repo's `.mcp.json` runs the
-  `elegy` command, which isn't installed there, and nobody runs `elegy join`.
+- Nothing starts cowove inside the container. The repo's `.mcp.json` runs the
+  `cowove` command, which isn't installed there, and nobody runs `cowove join`.
 - Even when started, the container must reach the relay. A relay on someone's
-  laptop (`elegy serve`, `ws://localhost...`) is unreachable from the cloud,
+  laptop (`cowove serve`, `ws://localhost...`) is unreachable from the cloud,
   and cloud environments often only allow approved network hosts.
 - Commit `4f60322` fixed one part: an agent that joins with
-  `elegy_join_session` into a subfolder now shares its own chat.
+  `cowove_join_session` into a subfolder now shares its own chat.
 
 ## Likely causes
-1. elegy isn't installed or started inside the cloud container.
+1. cowove isn't installed or started inside the cloud container.
 2. No relay the cloud can reach (not deployed publicly yet), or the cloud
    environment's network policy blocks it.
 
@@ -35,26 +35,26 @@ appear in the feed, and it can coordinate through elegy's tools.
   hosts an MCP server (`/mcp/<token>`). Point the cloud AI at it:
   - Claude Code on the web: add the server to the repo's `.mcp.json` with the
     personal token from an environment secret, e.g.
-    `{"mcpServers":{"elegy":{"type":"http","url":"https://<site>/mcp/${ELEGY_TOKEN}?tool=Claude%20Code"}}}`,
+    `{"mcpServers":{"cowove":{"type":"http","url":"https://<site>/mcp/${COWOVE_TOKEN}?tool=Claude%20Code"}}}`,
     and allow `<site>` in the environment's network settings.
   - Cursor cloud agents: the same address in `.cursor/mcp.json` (check
     whether Cursor expands environment variables there).
-  - The AI then shares through `elegy_share`, like "Connect your AI" in the browser.
+  - The AI then shares through `cowove_share`, like "Connect your AI" in the browser.
   - Open question: the token links to the session the person's **browser tab**
     is in. A cloud session with no tab open needs a way to pick the session:
-    an `elegy_join` tool taking an invite link, or a token bound to one session.
-- **B. Run elegy in the container.** A SessionStart hook that installs elegy
+    an `cowove_join` tool taking an invite link, or a token bound to one session.
+- **B. Run cowove in the container.** A SessionStart hook that installs cowove
   (`npm i -g github:DanielCarmichaelGit/elegy`) and runs
-  `elegy join "$ELEGY_INVITE"` in the background, with the invite as an
+  `cowove join "$COWOVE_INVITE"` in the background, with the invite as an
   environment secret. The full chat reader works, and the container's files
   sync too. Heavier, and it needs network access to the relay and to GitHub/npm.
 
 ## Next steps
 1. Deploy the site/relay at a public `https://` address (see `docs/hosting.md`).
-2. Build option A with an invite-based `elegy_join` tool so it doesn't need a
+2. Build option A with an invite-based `cowove_join` tool so it doesn't need a
    browser tab; document the per-tool setup; test from a real cloud session.
 3. Keep option B documented for people who want full chat history.
 
 ## Log
 - 2026-09-27: partly addressed (`4f60322`: agents syncing into a subfolder share their chat).
-- 2026-09-28: diagnosed with `elegy doctor` inside a cloud session; blocked on deploy.
+- 2026-09-28: diagnosed with `cowove doctor` inside a cloud session; blocked on deploy.
