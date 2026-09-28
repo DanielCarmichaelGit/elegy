@@ -64,3 +64,11 @@ a name, avatar, role (edit/view), and a token. Setup is one instruction the
 agent can follow on its own (install, or hosted MCP + invite link). Mark them
 as agents in the UI (badge), and let the session owner remove or mute them.
 Builds on "Cloud AI sessions join with nothing installed".
+
+## A plain REST API for agents and scripts
+**Status:** Idea
+**Unlocks:** Bots, scripts and agents that don't speak MCP can join sessions,
+read and write files, chat and post to the feed with ordinary HTTP calls.
+**Rough shape:** The agent API (on its own Fly machine) already does this work
+for its MCP tools; expose the same functions as documented REST endpoints,
+using the same agent keys from the dashboard.
