@@ -59,7 +59,7 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online })
       if (e.kind === 'prompt') {
         parts.push(`<div class="f-prompt">${avatar(person, color)}<div class="f-body">
           <div class="head"><b>${esc(who)}</b><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
-          <div class="bubble"><div class="text">${esc(e.text)}</div></div></div></div>`)
+          <div class="bubble"><div class="text">${esc(visiblePrompt(e.text))}</div></div></div></div>`)
       } else if (e.kind === 'reply') {
         parts.push(`<div class="f-reply"><div class="head"><span class="ai-badge">${I.sparkle}${esc(e.tool || 'AI')}</span><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
           <div class="md">${markdown(e.text)}</div></div>`)
@@ -85,6 +85,14 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online })
   }
   jump.onclick = () => { s.scrollTo({ top: s.scrollHeight, behavior: 'smooth' }); jump.hidden = true }
   s.addEventListener('scroll', () => { if (s.scrollHeight - s.scrollTop - s.clientHeight < 60) jump.hidden = true })
+}
+
+/** Prompts already shared may still contain Cursor's timestamp and user_query wrappers. */
+function visiblePrompt (text) {
+  const raw = String(text || '')
+  const queries = [...raw.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/gi)].map((m) => m[1].trim()).filter(Boolean)
+  if (queries.length) return queries.join('\n\n')
+  return raw.replace(/<timestamp>[\s\S]*?<\/timestamp>/gi, '').trim()
 }
 
 // ------------------------------------------------------------ markdown --
