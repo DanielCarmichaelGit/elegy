@@ -141,7 +141,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
       recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))),
-      defaults: { name: os.userInfo().username, home: os.homedir(), cwd: process.cwd() },
+      defaults: { name: os.userInfo().username, tool: detectTool(), home: os.homedir(), cwd: process.cwd() },
       relay: relay ? { port: relay.port, lan: `ws://${lanAddress()}:${relay.port}` } : null,
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
@@ -298,6 +298,18 @@ function listDir (p) {
     hasSession: fs.existsSync(path.join(dir, '.cowove', 'config.json')),
     isEmpty: entries.filter((e) => e.name !== '.DS_Store').length === 0
   }
+}
+
+/** The AI coding tool this person most likely uses, from what it has left in their home folder. */
+function detectTool () {
+  const home = os.homedir()
+  const found = [['.claude', 'Claude Code'], ['.cursor', 'Cursor'], ['.codex', 'Codex'], ['.codeium/windsurf', 'Windsurf']]
+    .map(([dir, tool]) => {
+      try { return { tool, used: fs.statSync(path.join(home, dir)).mtimeMs } } catch { return null }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.used - a.used)
+  return found[0]?.tool || 'Claude Code'
 }
 
 function expandHome (p) {

@@ -1,6 +1,6 @@
 // The session workspace: file tree on the left, a partner's live AI chat or a
 // shared file in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, remember, recall, toolsOf } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, remember, recall, toolsOf, decodeInvite } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
@@ -63,10 +63,15 @@ export function mountSession (id) {
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
-      <button class="btn sm" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
+      <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-chat" title="Chat" aria-label="Show chat">${I.chat}<span class="badge" id="chat-badge" hidden></span></button>
-      <button class="btn sm ghost wide-only" id="leave-btn">Leave</button>
-      <button class="btn sm ghost icon" data-shutdown title="Shut down cowove" aria-label="Shut down cowove">${I.power}</button>
+      <div class="overflow">
+        <button class="btn sm ghost icon" id="more-btn" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false">${I.more}</button>
+        <div class="popover more-menu" id="more-menu" role="menu" hidden>
+          <button class="pop-item" role="menuitem" id="leave-btn">Leave this session</button>
+          <button class="pop-item" role="menuitem" data-shutdown>Shut down cowove</button>
+        </div>
+      </div>
     </header>
     <div class="ws-body" id="ws-body">
       <aside class="ws-tree" aria-label="Project files">
@@ -74,11 +79,7 @@ export function mountSession (id) {
         <div class="tree-scroll" id="tree"></div>
       </aside>
       <main class="ws-main">
-        <div class="ws-mainbar">
-          <div class="segmented mode" role="tablist" aria-label="View">
-            <button role="tab" data-mode="ai">${I.sparkle}<span>AI</span></button>
-            <button role="tab" data-mode="files">${I.file}<span>Files</span></button>
-          </div>
+        <div class="ws-mainbar" id="mainbar" hidden>
           <div class="ws-tabs" id="main-tabs" role="tablist"></div>
         </div>
         <div class="ws-content" id="main"></div>
@@ -206,6 +207,13 @@ function bindTop () {
     if (!confirm('Stop syncing this folder? Your files stay where they are, and you can rejoin later.')) return
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
   }
+  const moreBtn = $('#more-btn')
+  const moreMenu = $('#more-menu')
+  const setMore = (open) => { moreMenu.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)) }
+  moreBtn.onclick = () => setMore(moreMenu.hidden)
+  moreMenu.addEventListener('click', () => setMore(false))
+  moreMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setMore(false); moreBtn.focus() } })
+  document.addEventListener('mousedown', (e) => { if (!moreBtn.parentElement.contains(e.target)) setMore(false) }, { signal: mounted.signal })
   const wrap = $('#people')
   const btn = $('#people-btn')
   const menu = $('#people-menu')
@@ -290,7 +298,7 @@ function renderTop () {
     <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : 'Reconnecting…'}"></span>`
   $('#people-btn').setAttribute('aria-label', `${people.length} ${people.length === 1 ? 'person' : 'people'} in this session${st.connected ? '' : ', reconnecting'}`)
   if (!$('#people-menu').hidden) renderPeopleMenu()
-  $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : `room ${st.room}`
+  $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
 }
 
 function renderPeopleMenu () {
@@ -333,9 +341,6 @@ function renderPeopleMenu () {
 
 // ------------------------------------------------------ main area (AI/Files) --
 function bindMain () {
-  document.querySelectorAll('[data-mode]').forEach((b) => {
-    b.onclick = () => setMode(b.dataset.mode)
-  })
   $('#main-tabs').addEventListener('click', (e) => {
     const close = e.target.closest('[data-close]')
     const tab = e.target.closest('[data-tab]')
@@ -343,11 +348,17 @@ function bindMain () {
     if (close) {
       e.stopPropagation()
       const key = close.dataset.close
-      const list = w.mode === 'ai' ? w.aiTabs : w.fileTabs
+      const isAi = close.dataset.kind === 'ai'
+      const list = isAi ? w.aiTabs : w.fileTabs
       const i = list.indexOf(key)
       if (i !== -1) list.splice(i, 1)
-      const selKey = w.mode === 'ai' ? 'aiSel' : 'fileSel'
+      const selKey = isAi ? 'aiSel' : 'fileSel'
       if (w[selKey] === key) w[selKey] = list[Math.min(i, list.length - 1)] || null
+      // Closing the tab you're looking at falls back to whatever is left.
+      if ((w.mode === 'ai') === isAi && !w[selKey]) {
+        const other = isAi ? 'files' : 'ai'
+        if ((other === 'ai' ? w.aiSel : w.fileSel)) w.mode = other
+      }
       saveWs(current)
       renderMainBar()
       renderMain()
@@ -355,27 +366,21 @@ function bindMain () {
       return
     }
     if (tab) {
-      if (w.mode === 'ai') openPerson(tab.dataset.tab)
+      if (tab.dataset.kind === 'ai') openPerson(tab.dataset.tab)
       else openFile(tab.dataset.tab)
     }
   })
-  $('#main').addEventListener('click', (e) => {
+  $('#main').addEventListener('click', async (e) => {
+    if (e.target.closest('[data-copy-invite]')) {
+      try { await navigator.clipboard.writeText(sum().invite); toast('Invite copied') } catch { openInvite(current) }
+      return
+    }
     const b = e.target.closest('[data-person]')
     if (b) openPerson(b.dataset.person)
     const f = e.target.closest('[data-fv]')
     if (f && f.dataset.fv === 'claim') claimPath(ws(current).fileSel, '')
     if (f && f.dataset.fv === 'release') releasePattern(f.dataset.pattern)
   })
-}
-
-function setMode (mode) {
-  const w = ws(current)
-  if (w.mode === mode) return
-  w.mode = mode
-  saveWs(current)
-  renderMainBar()
-  renderMain()
-  renderTreePane()
 }
 
 function openPerson (name) {
@@ -408,25 +413,20 @@ function openFile (path) {
 function renderMainBar () {
   if (!current || !$('#main-tabs')) return
   const w = ws(current)
-  document.querySelectorAll('[data-mode]').forEach((b) => {
-    const on = b.dataset.mode === w.mode
-    b.classList.toggle('on', on)
-    b.setAttribute('aria-selected', String(on))
-  })
   const el = $('#main-tabs')
-  if (w.mode === 'ai') {
-    el.innerHTML = w.aiTabs.map((name) => {
-      const p = personInfo(name)
-      const working = p.agent && p.agent.sharing !== false && p.agent.status === 'working'
-      return `<div class="ws-tab${w.aiSel === name ? ' on' : ''}" role="tab" aria-selected="${w.aiSel === name}" tabindex="0" data-tab="${esc(name)}">
-        ${avatar(name, p.color, p.online)}<span class="nm">${esc(p.isMe ? 'You' : name)}</span>${working ? '<span class="pulse" title="AI is working"></span>' : ''}
-        <button class="x" data-close="${esc(name)}" aria-label="Close ${esc(name)}">${I.x}</button></div>`
-    }).join('')
-  } else {
-    el.innerHTML = w.fileTabs.map((path) => `<div class="ws-tab${w.fileSel === path ? ' on' : ''}" role="tab" aria-selected="${w.fileSel === path}" tabindex="0" data-tab="${esc(path)}" title="${esc(path)}">
-        <span class="ico">${I.file}</span><span class="nm">${esc(basename(path))}</span>${w.stale[path] ? '<span class="changed" title="Changed"></span>' : ''}
-        <button class="x" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('')
-  }
+  const aiOn = (name) => w.mode === 'ai' && w.aiSel === name
+  const fileOn = (path) => w.mode === 'files' && w.fileSel === path
+  el.innerHTML = w.aiTabs.map((name) => {
+    const p = personInfo(name)
+    const working = p.agent && p.agent.sharing !== false && p.agent.status === 'working'
+    return `<div class="ws-tab${aiOn(name) ? ' on' : ''}" role="tab" aria-selected="${aiOn(name)}" tabindex="0" data-kind="ai" data-tab="${esc(name)}" title="${esc(p.isMe ? 'Your AI chat' : `${name}'s AI chat`)}">
+      ${avatar(name, p.color, p.online)}<span class="nm">${esc(p.isMe ? 'Your AI' : `${name}'s AI`)}</span>${working ? '<span class="pulse" title="AI is working"></span>' : ''}
+      <button class="x" data-kind="ai" data-close="${esc(name)}" aria-label="Close ${esc(name)}">${I.x}</button></div>`
+  }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : '') +
+  w.fileTabs.map((path) => `<div class="ws-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
+      <span class="ico">${I.file}</span><span class="nm">${esc(basename(path))}</span>${w.stale[path] ? '<span class="changed" title="Changed"></span>' : ''}
+      <button class="x" data-kind="file" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('')
+  $('#mainbar').hidden = !w.aiTabs.length && !w.fileTabs.length
 }
 
 function renderMain () {
@@ -437,15 +437,25 @@ function renderMain () {
   if (w.mode === 'ai') {
     if (!w.aiSel) {
       const people = st.peers
+      if (!people.length) {
+        const invite = sum().invite
+        el.innerHTML = `<div class="main-empty invite-empty">
+          <div class="ill">${I.link}</div>
+          <h3>Invite someone to code with you</h3>
+          <p class="hint">Send them this invite. They paste it into <b>Join a session</b> in cowove.</p>
+          <div class="codebox"><code id="empty-invite">${esc(invite)}</code></div>
+          <button class="btn primary" data-copy-invite>${I.copy}<span>Copy invite</span></button>
+          <p class="hint small">Once they join, you'll see their AI chat here as it happens.${inviteIsLocal(invite) ? ' This invite only works on your network. For someone elsewhere, see <b>Invite</b>.' : ''}</p>
+        </div>`
+        return
+      }
       el.innerHTML = `<div class="main-empty">
         <div class="ill">${I.sparkle}</div>
         <h3>Watch your partners' AI, live</h3>
-        <p class="hint">See what they ask Claude Code or Cursor, what it answers, and which files it touches. Nothing is shared from command output or file contents.</p>
+        <p class="hint">Pick someone to see what they ask their AI, what it answers, and which files it touches.</p>
         <div class="row" style="justify-content:center;flex-wrap:wrap">
           ${people.map((p) => `<button class="btn" data-person="${esc(p.name)}">${avatar(p.name, p.color, true)}${esc(p.name)}</button>`).join('')}
-          <button class="btn ghost" data-person="${esc(st.me.name)}">See what you're sharing</button>
         </div>
-        ${people.length ? '' : '<p class="hint">Nobody else is here yet. Use <b>Invite</b> to bring someone in.</p>'}
       </div>`
       return
     }
@@ -467,6 +477,11 @@ function renderMain () {
 }
 
 const fileKey = (path) => `${current}\n${path}`
+
+function inviteIsLocal (invite) {
+  const d = decodeInvite(invite || '')
+  return !!d && !d.server.startsWith('wss://')
+}
 
 function treeMeta (path) {
   const t = state.trees.get(current)
@@ -722,6 +737,7 @@ function renderRecipients () {
   sel.innerHTML = '<option value="">Everyone</option>' + [...names].sort().map((n) =>
     `<option value="${esc(n)}" ${n === state.to ? 'selected' : ''}>${esc(n)} (direct${online.has(n) ? '' : ', offline'})</option>`).join('')
   sel.value = state.to
+  sel.closest('.to').hidden = names.size === 0
   updatePlaceholder()
 }
 

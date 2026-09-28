@@ -153,6 +153,8 @@ function topbarHtml () {
 export function renderTabs () {
   const el = $('#tabs')
   if (!el) return
+  // One session is the normal case; tabs only help when there are several.
+  el.hidden = state.sessions.size < 2 && state.view !== 'home'
   el.innerHTML = [...state.sessions.values()].map((s) => {
     const unread = s.status.unread
     return `<button class="tab${state.view === s.id ? ' on' : ''}" data-go="${s.id}">
@@ -177,42 +179,76 @@ function toolOptions (selected) {
   return TOOLS.map((t) => `<option ${t === selected ? 'selected' : ''}>${t}</option>`).join('')
 }
 
+// Who you are and what you code with rarely change, so they're a single
+// line on the home screen instead of fields on every form.
+const me = () => ({
+  name: recall('name', state.defaults.name || ''),
+  tool: recall('tool', state.defaults.tool || 'Claude Code')
+})
+
+const tildify = (p) => state.defaults.home && p.startsWith(state.defaults.home) ? `~${p.slice(state.defaults.home.length)}` : p
+
+function relaySummary () {
+  const mode = recall('relayMode', 'host')
+  if (mode === 'remote' && recall('server')) return `Relay: ${esc(recall('server'))}`
+  if (recall('publicUrl')) return `Relay: this computer, via ${esc(recall('publicUrl'))}`
+  return 'Relay: this computer (same network)'
+}
+
 function homeHtml () {
-  const name = recall('name', state.defaults.name || '')
-  const tool = recall('tool', 'Claude Code')
+  const { name, tool } = me()
   const relayMode = recall('relayMode', 'host')
   const running = [...state.sessions.values()]
+  const recent = state.recent.slice(0, 3)
   return `
   <main class="home">
-    <section class="hero">
+    <section class="hero${running.length || recent.length ? ' small' : ''}">
       <img src="/logo.svg" alt="">
       <div class="wordmark">co<i>wo</i>ve</div>
-      <p class="tagline">Vibe code together in real time, from anywhere, each in whatever AI tool you like.</p>
+      <p class="tagline">Code together in real time, each in your own AI tool.</p>
     </section>
+
+    ${running.length || recent.length ? `
+    <section class="resume">
+      <h3 class="section-title">Pick up where you left off</h3>
+      <div class="list">
+        ${running.map((s) => `
+        <button class="card list-item" data-go="${s.id}">
+          <div class="folder-ico live">${I.folder}</div>
+          <div class="meta"><div class="name">${esc(basename(s.dir))}</div><div class="sub">Running · ${s.status.peers.length ? `${s.status.peers.length} other${s.status.peers.length === 1 ? '' : 's'} here` : 'just you so far'}</div></div>
+          <span class="go">Open</span>
+        </button>`).join('')}
+        ${recent.map((r) => `
+        <button class="card list-item" data-rejoin="${esc(r.dir)}">
+          <div class="folder-ico">${I.folder}</div>
+          <div class="meta"><div class="name">${esc(basename(r.dir))}</div><div class="sub">${esc(tildify(r.dir))} · ${esc(ago(r.lastUsed))}</div></div>
+          <span class="go">Rejoin</span>
+        </button>`).join('')}
+      </div>
+    </section>` : ''}
 
     <section class="choices">
       <form class="card choice" id="create-form" autocomplete="off">
         <h2>Start a session</h2>
-        <p>Share a project folder and invite someone to build with you.</p>
+        <p>Pick a project folder. You'll get an invite to send.</p>
         <div class="field">
           <label for="c-dir">Project folder</label>
-          <div class="row"><input class="input grow" id="c-dir" name="dir" placeholder="~/code/my-app" value="${esc(recall('createDir', state.defaults.cwd || ''))}" required>
+          <div class="row"><input class="input grow" id="c-dir" name="dir" placeholder="~/code/my-app" value="${esc(tildify(recall('createDir', state.defaults.cwd || '')))}" required>
           <button type="button" class="btn icon" data-browse="c-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
         </div>
-        <div class="row">
-          <div class="field grow"><label for="c-name">Your name</label><input class="input" id="c-name" name="name" value="${esc(name)}" required></div>
-          <div class="field grow"><label for="c-tool">Coding with</label><select class="input" id="c-tool" name="tool">${toolOptions(tool)}</select></div>
-        </div>
-        <div class="relay-box">
+        <button class="btn primary full" type="submit">Start session</button>
+        <p class="error" id="create-error"></p>
+        <details class="more">
+          <summary><span id="relay-summary">${relaySummary()}</span> · <u>change</u></summary>
           <div class="segmented" role="tablist">
-            <button type="button" data-relay="host" class="${relayMode === 'host' ? 'on' : ''}">Host relay here</button>
-            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">Use a relay server</button>
+            <button type="button" data-relay="host" class="${relayMode === 'host' ? 'on' : ''}">This computer</button>
+            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">A relay server</button>
           </div>
           <div id="relay-host" ${relayMode === 'host' ? '' : 'hidden'}>
             <div class="field">
-              <label for="c-public">Public address <span class="hint">(optional)</span></label>
+              <label for="c-public">Public address <span class="hint">(only if your partner is elsewhere)</span></label>
               <input class="input" id="c-public" name="publicUrl" placeholder="wss://your-tunnel.trycloudflare.com" value="${esc(recall('publicUrl'))}">
-              <span class="hint">Leave empty if your partner is on the same network. Otherwise run <code>cloudflared tunnel --url http://localhost:4321</code> and paste the https address here.</span>
+              <span class="hint">Run <code>cloudflared tunnel --url http://localhost:4321</code> and paste the https address it prints.</span>
             </div>
           </div>
           <div id="relay-remote" ${relayMode === 'remote' ? '' : 'hidden'}>
@@ -221,55 +257,43 @@ function homeHtml () {
               <input class="input" id="c-server" name="server" placeholder="wss://relay.example.com" value="${esc(recall('server'))}">
             </div>
           </div>
-        </div>
-        <button class="btn primary full" type="submit">Start session</button>
-        <p class="error" id="create-error"></p>
+        </details>
       </form>
 
       <form class="card choice" id="join-form" autocomplete="off">
         <h2>Join a session</h2>
         <p>Paste the invite your partner sent you.</p>
         <div class="field">
-          <label for="j-invite">Invite code</label>
-          <textarea class="input mono" id="j-invite" name="invite" rows="3" placeholder="cowove join eyJz…" required></textarea>
-          <span class="hint" id="invite-hint">&nbsp;</span>
+          <label for="j-invite">Invite</label>
+          <textarea class="input mono" id="j-invite" name="invite" rows="2" placeholder="cowove join eyJz…" required></textarea>
+          <span class="hint" id="invite-hint" hidden></span>
         </div>
-        <div class="field">
-          <label for="j-dir">Put the project in</label>
-          <div class="row"><input class="input grow" id="j-dir" name="dir" placeholder="~/code/their-app" value="${esc(recall('joinDir'))}" required>
-          <button type="button" class="btn icon" data-browse="j-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
-          <span class="hint">An empty folder is best. It will fill with their files.</span>
-        </div>
-        <div class="row">
-          <div class="field grow"><label for="j-name">Your name</label><input class="input" id="j-name" name="name" value="${esc(name)}" required></div>
-          <div class="field grow"><label for="j-tool">Coding with</label><select class="input" id="j-tool" name="tool">${toolOptions(recall('tool', 'Cursor'))}</select></div>
-        </div>
-        <label class="check"><input type="checkbox" name="preferLocal"> Keep my versions of files that already exist in this folder</label>
         <button class="btn primary full" type="submit">Join session</button>
         <p class="error" id="join-error"></p>
+        <details class="more" id="join-more">
+          <summary>Files go to <span id="j-dir-summary">a new folder in ~/cowove</span> · <u>change</u></summary>
+          <div class="field">
+            <label for="j-dir">Put the project in</label>
+            <div class="row"><input class="input grow" id="j-dir" name="dir" placeholder="~/cowove/their-app">
+            <button type="button" class="btn icon" data-browse="j-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
+            <span class="hint">An empty folder is best. It fills with their files.</span>
+          </div>
+          <label class="check"><input type="checkbox" name="preferLocal"> Keep my versions of files already in this folder</label>
+        </details>
       </form>
     </section>
 
-    ${running.length ? `
-      <h3 class="section-title">Running now</h3>
-      <div class="list">${running.map((s) => `
-        <div class="card list-item">
-          <div class="folder-ico">${I.folder}</div>
-          <div class="meta"><div class="name">${esc(basename(s.dir))}</div><div class="sub">${esc(s.dir)} · ${s.status.peers.length} other${s.status.peers.length === 1 ? '' : 's'} online</div></div>
-          <button class="btn sm" data-go="${s.id}">Open</button>
-        </div>`).join('')}</div>` : ''}
+    <div class="identity" id="identity">
+      <span>You'll show up as <b>${esc(name)}</b>, coding with <b>${esc(tool)}</b>.</span>
+      <button type="button" class="linkish" id="edit-identity">Change</button>
+      <form class="identity-edit" id="identity-form" hidden>
+        <input class="input" name="name" value="${esc(name)}" aria-label="Your name" required>
+        <select class="input" name="tool" aria-label="AI tool">${toolOptions(tool)}</select>
+        <button class="btn sm primary" type="submit">Save</button>
+      </form>
+    </div>
 
-    ${state.recent.length ? `
-      <h3 class="section-title">Recent</h3>
-      <div class="list">${state.recent.map((r) => `
-        <div class="card list-item">
-          <div class="folder-ico">${I.folder}</div>
-          <div class="meta"><div class="name">${esc(basename(r.dir))}</div><div class="sub">${esc(r.dir)} · as ${esc(r.name)} · ${esc(ago(r.lastUsed))}</div></div>
-          <button class="btn sm" data-rejoin="${esc(r.dir)}">Rejoin</button>
-        </div>`).join('')}</div>` : ''}
-
-    <p class="footer-note">Files sync live between everyone in a session. Chat, direct messages and file sharing live inside each session.</p>
-    ${running.length ? '' : `<p class="footer-note" style="margin-top:12px"><button class="btn sm ghost" data-shutdown>${I.power}<span>Shut down cowove</span></button></p>`}
+    ${running.length ? '' : `<p class="footer-note"><button class="btn sm ghost" data-shutdown>${I.power}<span>Shut down cowove</span></button></p>`}
   </main>`
 }
 
@@ -279,6 +303,7 @@ function bindHome () {
   if (!create) return
 
   let relayMode = recall('relayMode', 'host')
+  const updateRelay = () => { $('#relay-summary').innerHTML = relaySummary() }
   create.querySelectorAll('[data-relay]').forEach((b) => {
     b.onclick = () => {
       relayMode = b.dataset.relay
@@ -286,43 +311,69 @@ function bindHome () {
       create.querySelectorAll('[data-relay]').forEach((x) => x.classList.toggle('on', x === b))
       $('#relay-host').hidden = relayMode !== 'host'
       $('#relay-remote').hidden = relayMode !== 'remote'
+      updateRelay()
     }
   })
-  document.querySelectorAll('[data-browse]').forEach((b) => { b.onclick = () => pickFolder($(`#${b.dataset.browse}`)) })
+  $('#c-public').onchange = (e) => { remember('publicUrl', e.target.value.trim()); updateRelay() }
+  $('#c-server').onchange = (e) => { remember('server', e.target.value.trim()); updateRelay() }
+  document.querySelectorAll('[data-browse]').forEach((b) => {
+    b.onclick = async () => {
+      const input = $(`#${b.dataset.browse}`)
+      const before = input.value
+      await pickFolder(input)
+      if (b.dataset.browse === 'j-dir' && input.value !== before) { joinDirTouched = true; syncJoinDir() }
+    }
+  })
 
+  let joinDirTouched = false
+  const syncJoinDir = () => { $('#j-dir-summary').textContent = $('#j-dir').value || 'a new folder in ~/cowove' }
+  $('#j-dir').addEventListener('input', () => { joinDirTouched = true; syncJoinDir() })
   $('#j-invite').addEventListener('input', (e) => {
     const inv = e.target.value.trim()
     const hint = $('#invite-hint')
-    if (!inv) { hint.innerHTML = '&nbsp;'; hint.className = 'hint'; return }
-    const d = decodeInvite(inv)
-    hint.className = d ? 'hint' : 'hint warn'
-    hint.textContent = d ? `Room ${d.room} on ${d.server}` : 'That doesn’t look like a cowove invite.'
-    if (d && !$('#j-dir').value) $('#j-dir').value = `${state.defaults.home}/cowove/${d.room}`
+    const d = inv && decodeInvite(inv)
+    hint.hidden = !inv || !!d
+    hint.className = 'hint warn'
+    hint.textContent = 'That doesn’t look like a cowove invite. Copy the whole thing they sent.'
+    if (d && !joinDirTouched) { $('#j-dir').value = `~/cowove/${d.room}`; syncJoinDir() }
   })
+
+  const idForm = $('#identity-form')
+  $('#edit-identity').onclick = () => { idForm.hidden = !idForm.hidden; if (!idForm.hidden) idForm.name.focus() }
+  idForm.onsubmit = (e) => {
+    e.preventDefault()
+    remember('name', idForm.name.value.trim())
+    remember('tool', idForm.tool.value)
+    render()
+  }
 
   create.onsubmit = async (e) => {
     e.preventDefault()
     const f = new FormData(create)
-    remember('name', f.get('name')); remember('tool', f.get('tool')); remember('createDir', f.get('dir'))
-    remember('publicUrl', f.get('publicUrl') || ''); remember('server', f.get('server') || '')
+    const who = me()
+    remember('createDir', f.get('dir'))
     await submit(create, '#create-error', {
-      mode: 'create', dir: f.get('dir'), name: f.get('name'), tool: f.get('tool'),
-      hostRelay: relayMode === 'host', publicUrl: f.get('publicUrl'), server: f.get('server')
-    }, true)
+      mode: 'create', dir: f.get('dir'), name: who.name, tool: who.tool,
+      hostRelay: relayMode === 'host', publicUrl: recall('publicUrl'), server: recall('server')
+    })
   }
   join.onsubmit = async (e) => {
     e.preventDefault()
     const f = new FormData(join)
-    remember('name', f.get('name')); remember('tool', f.get('tool')); remember('joinDir', f.get('dir'))
+    const d = decodeInvite(f.get('invite') || '')
+    if (!d) { $('#join-error').textContent = 'Paste the invite your partner sent you.'; return }
+    const dir = (f.get('dir') || '').trim() || `~/cowove/${d.room}`
+    const who = me()
     await submit(join, '#join-error', {
-      mode: 'join', invite: f.get('invite'), dir: f.get('dir'), name: f.get('name'), tool: f.get('tool'),
+      mode: 'join', invite: f.get('invite'), dir, name: who.name, tool: who.tool,
       prefer: f.get('preferLocal') ? 'local' : 'remote'
     })
   }
   document.querySelectorAll('[data-rejoin]').forEach((b) => {
     b.onclick = async () => {
+      const label = b.querySelector('.go')
       b.disabled = true
-      b.textContent = 'Connecting…'
+      label.textContent = 'Connecting…'
       try {
         const sum = await api('POST', '/api/sessions', { mode: 'rejoin', dir: b.dataset.rejoin })
         state.sessions.set(sum.id, sum)
@@ -330,13 +381,13 @@ function bindHome () {
       } catch (err) {
         toast(err.message)
         b.disabled = false
-        b.textContent = 'Rejoin'
+        label.textContent = 'Rejoin'
       }
     }
   })
 }
 
-async function submit (form, errSel, body, showInvite = false) {
+async function submit (form, errSel, body) {
   const btn = form.querySelector('button[type=submit]')
   const label = btn.textContent
   btn.disabled = true
@@ -346,7 +397,6 @@ async function submit (form, errSel, body, showInvite = false) {
     const sum = await api('POST', '/api/sessions', body)
     state.sessions.set(sum.id, sum)
     await go(sum.id)
-    if (showInvite) openInvite(sum.id)
   } catch (err) {
     $(errSel).textContent = err.message
     btn.disabled = false
@@ -367,7 +417,9 @@ async function pickFolder (input) {
     <div class="actions"><button class="btn ghost" id="pick-cancel">Cancel</button><button class="btn primary" id="pick-use">Use this folder</button></div>
   </div>`
   document.body.appendChild(back)
-  const close = () => back.remove()
+  let done
+  const closed = new Promise((resolve) => { done = resolve })
+  const close = () => { back.remove(); done() }
   let current = null
   const load = async (p) => {
     try {
@@ -395,6 +447,7 @@ async function pickFolder (input) {
   back.onkeydown = (e) => { if (e.key === 'Escape') close() }
   await load(input.value || state.defaults.home)
   $('#pick-path', back).focus()
+  return closed
 }
 
 
