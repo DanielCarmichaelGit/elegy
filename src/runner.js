@@ -36,12 +36,14 @@ export function decodeInvite (code) {
   return { server: j.s, room: j.r, secret: j.k || '' }
 }
 
+/** A new room: `secret` invites people to edit, `viewSecret` to only watch. */
 export function newConn (server, key = keyFor(server)) {
   return {
     server,
     ...(key ? { key } : {}),
     room: `room-${crypto.randomBytes(4).toString('hex')}`,
-    secret: crypto.randomBytes(18).toString('base64url')
+    secret: crypto.randomBytes(18).toString('base64url'),
+    viewSecret: crypto.randomBytes(18).toString('base64url')
   }
 }
 
@@ -76,6 +78,8 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
   const invite = encodeInvite({ ...conn, server: inviteServer || conn.server })
+  // Only the person who made the room has the view-only secret.
+  const viewInvite = conn.viewSecret ? encodeInvite({ ...conn, secret: conn.viewSecret, server: inviteServer || conn.server }) : null
   const previous = readConfig(dir)
   // Sharing your AI chat follows your setting; a pause or resume is remembered for this folder.
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
@@ -99,7 +103,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
     await session.stop().catch(() => {})
     throw err
   }
-  const control = await startControl(session, { invite })
+  const control = await startControl(session, { invite, viewInvite })
   remember({ dir, room: conn.room, server: conn.server, name, tool })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.
@@ -117,6 +121,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   return {
     session,
     invite,
+    viewInvite,
     dir,
     stop: async () => {
       if (stopped) return

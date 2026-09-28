@@ -58,6 +58,7 @@ export function mountSession (id) {
       <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>co<i>wo</i>ve</span></button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
+      <span class="access-pill" id="access-pill" hidden></span>
       <button class="btn sm ghost icon narrow-only" id="toggle-tree" title="Files" aria-label="Show files">${I.tree}</button>
       <div class="people" id="people">
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
@@ -79,6 +80,7 @@ export function mountSession (id) {
         <div class="tree-scroll" id="tree"></div>
       </aside>
       <main class="ws-main">
+        <div class="requests" id="requests" hidden></div>
         <div class="ws-mainbar" id="mainbar" hidden>
           <div class="ws-tabs" id="main-tabs" role="tablist"></div>
         </div>
@@ -104,6 +106,7 @@ export function mountSession (id) {
   </div>`
 
   bindTop()
+  bindAccess()
   bindMain()
   bindTreeEvents()
   bindChat()
@@ -130,8 +133,11 @@ export function sessionUnmount () {
 }
 
 // ------------------------------------------------------------ live events --
+let lastAccessState = null
 export function sessionUpdated (id) {
   if (id !== current) return
+  const accState = sum().status.access?.state || null
+  if (accState !== lastAccessState) { lastAccessState = accState; renderMain(); loadTree() }
   autoOpenNewPeople(id)
   renderTop()
   renderMainBar()
@@ -226,7 +232,7 @@ function bindTop () {
   wrap.addEventListener('mouseenter', () => { if (window.matchMedia('(hover: hover)').matches) open() })
   wrap.addEventListener('mouseleave', () => {
     // Don't close while someone's typing in the menu.
-    if (menu.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return
+    if (menu.contains(document.activeElement) && ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return
     hoverTimer = setTimeout(close, 250)
   })
   btn.addEventListener('focus', open)
@@ -255,8 +261,24 @@ function bindTop () {
     openPerson(t.dataset.person)
     close()
   })
+  menu.addEventListener('change', async (e) => {
+    const f = e.target.closest('.pm-member.edit')
+    if (!f) return
+    try {
+      await api('POST', `/api/sessions/${current}/members/set`, { key: f.dataset.key, role: f.role.value, ...(f.scopes ? { scopes: parseScopes(f.scopes.value) } : {}) })
+      toast('Access updated')
+    } catch (err) { toast(err.message) }
+  })
+  menu.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-remove]')
+    if (!b) return
+    const f = b.closest('.pm-member')
+    if (!confirm(`Remove ${f.querySelector('.nm').textContent.trim()} from this session? They'll need a new invite and your approval to come back.`)) return
+    try { await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast('Removed') } catch (err) { toast(err.message) }
+  })
   menu.addEventListener('submit', async (e) => {
     e.preventDefault()
+    if (e.target.closest('.pm-member')) return
     const input = menu.querySelector('#focus-input')
     await api('POST', `/api/sessions/${current}/focus`, { text: input.value }).catch((err) => toast(err.message))
     toast(input.value ? 'Focus shared' : 'Focus cleared')
@@ -298,7 +320,88 @@ function renderTop () {
     <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : 'Reconnecting…'}"></span>`
   $('#people-btn').setAttribute('aria-label', `${people.length} ${people.length === 1 ? 'person' : 'people'} in this session${st.connected ? '' : ', reconnecting'}`)
   if (!$('#people-menu').hidden) renderPeopleMenu()
+  renderAccess()
   $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
+}
+
+// ----------------------------------------------------------------- access --
+const roleLabel = (r) => r === 'owner' ? 'Owner' : r === 'viewer' ? 'View only' : 'Can edit'
+const scopesText = (scopes) => (scopes || []).join(', ')
+const parseScopes = (text) => String(text || '').split(',').map((x) => x.trim()).filter(Boolean)
+
+/** The access pill, the owner's request bar, and the "waiting to be let in" screen. */
+function renderAccess () {
+  const st = sum().status
+  const acc = st.access || {}
+  const pill = $('#access-pill')
+  if (pill) {
+    const text = acc.state === 'pending' ? 'Waiting to be let in'
+      : acc.controlled && acc.role === 'viewer' ? 'View only'
+        : acc.controlled && acc.scopes && acc.scopes.length ? `Can change ${scopesText(acc.scopes)}` : ''
+    pill.hidden = !text
+    pill.textContent = text
+    pill.className = `access-pill${acc.state === 'pending' ? ' wait' : ''}`
+  }
+  const bar = $('#requests')
+  if (!bar) return
+  const waiting = st.waiting || []
+  // Don't redraw while the owner is filling in a request.
+  if (bar.contains(document.activeElement) && ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return
+  bar.hidden = !waiting.length
+  bar.innerHTML = waiting.map((p) => `
+    <form class="request" data-key="${esc(p.key)}">
+      ${avatar(p.name, null)}
+      <div class="rq-main"><b>${esc(p.name)}</b>${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}
+        <span class="hint">wants to join · invited to ${p.invitedAs === 'viewer' ? 'view' : 'edit'}</span></div>
+      <select class="input" name="role" aria-label="Role for ${esc(p.name)}">
+        <option value="editor" ${p.invitedAs !== 'viewer' ? 'selected' : ''}>Can edit</option>
+        <option value="viewer" ${p.invitedAs === 'viewer' ? 'selected' : ''}>View only</option>
+      </select>
+      ${p.kind === 'agent' ? `<input class="input" name="scopes" placeholder="All folders (or e.g. src, docs)" aria-label="Folders ${esc(p.name)} may change" title="Folders this agent may change, separated by commas">` : ''}
+      <button type="button" class="btn sm ghost" data-deny>Deny</button>
+      <button type="submit" class="btn sm primary">Let in</button>
+    </form>`).join('')
+}
+
+function bindAccess () {
+  const bar = $('#requests')
+  bar.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const f = e.target
+    const btn = f.querySelector('[type=submit]')
+    btn.disabled = true
+    try {
+      await api('POST', `/api/sessions/${current}/members/approve`, { key: f.dataset.key, role: f.role.value, scopes: f.scopes ? parseScopes(f.scopes.value) : [] })
+      toast('Let in')
+    } catch (err) { toast(err.message); btn.disabled = false }
+  })
+  bar.addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-deny]')) return
+    const f = e.target.closest('form')
+    try { await api('POST', `/api/sessions/${current}/members/deny`, { key: f.dataset.key }); toast('Denied') } catch (err) { toast(err.message) }
+  })
+}
+
+/** Owner controls for everyone who has been let in, shown in the people menu. */
+function membersHtml (st) {
+  const acc = st.access || {}
+  if (!acc.controlled) return ''
+  const list = (st.members || []).filter((m) => m.role !== 'owner')
+  if (!acc.owner) {
+    return list.length || st.members?.length ? `<div class="pm-sep"></div><div class="pm-title">Access</div>
+      ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}` : ''
+  }
+  return `<div class="pm-sep"></div><div class="pm-title">Who can get in</div>
+    ${list.length ? list.map((m) => `
+      <form class="pm-member edit" data-key="${esc(m.key)}">
+        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
+        <select class="input" name="role" aria-label="Role for ${esc(m.name)}">
+          <option value="editor" ${m.role === 'editor' ? 'selected' : ''}>Can edit</option>
+          <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>View only</option>
+        </select>
+        ${m.kind === 'agent' ? `<input class="input" name="scopes" value="${esc(scopesText(m.scopes))}" placeholder="All folders" aria-label="Folders ${esc(m.name)} may change" title="Folders this agent may change, separated by commas">` : ''}
+        <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
+      </form>`).join('') : '<div class="empty-note">Only you so far. People you let in show up here.</div>'}`
 }
 
 function renderPeopleMenu () {
@@ -306,6 +409,8 @@ function renderPeopleMenu () {
   const menu = $('#people-menu')
   const focusEl = menu.querySelector('#focus-input')
   const typing = focusEl && document.activeElement === focusEl ? focusEl.value : null
+  // Don't redraw under the owner while they change someone's access.
+  if (menu.querySelector('.pm-member.edit') && menu.contains(document.activeElement) && document.activeElement.closest('.pm-member')) return
   const self = personInfo(st.me.name)
   const a = st.me.agent || {}
   const shareLine = a.status === 'unavailable'
@@ -331,7 +436,8 @@ function renderPeopleMenu () {
     ${row(self)}
     <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
     ${shareLine}
-    ${st.peers.length ? `<div class="pm-sep"></div>${st.peers.map((p) => row(personInfo(p.name))).join('')}` : '<div class="pm-sep"></div><div class="empty-note">Nobody else is here yet. Click <b>Invite</b> to bring someone in.</div>'}`
+    ${st.peers.length ? `<div class="pm-sep"></div>${st.peers.map((p) => row(personInfo(p.name))).join('')}` : '<div class="pm-sep"></div><div class="empty-note">Nobody else is here yet. Click <b>Invite</b> to bring someone in.</div>'}
+    ${membersHtml(st)}`
   if (typing != null) {
     const el = menu.querySelector('#focus-input')
     el.focus()
@@ -371,8 +477,10 @@ function bindMain () {
     }
   })
   $('#main').addEventListener('click', async (e) => {
-    if (e.target.closest('[data-copy-invite]')) {
-      try { await navigator.clipboard.writeText(sum().invite); toast('Invite link copied') } catch { openInvite(current) }
+    const copy = e.target.closest('[data-copy-invite]')
+    if (copy) {
+      const view = copy.dataset.copyInvite === 'view'
+      try { await navigator.clipboard.writeText(view ? sum().viewInvite : sum().invite); toast(view ? 'View-only link copied' : 'Invite link copied') } catch { openInvite(current) }
       return
     }
     const b = e.target.closest('[data-person]')
@@ -434,18 +542,31 @@ function renderMain () {
   if (!current || !el) return
   const w = ws(current)
   const st = sum().status
+  if (st.access && st.access.state === 'pending') {
+    el.innerHTML = `<div class="main-empty">
+      <div class="ill">${I.lock}</div>
+      <h3>Waiting to be let in</h3>
+      <p class="hint">The person who started this session needs to approve you. Files will appear here as soon as they do. You can leave this open.</p>
+    </div>`
+    return
+  }
   if (w.mode === 'ai') {
     if (!w.aiSel) {
       const people = st.peers
       if (!people.length) {
-        const invite = sum().invite
+        const { invite, viewInvite } = sum()
         el.innerHTML = `<div class="main-empty invite-empty">
           <div class="ill">${I.link}</div>
           <h3>Invite someone to code with you</h3>
-          <p class="hint">Send them this link. They paste it into <b>Join a session</b> in cowove.</p>
+          <p class="hint">Send a link. They paste it into <b>Join a session</b> in cowove${viewInvite ? ', and you approve them before they get in' : ''}.</p>
+          ${viewInvite ? `
+          <div class="invite-pair">
+            <div><div class="label">Can edit</div><div class="codebox"><code>${esc(invite)}</code></div><button class="btn primary" data-copy-invite="edit">${I.copy}<span>Copy edit link</span></button></div>
+            <div><div class="label">View only</div><div class="codebox"><code>${esc(viewInvite)}</code></div><button class="btn" data-copy-invite="view">${I.copy}<span>Copy view link</span></button></div>
+          </div>` : `
           <div class="codebox"><code id="empty-invite">${esc(invite)}</code></div>
-          <button class="btn primary" data-copy-invite>${I.copy}<span>Copy invite link</span></button>
-          <p class="hint small">Once they join, you'll see their AI chat here as it happens.${inviteIsLocal(invite) ? ' This link only works on your network. For someone elsewhere, see <b>Invite</b>.' : ''}</p>
+          <button class="btn primary" data-copy-invite="edit">${I.copy}<span>Copy invite link</span></button>`}
+          <p class="hint small">Once they join, you'll see their AI chat here as it happens.${inviteIsLocal(invite) ? ' These links only work on your network. For someone elsewhere, see <b>Invite</b>.' : ''}</p>
         </div>`
         return
       }

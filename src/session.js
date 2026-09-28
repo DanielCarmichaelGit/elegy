@@ -27,13 +27,14 @@ const AGENT_FEED_CAP = 300
 const WATCH_RECHECK_MS = 80
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
     this.room = room
     this.secret = secret
     this.key = key
+    this.viewSecret = viewSecret
     this.name = name
     this.identity = identity
     this.tool = tool
@@ -66,6 +67,9 @@ export class Session extends EventEmitter {
     this.kind = kind === 'agent' ? 'agent' : 'human' // an AI agent that joined by itself
     this.agentSharing = shareAgent !== false
     this.agentState = null
+    this.access = null // from the relay: { state, role, scopes, owner, controlled }
+    this.members = [] // everyone approved into a controlled session
+    this.waiting = [] // people asking to join (only the owner hears about them)
   }
 
   log (msg) { this.emit('log', msg) }
@@ -80,6 +84,8 @@ export class Session extends EventEmitter {
       room: this.room,
       secret: this.secret,
       key: this.key,
+      viewSecret: this.viewSecret,
+      kind: this.kind,
       name: this.name,
       identity: this.identity || loadIdentity(),
       doc: this.doc,
@@ -89,6 +95,8 @@ export class Session extends EventEmitter {
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
     this.conn.on('claims', (list) => this.setClaims(list))
+    this.conn.on('access', (a) => this.setAccess(a))
+    this.conn.on('members', (m) => this.setMembers(m))
     this.setupPresence()
 
     if (hadState) {
@@ -99,10 +107,30 @@ export class Session extends EventEmitter {
     } else {
       this.log('waiting for relay…')
       const sync = this.conn.waitForSync()
-      if (waitTimeoutMs) {
-        await Promise.race([sync, new Promise((_, rej) => setTimeout(() => rej(new Error('timed out connecting to relay')), waitTimeoutMs))])
-      } else {
-        await sync
+      // In a session with an owner we may have to wait for them to let us in.
+      let onAccess
+      const pending = new Promise((resolve) => {
+        onAccess = (a) => { if (a.state === 'pending') resolve('pending') }
+        this.conn.on('access', onAccess)
+      })
+      let timer
+      const timeout = waitTimeoutMs ? new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timed out connecting to relay')), waitTimeoutMs) }) : null
+      try {
+        const first = await Promise.race([sync.then(() => 'synced'), pending, ...(timeout ? [timeout] : [])])
+        if (first === 'pending') {
+          // Finish joining in the background once let in.
+          this.admitted = sync.then(async () => {
+            this.reconcileFirstJoin()
+            this.goLive()
+            await this.startWatcher()
+            this.log('✅ you were let in')
+            this.emit('status-changed')
+          }).catch(() => {})
+          return this
+        }
+      } finally {
+        clearTimeout(timer)
+        this.conn.off('access', onAccess)
       }
       this.reconcileFirstJoin()
       this.goLive()
@@ -110,6 +138,48 @@ export class Session extends EventEmitter {
     await this.startWatcher()
     return this
   }
+
+  // --------------------------------------------------------------- access --
+
+  setAccess (a) {
+    const was = this.access
+    this.access = a
+    if (a.state === 'pending' && (!was || was.state !== 'pending')) this.log(`⏳ waiting for the session owner to let you in (you were invited to ${a.invitedAs === 'viewer' ? 'view' : 'edit'})`)
+    if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes))) {
+      this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}`)
+    }
+    if (a.refused) this.log(`🔒 the relay undid your change to ${a.refused.join(', ')}: ${a.why}`)
+    this.emit('access', a)
+    this.scheduleStatusWrite()
+  }
+
+  setMembers ({ members, pending }) {
+    this.members = members || []
+    if (pending) {
+      const known = new Set(this.waiting.map((p) => p.key))
+      for (const p of pending) if (!known.has(p.key)) this.log(`🙋 ${p.name}${p.kind === 'agent' ? ' (an agent)' : ''} wants to join as ${p.invitedAs === 'viewer' ? 'a viewer' : 'an editor'}`)
+      this.waiting = pending
+    }
+    this.emit('members', { members: this.members, pending: this.waiting })
+    this.emit('status-changed')
+  }
+
+  /** Why we may not change rel, or null if we may. */
+  writeRefusal (rel) {
+    const a = this.access
+    if (!a || a.state !== 'approved') return null
+    if (a.role === 'viewer') return 'you can only view this session'
+    if (a.scopes && a.scopes.length && !a.scopes.some((sc) => globMatcher(sc)(rel))) return `you may only change files in ${a.scopes.join(', ')}`
+    return null
+  }
+
+  get isOwner () { return !!(this.access && this.access.owner) }
+
+  /** Owner only: let someone in, with a role and (for agents) the folders they may change. */
+  approve (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'approve', key, role, scopes }) }
+  deny (key) { return this.conn.adminRequest({ op: 'deny', key }) }
+  setMember (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes }) }
+  removeMember (key) { return this.conn.adminRequest({ op: 'remove', key }) }
 
   goLive () {
     this.files.observeDeep((events, tr) => {
@@ -291,6 +361,11 @@ export class Session extends EventEmitter {
       this.rejectClaimed(rel, disk, claim)
       return false
     }
+    const refusal = this.writeRefusal(rel)
+    if (refusal && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
+      this.rejectLocal(rel, disk, refusal)
+      return false
+    }
 
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
@@ -331,6 +406,11 @@ export class Session extends EventEmitter {
 
   /** Someone else claimed rel: keep our version aside and put the shared one back on disk. */
   rejectClaimed (rel, disk, claim) {
+    this.rejectLocal(rel, disk, `it is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}`, claim.by)
+  }
+
+  /** We may not change rel: keep our version aside and put the shared one back on disk. */
+  rejectLocal (rel, disk, reason, by = null) {
     let kept = ''
     if (disk) {
       const dest = path.join(this.stateDir, 'rejected', `${Date.now()}`, ...rel.split('/'))
@@ -350,8 +430,8 @@ export class Session extends EventEmitter {
       removeEmptyParents(this.root, path.dirname(abs))
       this.lastKnown.delete(rel)
     }
-    this.log(`🔒 ${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}, so your change was undone${kept}`)
-    this.emit('file-changed', { path: rel, by: claim.by })
+    this.log(`🔒 your change to ${rel} was undone: ${reason}${kept}`)
+    this.emit('file-changed', { path: rel, by: by || this.lastEditorOf(rel) || 'partner' })
   }
 
   recordActivity (rel, kind, detail) {
@@ -847,6 +927,9 @@ export class Session extends EventEmitter {
       room: this.room,
       server: this.server,
       connected: !!(this.conn && this.conn.connected),
+      access: this.access,
+      members: this.members,
+      ...(this.isOwner ? { waiting: this.waiting } : {}),
       me: {
         name: this.name,
         tool: this.tool,

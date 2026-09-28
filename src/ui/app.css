@@ -622,3 +622,27 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
   .welcome-actions { flex-direction: column; }
   .menu-wrap { margin-bottom: 4px; }
 }
+
+/* access: pill, owner's request bar, member controls, invite pair */
+.access-pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 4px; background: color-mix(in srgb, var(--violet) 12%, var(--panel)); color: var(--violet); white-space: nowrap; }
+.access-pill.wait { background: color-mix(in srgb, var(--warn) 14%, var(--panel)); color: var(--warn); }
+.requests { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--coral) 6%, var(--bg)); }
+.request { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.request .avatar { width: 30px; height: 30px; font-size: 12px; }
+.rq-main { flex: 1; min-width: 160px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rq-main .hint { width: 100%; font-size: 12px; }
+.request .input { height: 30px; width: auto; font-size: 12.5px; padding: 0 8px; }
+.request input.input { width: 190px; }
+.pm-member { display: flex; align-items: center; gap: 6px; padding: 4px 6px; font-size: 13px; }
+.pm-member .nm { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-member .input { height: 28px; width: auto; font-size: 12px; padding: 0 6px; }
+.pm-member input.input { width: 110px; }
+.invite-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 4px; text-align: left; }
+.invite-pair .codebox { margin: 6px 0 10px; }
+.invite-pair .codebox code { font-size: 11.5px; max-height: 72px; overflow: auto; }
+.invite-pair .btn { width: 100%; }
+@media (max-width: 900px) { .invite-pair { grid-template-columns: 1fr; } }
+.pm-member.edit { flex-wrap: wrap; padding: 6px; border-radius: 4px; }
+.pm-member.edit + .pm-member.edit { border-top: 1px dashed var(--border); }
+.pm-member.edit .nm { flex-basis: 100%; font-weight: 600; }
+.pm-member.edit input.input { flex: 1; }

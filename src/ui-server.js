@@ -107,7 +107,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   }
   const summary = (id) => {
     const r = runs.get(id)
-    return { id, dir: r.run.dir, invite: r.run.invite, status: r.run.session.status(), logs: r.logs.slice(-80) }
+    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80) }
   }
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
 
@@ -132,7 +132,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     } else if (mode === 'rejoin') {
       const saved = readConfig(dir)
       if (!saved) throw new Error('No previous session in that folder.')
-      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}) }
+      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}), ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
       inviteServer = saved.inviteServer
       name = name || saved.name
       tool = tool || saved.tool
@@ -182,6 +182,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     runs.set(id, entry)
     const s = entry.run.session
     s.on('status-changed', () => pushStatus(id))
+    s.on('access', () => pushStatus(id))
     s.on('message', (m) => broadcast('message', { id, message: m }))
     s.on('agent-feed', (entries) => broadcast('feed', { id, entries }))
     s.on('file-changed', (e) => broadcast('file-changed', { id, ...e }))
@@ -244,6 +245,10 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       if (!f) throw httpError(404, 'That file is not in this session.')
       return f
     },
+    'POST /api/sessions/:id/members/approve': async (b, id) => (await get(id).approve(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
+    'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
+    'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
+    'POST /api/sessions/:id/members/remove': async (b, id) => (await get(id).removeMember(b.key), { ok: true }),
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
     'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))) } },
     'GET /api/settings': () => profile(),

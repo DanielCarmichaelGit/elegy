@@ -188,7 +188,11 @@ export async function runMcp () {
     const lines = [extra]
     if (info) lines.push(`Project folder: ${info.dir}`, `You appear as: ${info.name}${info.kind === 'agent' ? ' (AI agent)' : ''}`)
     if (st) lines.push(`Shared files: ${st.fileCount}`, `People online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
-    if (info && info.invite) lines.push(`Invite link (for others to join): ${info.invite}`)
+    const acc = info && info.access
+    if (acc && acc.state === 'pending') lines.push('⏳ Waiting for the session owner to let you in. Nothing syncs until they approve you; check again with cowove_session_info.')
+    else if (acc && acc.controlled) lines.push(`Your access: ${acc.owner ? 'owner' : acc.role === 'viewer' ? 'view only (your file changes are undone)' : acc.scopes && acc.scopes.length ? `may change files only in ${acc.scopes.join(', ')}` : 'may change any file'}`)
+    if (info && info.invite) lines.push(`Invite link to edit (for others to join): ${info.invite}`)
+    if (info && info.viewInvite) lines.push(`Invite link to view only: ${info.viewInvite}`)
     if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with cowove_leave_session.')
     return lines.filter(Boolean).join('\n')
   }
