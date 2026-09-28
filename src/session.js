@@ -25,6 +25,16 @@ const AGENT_FEED_CAP = 300
 // chokidar drops a 'change' for a path within 50ms of the previous one (no
 // trailing event), so each change is re-checked once that window has passed.
 const WATCH_RECHECK_MS = 80
+// On macOS every fs.watch in a process shares one FSEvents stream, which is
+// rebuilt whenever a watch is added or removed (a folder appears or goes, a
+// session starts or stops). Changes made while it is rebuilt are never
+// reported. So after any of those, each live session writes this probe file
+// until its watcher reports it, then rescans the folder for what it missed.
+const PROBE_REL = '.cowove/watch-probe'
+const PROBE_RETRY_MS = 100
+const PROBE_GIVE_UP_MS = 3000
+const watching = new Set() // sessions whose watcher is running in this process
+const watchersChanged = () => { for (const s of watching) s.resync() }
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
@@ -57,6 +67,11 @@ export class Session extends EventEmitter {
     this.pending = new Set()
     this.flushTimer = null
     this.rechecks = new Map() // path -> timer
+    this.resyncing = null
+    this.resyncAgain = false
+    this.probeCount = 0
+    this.probeToken = null
+    this.probeResolve = null
     this.ready = false
     this.myEdits = new Map() // path -> ts of my last edit
     this.lastActivityPush = new Map()
@@ -461,27 +476,82 @@ export class Session extends EventEmitter {
       followSymlinks: false,
       ignored: (p) => {
         const rel = toPosix(path.relative(this.root, p))
+        if (rel === '.cowove' || rel === PROBE_REL) return false
         return rel !== '' && !rel.startsWith('..') && isIgnored(this.ig, rel)
       }
     })
     const onFile = (p) => {
       const rel = toPosix(path.relative(this.root, p))
-      if (rel && !rel.startsWith('..')) this.queue(rel)
+      if (rel === PROBE_REL) this.probeSeen()
+      else if (rel && !rel.startsWith('..')) this.queue(rel)
     }
     const onChange = (p) => {
       onFile(p)
       const rel = toPosix(path.relative(this.root, p))
-      if (!rel || rel.startsWith('..')) return
+      if (!rel || rel.startsWith('..') || rel === PROBE_REL) return
       clearTimeout(this.rechecks.get(rel))
       this.rechecks.set(rel, setTimeout(() => { this.rechecks.delete(rel); if (this.ready) this.queue(rel) }, WATCH_RECHECK_MS))
     }
     this.watcher.on('add', onFile).on('change', onChange).on('unlink', onFile)
+    this.watcher.on('addDir', watchersChanged)
     this.watcher.on('unlinkDir', (p) => {
       const relDir = toPosix(path.relative(this.root, p))
       for (const rel of this.sharedPaths()) if (rel.startsWith(relDir + '/')) this.queue(rel)
+      watchersChanged()
     })
     this.watcher.on('error', (err) => this.log(`watcher error: ${err.message}`))
     await new Promise((resolve) => this.watcher.once('ready', resolve))
+    watchersChanged()
+    watching.add(this)
+    // Also catches edits made between the initial sync and the watcher starting.
+    await this.resync()
+  }
+
+  /** Waits until the watcher provably reports changes, then queues anything it missed. Calls made meanwhile are coalesced. */
+  resync () {
+    if (this.resyncing) { this.resyncAgain = true; return this.resyncing }
+    this.resyncing = (async () => {
+      do {
+        this.resyncAgain = false
+        if (await this.watcherLive()) this.rescan()
+      } while (this.resyncAgain && this.ready)
+    })().catch((err) => this.log(`could not rescan: ${err.message}`)).finally(() => { this.resyncing = null })
+    return this.resyncing
+  }
+
+  /** Writes the probe file until the watcher reports it. Resolves false if it never does. */
+  async watcherLive () {
+    const file = path.join(this.root, ...PROBE_REL.split('/'))
+    const deadline = Date.now() + PROBE_GIVE_UP_MS
+    while (this.ready && this.watcher && Date.now() < deadline) {
+      const token = `${process.pid}-${++this.probeCount}`
+      const seen = new Promise((resolve) => {
+        this.probeToken = token
+        this.probeResolve = resolve
+        setTimeout(resolve, PROBE_RETRY_MS, false)
+      })
+      fs.writeFileSync(file, token)
+      if (await seen) return true
+    }
+    if (this.ready) this.emit('debug', 'the file watcher did not confirm it is running; some changes may be picked up late')
+    return false
+  }
+
+  probeSeen () {
+    let token = null
+    try { token = fs.readFileSync(path.join(this.root, ...PROBE_REL.split('/')), 'utf8') } catch {}
+    if (this.probeResolve && token === this.probeToken) this.probeResolve(true)
+  }
+
+  /** Queues every path whose disk state differs from what was last synced. */
+  rescan () {
+    if (!this.ready) return
+    const onDisk = new Set(walk(this.root, this.ig))
+    for (const rel of onDisk) {
+      const disk = this.readDisk(rel)
+      if (disk && disk.key !== undefined && disk.key !== this.lastKnown.get(rel)) this.queue(rel)
+    }
+    for (const rel of this.lastKnown.keys()) if (!onDisk.has(rel)) this.queue(rel)
   }
 
   // ----------------------------------------------------- presence & social --
@@ -875,7 +945,11 @@ export class Session extends EventEmitter {
 
   async stop () {
     this.ready = false
-    if (this.watcher) await this.watcher.close()
+    watching.delete(this)
+    if (this.watcher) {
+      await this.watcher.close()
+      watchersChanged()
+    }
     for (const t of this.rechecks.values()) clearTimeout(t)
     this.rechecks.clear()
     this.flushPending()
