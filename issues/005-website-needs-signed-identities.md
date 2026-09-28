@@ -1,4 +1,4 @@
-# 003: The website and the relay-hosted AI tools can't join sessions since identities became signed
+# 005: The website and the relay-hosted AI tools can't join sessions since identities became signed
 
 **Status:** Open · **Reported:** 2026-09-28 · **Seen on:** `npm test` after merging the website branch into main
 

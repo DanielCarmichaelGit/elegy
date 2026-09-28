@@ -10,7 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 
-const NEEDS_IDENTITY = 'the website is not yet on signed identities (issues/003)'
+const NEEDS_IDENTITY = 'the website is not yet on signed identities (issues/005)'
 
 let srv, http, carl
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-rmcp-${n}-`))

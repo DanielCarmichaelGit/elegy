@@ -11,7 +11,7 @@ import { Session } from '../src/session.js'
 import { WebSession, decodeText, toBase64, fromBase64 } from '../src/web/engine.js'
 import { nodeFolder } from './helpers/node-folder.js'
 
-const NEEDS_IDENTITY = 'the website is not yet on signed identities (issues/003)'
+const NEEDS_IDENTITY = 'the website is not yet on signed identities (issues/005)'
 
 let srv, server
 const open = []
