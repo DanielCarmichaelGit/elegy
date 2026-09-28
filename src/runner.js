@@ -15,7 +15,9 @@ export const encodeInvite = (c) => Buffer.from(JSON.stringify({ s: c.server, r: 
 export function decodeInvite (code) {
   let j
   try {
-    j = JSON.parse(Buffer.from(String(code).trim().replace(/^elegy join\s+/, '').replace(/^elegy:/, ''), 'base64url').toString('utf8'))
+    let c = String(code).trim()
+    if (c.includes('#')) c = c.slice(c.indexOf('#') + 1) // a website invite link: https://host/#<code>
+    j = JSON.parse(Buffer.from(c.replace(/^elegy join\s+/, '').replace(/^elegy:/, ''), 'base64url').toString('utf8'))
   } catch {
     throw new Error('That invite code is not valid.')
   }

@@ -43,6 +43,17 @@ within milliseconds. Your agents can also see what the other agents are doing.
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `elegy` CLI or read `.elegy/STATUS.md`.
 
+## The website (no install)
+
+Any relay started with `elegy serve` also serves the elegy website. Open it
+in Chrome, Edge, Brave or Arc, type your name, click **Share a folder**, and
+send the invite link it gives you. Whoever opens the link picks a folder, and
+the project appears there and stays in sync. Keep the tab open while you
+work. People using the website and people using `elegy join` can be in the
+same session, and `elegy join` accepts the website's invite links.
+
+To run it from a checkout, build the site once: `npm install && npm run build && elegy serve`.
+
 ## Quick start
 
 Requires Node.js 20+.

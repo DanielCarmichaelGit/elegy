@@ -104,9 +104,17 @@ All settings are environment variables on the relay.
 | `ELEGY_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
 | `ELEGY_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
 
+## The website
+
+The relay also serves the elegy website at `https://your-relay/`, where people
+can share a folder or join from an invite link in the browser. For anonymous
+use (anyone can start a session on the website), run the relay **without**
+`ELEGY_RELAY_KEY`; with a key set, the website asks for it when starting a
+session. Joining never needs it.
+
 ## Checking on it
 
-- `https://your-relay/` shows a small status page.
+- `https://your-relay/status` shows a small status page.
 - `https://your-relay/healthz` returns JSON for monitoring (`ok`, uptime,
   connections, loaded rooms).
 - `elegy relay check wss://your-relay` tests it from any machine.

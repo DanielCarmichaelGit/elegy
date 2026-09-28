@@ -2,3 +2,4 @@ node_modules/
 .elegy/
 elegy-data/
 .superpowers/
+web/dist/

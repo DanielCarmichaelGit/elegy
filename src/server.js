@@ -19,7 +19,15 @@ import {
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MB = 1024 * 1024
 const DAY = 24 * 60 * 60 * 1000
-const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+const LOGO = path.join(ROOT, 'assets', 'logo.svg')
+// The website: share a folder or join from an invite link, right in the browser.
+const WEB = {
+  '/': ['web/index.html', 'text/html; charset=utf-8'],
+  '/app.css': ['web/app.css', 'text/css; charset=utf-8'],
+  '/app.js': ['web/dist/app.js', 'text/javascript; charset=utf-8'],
+  '/app.js.map': ['web/dist/app.js.map', 'application/json']
+}
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest()
 const sameSecret = (a, b) => a.length === b.length && crypto.timingSafeEqual(a, b)
 
@@ -246,12 +254,30 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' })
       return res.end(fs.readFileSync(LOGO))
     }
-    const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
-    if (!m) {
-      if (url.pathname !== '/') return text(404, 'not found')
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    if (url.pathname === '/status') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(statusPage(stats()))
     }
+    if (WEB[url.pathname] && req.method === 'GET') {
+      const [file, type] = WEB[url.pathname]
+      let body
+      try { body = fs.readFileSync(path.join(ROOT, file)) } catch {
+        // Not built (a git checkout without `npm run build`): the relay still works.
+        if (url.pathname !== '/') return text(404, 'not found')
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        return res.end(statusPage(stats()))
+      }
+      res.writeHead(200, {
+        'content-type': type,
+        'cache-control': url.pathname === '/' ? 'no-cache' : 'public, max-age=300',
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
+        ...(url.pathname === '/' ? { 'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'" } : {})
+      })
+      return res.end(body)
+    }
+    const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
+    if (!m) return text(404, 'not found')
 
     const [, name, id] = m
     const room = getRoom(name)

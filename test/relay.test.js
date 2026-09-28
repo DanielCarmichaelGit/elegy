@@ -25,7 +25,7 @@ test('health endpoint and status page', async () => {
   const h = await (await fetch(`http://127.0.0.1:${srv.port}/healthz`)).json()
   assert.equal(h.ok, true)
   assert.equal(h.requiresKey, true)
-  const page = await (await fetch(`http://127.0.0.1:${srv.port}/`)).text()
+  const page = await (await fetch(`http://127.0.0.1:${srv.port}/status`)).text()
   assert.match(page, /elegy relay/)
   assert.match(page, /Running/)
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/nope`)).status, 404)

@@ -1,18 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import ignore from 'ignore'
+import { makeIgnore, isIgnored } from './pathrules.js'
 
-export const MAX_TEXT_BYTES = 2 * 1024 * 1024
-export const MAX_BINARY_BYTES = 8 * 1024 * 1024
-
-// Never synced, regardless of .gitignore. .env files are excluded so secrets
-// stay on each person's machine.
-const ALWAYS_IGNORED = [
-  '.git', '.elegy', 'node_modules', '.DS_Store', 'Thumbs.db',
-  '.env', '.env.*', '!.env.example',
-  '*.swp', '*.swo', '*~', '.#*'
-]
+export { MAX_TEXT_BYTES, MAX_BINARY_BYTES, isIgnored, isSafeRelPath, globMatcher } from './pathrules.js'
 
 export function toPosix (p) {
   return p.split(path.sep).join('/')
@@ -20,40 +11,11 @@ export function toPosix (p) {
 
 /** Builds the ignore matcher from built-ins, .gitignore and .elegyignore. */
 export function loadIgnore (root) {
-  const ig = ignore().add(ALWAYS_IGNORED)
+  const texts = []
   for (const file of ['.gitignore', '.elegyignore']) {
-    try { ig.add(fs.readFileSync(path.join(root, file), 'utf8')) } catch {}
+    try { texts.push(fs.readFileSync(path.join(root, file), 'utf8')) } catch {}
   }
-  return ig
-}
-
-export function isIgnored (ig, rel) {
-  if (!rel || rel === '.') return false
-  // Check every ancestor directory so "dist/" also excludes "dist/a/b.js".
-  const parts = rel.split('/')
-  for (let i = 1; i <= parts.length; i++) {
-    const sub = parts.slice(0, i).join('/')
-    if (ig.ignores(sub)) return true
-    if (i < parts.length && ig.ignores(sub + '/')) return true
-  }
-  return false
-}
-
-/**
- * Validates a path received from a peer. Rejects anything that could escape
- * the project folder or touch git internals.
- */
-export function isSafeRelPath (rel) {
-  if (typeof rel !== 'string' || !rel || rel.length > 1024) return false
-  if (rel.includes('\\') || rel.includes('\0')) return false
-  if (rel.startsWith('/') || /^[A-Za-z]:/.test(rel)) return false
-  const parts = rel.split('/')
-  for (const part of parts) {
-    if (part === '' || part === '.' || part === '..') return false
-  }
-  const first = parts[0].toLowerCase()
-  if (first === '.git' || first === '.elegy') return false
-  return true
+  return makeIgnore(texts)
 }
 
 /**
@@ -99,26 +61,4 @@ export function walk (root, ig) {
   }
   visit('')
   return out
-}
-
-/** Converts a simple glob (*, **, ?) or a plain path/folder into a matcher. */
-export function globMatcher (pattern) {
-  let p = pattern.trim().replace(/^\.\//, '')
-  if (!/[*?]/.test(p)) {
-    const base = p.replace(/\/+$/, '')
-    return (rel) => rel === base || rel.startsWith(base + '/')
-  }
-  let re = ''
-  for (let i = 0; i < p.length; i++) {
-    const c = p[i]
-    if (c === '*' && p[i + 1] === '*') {
-      re += '.*'
-      i++
-      if (p[i + 1] === '/') i++
-    } else if (c === '*') re += '[^/]*'
-    else if (c === '?') re += '[^/]'
-    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-  }
-  const rx = new RegExp(`^${re}$`)
-  return (rel) => rx.test(rel)
 }

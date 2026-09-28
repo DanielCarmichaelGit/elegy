@@ -1,108 +1,103 @@
-# Hosted website + npm package
+# The elegy website
 
-## Problem
+**Status: prototype built** (served by the relay at `/`). This plan is the
+target experience and what's left.
 
-Today, using elegy means cloning the repo, `npm install && npm link`, then
-either hosting a relay or tunnelling one from a laptop, and passing a relay
-key around. That's fine for the people who built it and a wall for everyone
-else.
+## Decisions
 
-## Options considered
+- **Website first.** A desktop app may come later; it is not being built now.
+- **No terminal, no install.** The browser syncs the folder itself, using the
+  File System Access API.
+- **No accounts, fully anonymous.** A session *is* its invite link. Whoever
+  has the link can join and edit.
+- **Chrome-family browsers only** (Chrome, Edge, Brave, Arc) for people who
+  edit. Safari and Firefox can't give a website a folder.
+- **The tab stays open** while you work. It's what syncs your folder. Closing
+  it pauses syncing; reopening catches up and merges both sides.
 
-| | Website + npm CLI | Electron app |
-|---|---|---|
-| First run for a new person | Click an invite link, run one `npx` line | Download ~100 MB, install, OS warnings |
-| Syncs to the real project folder | Yes, via the small local CLI | Yes |
-| Release burden | `npm publish` + deploy the site | Code signing (Apple $99/yr, Windows cert), notarization, auto-update, 3 OS builds |
-| Works for cloud agents / CI / SSH boxes | Yes, same CLI | No (needs a desktop) |
-| Accounts, invites, dashboards | Natural | Still needs a backend |
+## What a new user does
 
-**Recommendation: website + npm package.** It matches the stated preference,
-and Electron doesn't remove the hard part (a backend for accounts and the
-relay); it only adds packaging work. If a tray app is wanted later, a thin
-Tauri wrapper around the same local UI is a small add-on.
+**Starting**
+1. Open the website. Type your name, pick what you code with.
+2. Click **Share a folder**, pick the project, click **Allow** when the browser asks.
+3. A dialog shows the invite link. Copy it and send it.
 
-### Why the website can't be *only* a website
+**Joining**
+1. Open the link. Type your name.
+2. Click **Choose a folder for the project**, pick (or create) an empty folder,
+   click **Allow**. The files appear and stay in sync.
 
-elegy's whole point is that each person's own AI tool (Claude Code, Cursor,
-vim) edits a **real folder on their disk**. A browser tab can't reliably do
-that: the File System Access API is Chromium-only, needs the tab to stay open,
-and the agents can't see a browser's sandbox. So every person who edits code
-still runs a small local process. The website removes everything *around* it:
-hosting, tunnels, keys, invites, and viewing.
+Then everyone opens that folder in Claude Code, Cursor or anything else, as usual.
 
-## Shape
+**Coming back**
+The home page lists your sessions. Click **Open**; the browser may ask for
+permission once more. Offline edits on both sides are merged.
+
+## How it works
 
 ```
-  elegy.dev (hosted)                                   each person's machine
-  ┌───────────────────────────────┐                    ┌──────────────────────┐
-  │ website: sign in, sessions,   │  invite link        │ npx elegy join <code>│
-  │ invite links, live read-only  │ ─────────────────▶  │  = file sync daemon  │
-  │ view (feed, files, chat)      │                     │  + local app (ui)    │
-  │                               │  wss (outbound)     │  + MCP for agents    │
-  │ relay (existing server.js,    │ ◀────────────────── │                      │
-  │ multi-tenant)                 │                     └──────────────────────┘
-  │ remote MCP endpoint (agents)  │ ◀── cloud agents without a disk daemon
-  └───────────────────────────────┘
+  Chrome tab (you)                     relay (server.js)             Chrome tab (friend)
+  folder ⇄ WebSession  ── wss ──▶  one Y.Doc per room  ◀── wss ──  WebSession ⇄ folder
+                                           ▲
+                                      elegy join (CLI users, agents)
 ```
 
-- **No tunnelling at all.** Every client connects *out* to the hosted relay
-  over `wss://`, which works behind any NAT or firewall. "Host the relay on my
-  laptop" stays as an advanced/offline option.
-- **No shared tokens.** Replace the relay key with accounts:
-  - Sign in with GitHub (or email magic link) on the website.
-  - `elegy login` uses a device-code flow (like `gh auth login`): the CLI
-    shows a code, you approve it in the browser, the CLI stores a token.
-  - Invites become links: `https://elegy.dev/j/<code>`, with expiry and a
-    role (edit / view). The page shows the exact one-liner to run and a
-    "copy" button. Joining needs only the link, never someone else's token.
-  - Agent tokens are per session, scoped, and revocable (see
-    [agents-in-sessions.md](agents-in-sessions.md)).
-- **Live view in the browser.** The relay already speaks the y-websocket
-  protocol, so the site can open the session's Y.Doc directly and render the
-  agent feed, file tree, chat and read-only file views without any new server
-  API. Viewers (a PM, a reviewer) don't need to install anything.
+- `src/web/engine.js` (`WebSession`) is a port of the CLI's `Session`. It uses
+  the **same document layout**, so browser users, `elegy join` users and
+  agents can all be in one session.
+- A web page can't watch the disk, so the engine **polls** the folder every
+  second (size + modified time) and skips `node_modules`, `.git`, `.env` and
+  anything in `.gitignore` / `.elegyignore`.
+- All disk reads and writes go through one queue. If you and a partner change
+  the same file within the same second, their version is kept and yours is
+  saved to `.elegy/conflicts/` (the CLI does the same in its smaller window).
+- The engine saves its state to `.elegy/state.bin` in the folder, like the
+  CLI, so reopening the tab merges what changed while it was closed.
+- Invite links are `https://<site>/#<code>`. The code (relay, room, room
+  secret) sits after `#`, so it never reaches the server's logs. The CLI
+  accepts these links too: `elegy join https://<site>/#<code>`.
+- The relay serves the site (`/`, `/app.js`, `/app.css`); the old status page
+  moved to `/status`. `npm run build` bundles the site with esbuild (the
+  Docker image does this itself).
 
-## npm package
+## Limits of the prototype
 
-- Publish the CLI to npm. The bare name `elegy` may be taken; fall back to a
-  scope (`@elegy/cli`) with the binary still called `elegy`.
-- `package.json`: add `files` (bin, src, assets), `repository`, `keywords`;
-  raise `engines` to `>=22.13` (the Cursor feed needs `node:sqlite`) or keep 20
-  and let the Cursor feed report itself unavailable, as it does today.
-- `elegy setup` writes `"command": "elegy"` into `.mcp.json`. Once published,
-  switch it to `npx -y <package> mcp` so the MCP server works on machines
-  (and cloud containers) where elegy isn't installed globally.
-- The library stays usable without the website: `elegy serve` keeps working
-  for self-hosters, and the hosted relay is just the default.
+- **AI chat sharing from the browser isn't there yet.** People in the browser
+  see partners' AI feeds from CLI users, but their own Claude Code / Cursor
+  chat isn't shared: a web page can't read `~/.claude` or Cursor's database.
+  See "Next" below.
+- Polling costs grow with folder size. Fine for normal projects; very large
+  folders (tens of thousands of files) will feel slow.
+- No file sending in chat from the browser yet (receiving shows the name).
+- No claims UI yet (claims made by CLI users and agents are respected in the
+  data but not shown).
 
-## Phases
+## Anonymous hosting: what to watch
 
-1. **Publish to npm**, `npx` in `.mcp.json`, invite codes that default to the
-   hosted relay. (Small; unblocks cloud agents immediately.)
-2. **Multi-tenant hosted relay** with accounts: auth on room create/join, per
-   account quotas, device-code login, invite links with expiry/roles.
-3. **Website**: landing, sign in, "new session", session page with the live
-   read-only view, member and agent management, revoke.
-4. **Remote MCP endpoint** for agents that can't run the daemon.
-5. **End-to-end encryption** of room contents (the relay only sees
-   ciphertext). Worth doing before strangers' code sits on our servers; Yjs
-   updates can be encrypted per room with a key carried in the invite
-   fragment (`#key`), which never reaches the server.
+With no accounts, anyone can create rooms on the hosted relay. Keep it safe
+with what the relay already has, tuned for public use:
 
-## Stack suggestion
+- Run the relay **without** `ELEGY_RELAY_KEY` so the website can create rooms.
+  (With a key set, the site shows a "server key" field when starting.)
+- Room size quotas (`ELEGY_MAX_ROOM_MB`), per-IP connection limits,
+  and room expiry (`ELEGY_ROOM_TTL_DAYS`) are already there.
+- Add later: a per-IP room-creation rate limit, and abuse reporting.
+- Whoever runs the relay can read room contents. End-to-end encryption (a key
+  in the link's `#` part, never sent to the server) is the fix, and fits
+  naturally with anonymous links.
 
-- Keep the relay as the existing Node `server.js` (one always-on instance with
-  a disk, e.g. Fly.io). Add a small auth layer in front of room upgrade.
-- Website: a static/SSR site (e.g. Next.js or Astro) on Netlify/Vercel, with
-  Supabase (Postgres + auth) for accounts, sessions, invites and agent tokens.
-  The relay verifies Supabase-issued JWTs on connect.
-- Browser live view: `yjs` + `y-websocket` client in the site, reusing the UI
-  code in `src/ui/` where possible.
+## Next
 
-## Open questions
-
-- Pricing / limits for the hosted relay (free tier size, retention).
-- Is E2EE required for launch, or a fast follow?
-- Should editing be possible from the browser (a small in-browser editor for
-  quick fixes), or is the web view read-only?
+1. **Share AI chats from browser users.** Options, in order of preference:
+   - An "Add to Cursor" / "Add to Claude Code" button that installs the elegy
+     MCP server, so the AI reports what it's doing and can join by itself
+     (see [agents-in-sessions.md](agents-in-sessions.md)).
+   - Optionally let people also pick their chat-history folder
+     (`~/.claude/projects`) so the existing reader can run in the browser.
+2. **Faster change detection** with `FileSystemObserver` where the browser
+   supports it, keeping polling as the fallback.
+3. Claims, file sending, and a read-only "watch" mode for Safari/Firefox.
+4. Deploy: one Fly.io machine (see `docs/hosting.md`), a domain, HTTPS.
+5. End-to-end encryption.
+6. Summaries of partners' AI chats ([chat-summaries.md](chat-summaries.md)).
+7. Later, maybe: a desktop app for other browsers and syncing without a tab.
