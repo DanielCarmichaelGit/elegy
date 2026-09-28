@@ -4,14 +4,22 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 
 // `tool` matches the AI tool names people pick in their profile. On a Mac,
 // `mac` is the app bundle; `url` builds a link the app opens instead of the
-// folder being handed to it. On Windows, `win` is the exe under %LOCALAPPDATA%.
+// folder being handed to it; `cli` is the app's own command-line launcher
+// inside the bundle, run with `args` before the folder. On Windows, `win` is
+// the exe under %LOCALAPPDATA%, also run with `args`.
 export const EDITORS = [
+  // The Claude app's own "new session in this folder" link loses the folder
+  // once you type, so a session is made in the folder first (see openInClaude)
+  // and the app opens that; the link is only the fallback.
   { id: 'claude', name: 'Claude Code', tool: 'Claude Code', mac: 'Claude', win: 'AnthropicClaude/claude.exe', url: (dir) => `claude://code/new?folder=${encodeURIComponent(dir)}` },
-  { id: 'cursor', name: 'Cursor', tool: 'Cursor', mac: 'Cursor', win: 'Programs/cursor/Cursor.exe' },
+  // Cursor otherwise opens its Agents window, whose chats stay on whatever
+  // project was used last; a classic window ties the agent to this folder.
+  { id: 'cursor', name: 'Cursor', tool: 'Cursor', mac: 'Cursor', cli: 'Contents/Resources/app/bin/cursor', args: ['--classic', '--new-window'], win: 'Programs/cursor/Cursor.exe' },
   { id: 'codex', name: 'Codex', tool: 'Codex', mac: 'Codex' },
   { id: 'windsurf', name: 'Windsurf', tool: 'Windsurf', mac: 'Windsurf', win: 'Programs/Windsurf/Windsurf.exe' },
   { id: 'vscode', name: 'VS Code', tool: 'GitHub Copilot', mac: 'Visual Studio Code', win: 'Programs/Microsoft VS Code/Code.exe' },
@@ -46,14 +54,65 @@ export function openCommand (id, dir, opts = {}) {
   const where = locate(ed, opts)
   if (!where) throw new Error(`${ed.name} isn't installed on this computer.`)
   const platform = opts.platform || process.platform
-  if (platform === 'darwin') return ed.url ? ['open', [ed.url(dir)]] : ['open', ['-a', where, dir]]
+  const args = ed.args || []
+  if (platform === 'darwin') {
+    if (ed.url) return ['open', [ed.url(dir)]]
+    if (ed.cli) return [path.join(where, ...ed.cli.split('/')), [...args, dir]]
+    return ['open', ['-a', where, dir]]
+  }
   if (ed.url) return ['cmd', ['/c', 'start', '""', ed.url(dir)]]
-  return [where, [dir]]
+  return [where, [...args, dir]]
 }
 
-export function openIn (id, dir, opts) {
-  const [file, args] = openCommand(id, path.resolve(dir), opts)
-  return new Promise((resolve, reject) => {
-    execFile(file, args, { windowsHide: true }, (err) => (err ? reject(new Error(`Could not open it: ${err.message}`)) : resolve()))
-  })
+const run = (file, args, opts = {}) => new Promise((resolve, reject) => {
+  const child = execFile(file, args, { windowsHide: true, timeout: 60000, ...opts }, (err) => (err ? reject(err) : resolve()))
+  child.stdin?.end() // the Claude CLI waits for stdin to close before running a prompt
+})
+
+/** The Claude Code command-line tool: installed on its own, or the copy inside the Claude app. */
+export function claudeCli ({ platform = process.platform, home = os.homedir(), exists = fs.existsSync, readdir = fs.readdirSync } = {}) {
+  const exe = platform === 'win32' ? 'claude.exe' : 'claude'
+  const dirs = [path.join(home, '.local', 'bin'), path.join(home, '.claude', 'local'), '/opt/homebrew/bin', '/usr/local/bin',
+    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean)]
+  for (const d of dirs) if (exists(path.join(d, exe))) return path.join(d, exe)
+  if (platform === 'darwin') {
+    const bundled = path.join(home, 'Library', 'Application Support', 'Claude', 'claude-code')
+    let versions = []
+    try { versions = readdir(bundled) } catch {}
+    versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+    for (const v of versions) {
+      const cli = path.join(bundled, v, 'claude.app', 'Contents', 'MacOS', 'claude')
+      if (exists(cli)) return cli
+    }
+  }
+  return null
+}
+
+/** How a new Claude Code session named after the folder is made, without a model call. */
+export function claudeSessionCommand (cli, dir, id) {
+  return [cli, ['-p', `/rename ${path.basename(dir)} (cowove)`, '--session-id', id], { cwd: dir }]
+}
+
+async function openInClaude (dir, opts) {
+  const [file, args] = openCommand('claude', dir, opts) // checks it's installed; the folder link is the fallback
+  const cli = claudeCli(opts)
+  if (cli) {
+    const id = crypto.randomUUID()
+    try {
+      await run(...claudeSessionCommand(cli, dir, id))
+      const link = `claude://resume?session=${id}`
+      return await run(...(process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', link]] : ['open', [link]]))
+    } catch {} // fall back to the folder link
+  }
+  await run(file, args)
+}
+
+export async function openIn (id, dir, opts) {
+  dir = path.resolve(dir)
+  try {
+    if (id === 'claude') return await openInClaude(dir, opts)
+    await run(...openCommand(id, dir, opts))
+  } catch (err) {
+    throw new Error(`Could not open it: ${err.message}`)
+  }
 }
