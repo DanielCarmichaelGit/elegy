@@ -113,7 +113,16 @@ export class WebSession extends Emitter {
       remote(paths)
     })
     this.blobs.observe((ev, tr) => { if (tr.origin !== LOCAL) remote(ev.changes.keys.keys()) })
-    for (const arr of [this.chat, this.activity, this.agentFeed]) arr.observe(() => this.emit('change'))
+    for (const arr of [this.chat, this.activity]) arr.observe(() => this.emit('change'))
+    this.agentFeed.observe((ev) => {
+      // My AI shared something through elegy's MCP link: show it as working.
+      for (const item of ev.changes.added) {
+        for (const e of item.content.getContent()) {
+          if (e && e.by === this.name && e.tool && Date.now() - (e.ts || 0) < 2 * 60 * 1000) this.markAiActive(e.tool)
+        }
+      }
+      this.emit('change')
+    })
     this.claims.observe(() => this.emit('change'))
     this.doc.on('update', () => { if (this.ready) this.scheduleStateSave() })
   }
@@ -384,6 +393,15 @@ export class WebSession extends Emitter {
     }, 500)
   }
 
+  markAiActive (tool) {
+    this.aiTool = tool
+    const set = (status) => { if (this.conn && !this.stopped) this.conn.awareness.setLocalStateField('agent', { tool, status, sharing: true }) }
+    set('working')
+    clearTimeout(this.aiIdleTimer)
+    this.aiIdleTimer = setTimeout(() => set('idle'), 2 * 60 * 1000)
+    this.emit('ai-active', tool)
+  }
+
   setFocus (text) {
     this.conn.awareness.setLocalStateField('focus', String(text || '').slice(0, 500))
     this.emit('change')
@@ -431,6 +449,7 @@ export class WebSession extends Emitter {
     clearTimeout(this.pollTimer)
     clearTimeout(this.presenceTimer)
     clearTimeout(this.stateTimer)
+    clearTimeout(this.aiIdleTimer)
     await this.run(() => this.saveState()).catch(() => {})
     this.stopped = true
     this.ready = false

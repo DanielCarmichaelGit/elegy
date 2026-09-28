@@ -52,6 +52,12 @@ the project appears there and stays in sync. Keep the tab open while you
 work. People using the website and people using `elegy join` can be in the
 same session, and `elegy join` accepts the website's invite links.
 
+In a session, the **Connect your AI** card links your AI tool to elegy with
+one click for Cursor ("Add to Cursor") or one command for Claude Code. It uses
+an MCP server the relay hosts, so nothing is installed, and you set it up once
+for every session. Your AI then shares what it's working on, sees what others
+are doing, and can message and claim files.
+
 To run it from a checkout, build the site once: `npm install && npm run build && elegy serve`.
 
 ## Quick start

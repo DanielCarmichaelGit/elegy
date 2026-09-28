@@ -62,15 +62,50 @@ permission once more. Offline edits on both sides are merged.
 
 ## Limits of the prototype
 
-- **AI chat sharing from the browser isn't there yet.** People in the browser
-  see partners' AI feeds from CLI users, but their own Claude Code / Cursor
-  chat isn't shared: a web page can't read `~/.claude` or Cursor's database.
-  See "Next" below.
+- **AI sharing from the browser goes through the AI itself.** A web page
+  can't read `~/.claude` or Cursor's database, so browser users connect their
+  AI instead (see "Connect your AI" below). The AI reports what it's doing
+  with a tool call, which is less complete than reading the whole chat the
+  way the CLI does: it depends on the AI following the instructions.
 - Polling costs grow with folder size. Fine for normal projects; very large
   folders (tens of thousands of files) will feel slow.
 - No file sending in chat from the browser yet (receiving shows the name).
 - No claims UI yet (claims made by CLI users and agents are respected in the
   data but not shown).
+
+## Connect your AI (built)
+
+The session page has a **Connect your AI** card:
+
+- **Add to Cursor**: a `cursor://anysphere.cursor-deeplink/mcp/install` link
+  that installs a remote MCP server named "elegy". One click, no install.
+- **Claude Code**: one command to paste once in any terminal
+  (`claude mcp add --transport http --scope user elegy "<address>"`).
+  Claude Code has no one-click install links.
+- **Other tools**: the address, for any MCP client with Streamable HTTP.
+
+How it works:
+
+- The relay hosts the MCP server at `/mcp/<token>` (`src/relay-mcp.js`,
+  stateless Streamable HTTP). Nothing runs on the person's computer.
+- Each browser makes one private token (kept in localStorage). While a
+  session is open, the tab tells the relay every 20 seconds which session and
+  name the token means (`POST /agent/link`, which needs the room secret).
+  So the AI is set up **once** and follows the person into every session.
+- Tools: `elegy_share` (post the request, plan and result into the feed),
+  `elegy_status`, `elegy_partner_feed`, `elegy_message`,
+  `elegy_read_messages`, `elegy_list_files`, `elegy_claim`, `elegy_release`.
+  The server's instructions and tool descriptions tell the AI to share when
+  it starts and finishes each request.
+- When the AI shares something, the person shows as "Cursor working" to
+  everyone, and the card switches to "Cursor is connected".
+- Before the person is in a session, every tool replies with how to join one.
+- If their tab looks closed (no check-in for 3 minutes), tools warn the AI
+  that files aren't syncing.
+
+Not yet: the token is a bearer secret in the AI tool's config (anyone with it
+can post as that person). Revoking means clearing site data to get a new one;
+a "reset my AI link" button would be better.
 
 ## Anonymous hosting: what to watch
 
@@ -88,12 +123,9 @@ with what the relay already has, tuned for public use:
 
 ## Next
 
-1. **Share AI chats from browser users.** Options, in order of preference:
-   - An "Add to Cursor" / "Add to Claude Code" button that installs the elegy
-     MCP server, so the AI reports what it's doing and can join by itself
-     (see [agents-in-sessions.md](agents-in-sessions.md)).
-   - Optionally let people also pick their chat-history folder
-     (`~/.claude/projects`) so the existing reader can run in the browser.
+1. **Fuller AI feeds for browser users** (optional): let people also pick
+   their chat-history folder (`~/.claude/projects`) so the existing reader can
+   run in the browser, instead of relying on the AI to report.
 2. **Faster change detection** with `FileSystemObserver` where the browser
    supports it, keeping polling as the fallback.
 3. Claims, file sending, and a read-only "watch" mode for Safari/Firefox.

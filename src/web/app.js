@@ -244,6 +244,7 @@ function renderSession () {
     <div class="keepopen">Keep this tab open while you work. It's what keeps <strong>${esc(current.folderName)}</strong> in sync.</div>
     <div class="grid">
       <aside class="col">
+        <section class="panel ai-card" id="ai-card"></section>
         <section class="panel"><h3>People</h3><div id="people"></div></section>
         <section class="panel"><h3>Recent changes</h3><div id="activity" class="list"></div></section>
       </aside>
@@ -262,14 +263,85 @@ function renderSession () {
     if (session && session.say(m.value)) m.value = ''
   })
   session.on('change', schedule)
+  session.on('ai-active', (tool) => { ai.seenAt = Date.now(); ai.tool = tool; renderAiCard() })
+  startAiLink()
+  renderAiCard()
   session.on('file-changed', schedule)
   update()
   clearInterval(renderSession.tick)
   renderSession.tick = setInterval(update, 15000) // refresh "2m ago"
 }
 
+// ------------------------------------------------------ connect your AI --
+// Each browser has one private token. The AI tool is set up once with
+// https://<site>/mcp/<token>, and this tab tells the server which session and
+// name that token means right now, so the same setup works for every session.
+
+const ai = { seenAt: 0, tool: '', timer: null, open: false }
+
+function aiToken () {
+  let t = prefs.get('agentToken')
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(t)) {
+    const b = crypto.getRandomValues(new Uint8Array(24))
+    t = btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    prefs.set('agentToken', t)
+  }
+  return t
+}
+
+const mcpUrl = (tool) => `${location.origin}/mcp/${aiToken()}?tool=${encodeURIComponent(tool)}`
+const cursorLink = () => `cursor://anysphere.cursor-deeplink/mcp/install?name=elegy&config=${encodeURIComponent(btoa(JSON.stringify({ url: mcpUrl('Cursor') })))}`
+const claudeCommand = () => `claude mcp add --transport http --scope user elegy "${mcpUrl('Claude Code')}"`
+
+function startAiLink () {
+  clearInterval(ai.timer)
+  const ping = async () => {
+    if (!session || !current) return
+    try {
+      const r = await fetch('/agent/link', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: aiToken(), room: current.room, secret: current.secret, name: current.name, tool: current.tool })
+      })
+      if (!r.ok) return
+      const { aiSeenAt } = await r.json()
+      if (aiSeenAt && aiSeenAt !== ai.seenAt && !ai.seenAt) { ai.seenAt = aiSeenAt; renderAiCard() }
+    } catch {}
+  }
+  ping()
+  ai.timer = setInterval(ping, 20000)
+}
+
+function renderAiCard () {
+  const el = $('#ai-card')
+  if (!el || !current) return
+  const connected = !!ai.seenAt
+  const first = current.tool === 'Claude Code' ? 'claude' : 'cursor'
+  const cursorBlock = `<div class="ai-opt"><strong>Cursor</strong>
+      <a class="btn sm${first === 'cursor' ? ' primary' : ''}" href="${esc(cursorLink())}">Add to Cursor</a>
+      <p class="sub">Cursor asks to install "elegy". Then start a new chat.</p></div>`
+  const claudeBlock = `<div class="ai-opt"><strong>Claude Code</strong>
+      <div class="cmd"><code id="cc-cmd">${esc(claudeCommand())}</code><button class="btn sm${first === 'claude' ? ' primary' : ''}" data-copy="cc">Copy</button></div>
+      <p class="sub">Paste it once in any terminal, then restart Claude Code.</p></div>`
+  const other = `<details class="ai-opt"><summary>Other AI tools</summary>
+      <p class="sub">Add an MCP server with this address (Streamable HTTP):</p>
+      <div class="cmd"><code>${esc(mcpUrl(current.tool || 'AI'))}</code><button class="btn sm" data-copy="url">Copy</button></div></details>`
+  const setup = (first === 'claude' ? claudeBlock + cursorBlock : cursorBlock + claudeBlock) + other
+  el.innerHTML = connected
+    ? `<h3>Your AI</h3><p class="ai-ok"><span class="dot ok"></span> ${esc(ai.tool || 'Your AI')} is connected</p>
+       <p class="sub">It shares what it's working on and can message and coordinate with others.</p>
+       <details class="ai-more"${ai.open ? ' open' : ''}><summary>Set up another tool</summary>${setup}</details>`
+    : `<h3>Connect your AI</h3>
+       <p class="sub lead">Let your AI share what it's working on and coordinate with the others. Set it up once; it works for every session.</p>
+       ${setup}`
+  el.querySelector('[data-copy="cc"]')?.addEventListener('click', () => copy(claudeCommand(), 'Command copied'))
+  el.querySelector('[data-copy="url"]')?.addEventListener('click', () => copy(mcpUrl(current.tool || 'AI'), 'Address copied'))
+  el.querySelector('.ai-more')?.addEventListener('toggle', (e) => { ai.open = e.target.open })
+}
+
 async function stop () {
   clearInterval(renderSession.tick)
+  clearInterval(ai.timer)
   const s = session
   session = null
   if (s) await s.stop()
@@ -286,12 +358,11 @@ function schedule () {
 
 function aiLine (p) {
   const a = p.agent
-  if (p.via === 'web' && !(a && a.status === 'working')) return 'in the browser' // AI chats aren't shared from the web yet
   if (!a) return ''
-  if (a.sharing === false) return 'AI sharing paused'
+  if (a.sharing === false) return p.via === 'web' ? 'in the browser' : 'AI sharing paused'
   if (a.status === 'unavailable') return `${esc(a.tool || 'AI')} feed unavailable`
   if (a.tool && a.status === 'working') return `<span class="working">${esc(a.tool)} working</span>`
-  return p.via === 'web' ? 'in the browser' : a.tool ? `${esc(a.tool)} idle` : 'no AI activity yet'
+  return a.tool ? `${esc(a.tool)} idle` : 'no AI activity yet'
 }
 
 function update () {

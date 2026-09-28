@@ -12,20 +12,12 @@ import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
 import { defaultRelay, normalizeRelay, keyFor } from './settings.js'
+import { toolLabel } from './agents/common.js'
+
+export { toolLabel }
 
 const NOT_RUNNING = 'There is no live elegy session for this project. If the user gave you an invite code, join with ' +
   'elegy_join_session. To start a new session, use elegy_start_session. A person can also run `elegy join` or `elegy ui`.'
-
-/** "claude-code" -> "Claude Code" etc., from the MCP client's name. */
-export function toolLabel (client) {
-  const n = String(client || '')
-  if (/claude/i.test(n)) return 'Claude Code'
-  if (/cursor/i.test(n)) return 'Cursor'
-  if (/codex/i.test(n)) return 'Codex'
-  if (/windsurf|codeium/i.test(n)) return 'Windsurf'
-  if (/zed/i.test(n)) return 'Zed'
-  return n || 'AI agent'
-}
 
 export async function runMcp () {
   const server = new McpServer(

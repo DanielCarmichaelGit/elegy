@@ -16,6 +16,8 @@ const { chromium } = require('playwright')
 const { startServer } = await import(`${REPO}/src/server.js`)
 const { Session } = await import(`${REPO}/src/session.js`)
 const { decodeInvite } = await import(`${REPO}/src/runner.js`)
+const { Client } = await import(`${REPO}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js`)
+const { StreamableHTTPClientTransport } = await import(`${REPO}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js`)
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `e2e-${n}-`))
 const read = (d, r) => { try { return fs.readFileSync(path.join(d, r), 'utf8') } catch { return null } }
@@ -122,7 +124,33 @@ await p2.screenshot({ path: `${OUT}/5-session-phone-dark.png`, fullPage: false }
 const overflow = await p2.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
 check(!overflow, 'no horizontal scroll at phone width')
 
-// ---- 4. Reload: the session is remembered and resumes ----
+// ---- 4. Wendy connects her AI with the "Add to Cursor" link ----
+await page.waitForSelector('#ai-card a[href^="cursor://"]')
+await page.screenshot({ path: `${OUT}/7-connect-ai.png` })
+const href = await page.getAttribute('#ai-card a[href^="cursor://"]', 'href')
+const cfg = JSON.parse(Buffer.from(decodeURIComponent(new URL(href).searchParams.get('config')), 'base64').toString())
+check(cfg.url.startsWith(`${base}/mcp/`) && cfg.url.includes('tool=Cursor'), 'Add to Cursor link carries the MCP address')
+const cc = await page.textContent('#cc-cmd')
+check(cc.startsWith('claude mcp add --transport http --scope user elegy "') && cc.includes('/mcp/'), 'Claude Code command shown')
+await sleep(500) // let the tab tell the server which session it's in
+const mcp = new Client({ name: 'cursor', version: '1.0.0' })
+await mcp.connect(new StreamableHTTPClientTransport(new URL(cfg.url)))
+const st = await mcp.callTool({ name: 'elegy_status', arguments: {} })
+check(/working for Wendy/.test(st.content[0].text) && /Carl/.test(st.content[0].text), 'AI sees the session as Wendy')
+await mcp.callTool({ name: 'elegy_share', arguments: { request: 'Style the forecast cards', summary: 'Adding a card grid with rounded corners.', files: ['src/forecast.css'] } })
+await waitFor(() => carl.agentFeedFor('Wendy').some((e) => e.text === 'Style the forecast cards' && e.tool === 'Cursor'), 'CLI user sees Wendy\'s AI')
+check(true, 'CLI user sees the browser user\'s AI feed')
+await waitFor(async () => (await p2.textContent('#feed')).includes('Adding a card grid'), 'other browser sees Wendy\'s AI')
+await waitFor(async () => (await p2.textContent('#people')).includes('Cursor working'), 'Wendy shows as Cursor working')
+check(true, 'other browser user sees it, with "Cursor working"')
+await waitFor(async () => (await page.textContent('#ai-card')).includes('is connected'), 'card shows connected')
+check(true, 'card switches to connected')
+await sleep(200)
+await page.screenshot({ path: `${OUT}/8-ai-connected.png` })
+await p2.screenshot({ path: `${OUT}/9-phone-sees-ai.png` })
+await mcp.close()
+
+// ---- 5. Reload: the session is remembered and resumes ----
 await page.goto(`${base}/?testfolder=proj1`)
 await page.waitForSelector('[data-resume]')
 await page.screenshot({ path: `${OUT}/6-home-recent.png` })

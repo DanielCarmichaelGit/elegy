@@ -10,6 +10,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
+import { handleAgentMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MAX_SHARED_FILE_BYTES, CLOSE_ROOM_FULL,
   encoding, decoding, syncProtocol, awarenessProtocol,
@@ -233,6 +234,25 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     return req.socket.remoteAddress || 'unknown'
   }
 
+  // AI links: a browser's token -> the session and name that browser is in now,
+  // so the person's AI can use /mcp/<token> (see relay-mcp.js). Tokens are stored hashed.
+  const linksFile = dataDir && path.join(dataDir, 'agent-links.json')
+  const links = new Map()
+  try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(linksFile, 'utf8')))) links.set(k, v) } catch {}
+  let linksTimer = null
+  const saveLinks = () => {
+    if (!linksFile || linksTimer) return
+    linksTimer = setTimeout(() => {
+      linksTimer = null
+      const cutoff = Date.now() - 30 * DAY
+      for (const [k, v] of links) if ((v.tabSeenAt || 0) < cutoff) links.delete(k)
+      try { fs.writeFileSync(linksFile, JSON.stringify(Object.fromEntries(links))) } catch {}
+    }, 2000)
+    linksTimer.unref()
+  }
+  const tokenKey = (t) => hash(t).toString('hex')
+  const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
+
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-relay-')), 'files')
 
@@ -275,6 +295,39 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         ...(url.pathname === '/' ? { 'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'; frame-ancestors 'none'" } : {})
       })
       return res.end(body)
+    }
+    if (url.pathname === '/agent/link' && req.method === 'POST') {
+      return readJson(req, 4096, (err, body) => {
+        if (err) return text(400, err.message)
+        const { token, room: roomName, secret, name, tool } = body || {}
+        if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
+        const room = getRoom(roomName)
+        if (!room.exists || room.authorize(String(secret || ''), '') !== 'ok') { dropIfUnused(room); return text(403, 'wrong room secret') }
+        if (!room.conns.size) room.onEmpty && room.onEmpty()
+        const k = tokenKey(token)
+        const prev = links.get(k) || {}
+        links.set(k, { room: roomName, name: name.trim().slice(0, 60), tool: String(tool || '').slice(0, 40), tabSeenAt: Date.now(), aiSeenAt: prev.aiSeenAt || 0 })
+        saveLinks()
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ ok: true, aiSeenAt: prev.aiSeenAt || 0 }))
+      })
+    }
+    const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
+    if (mm) {
+      const k = tokenKey(mm[1])
+      const link = links.get(k) || null
+      let room = null
+      if (link) {
+        room = getRoom(link.room)
+        if (!room.exists) { dropIfUnused(room); room = null } else {
+          link.aiSeenAt = Date.now()
+          saveLinks()
+        }
+      }
+      handleAgentMcp({ req, res, room, link: room ? link : null, toolHint: url.searchParams.get('tool') || '' })
+        .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
+        .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
+      return
     }
     const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
     if (!m) return text(404, 'not found')
@@ -390,6 +443,19 @@ function dirSize (dir) {
   let total = 0
   try { for (const f of fs.readdirSync(dir)) total += fs.statSync(path.join(dir, f)).size } catch {}
   return total
+}
+
+function readJson (req, limit, done) {
+  let size = 0
+  const chunks = []
+  req.on('data', (c) => {
+    size += c.length
+    if (size > limit) { req.destroy(); done(new Error('too large')) } else chunks.push(c)
+  })
+  req.on('end', () => {
+    if (size > limit) return
+    try { done(null, JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { done(new Error('bad json')) }
+  })
 }
 
 function receiveFile (req, dir, room, done) {
