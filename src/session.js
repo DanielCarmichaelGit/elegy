@@ -27,7 +27,7 @@ const AGENT_FEED_CAP = 300
 const WATCH_RECHECK_MS = 80
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -66,6 +66,9 @@ export class Session extends EventEmitter {
     this.focus = ''
     this.kind = kind === 'agent' ? 'agent' : 'human' // an AI agent that joined by itself
     this.agentSharing = shareAgent !== false
+    // (kind, text) -> Promise<{ text, how }>; when set, prompts and replies are summarized before sharing.
+    this.summarizer = summarize
+    this.summaryQueue = Promise.resolve()
     this.agentState = null
     this.access = null // from the relay: { state, role, scopes, owner, controlled }
     this.members = [] // everyone approved into a controlled session
@@ -792,13 +795,30 @@ export class Session extends EventEmitter {
   /** Adds entries from this person's AI chat reader. Dedupes by id, keeps the newest 300 per person. */
   pushAgentEntries (entries) {
     if (!this.agentSharing || !entries || !entries.length) return 0
+    if (this.summarizer) {
+      // Summaries take a moment; keep batches in order.
+      const batch = entries
+      this.summaryQueue = this.summaryQueue.then(async () => {
+        const out = await Promise.all(batch.map(async (e) => {
+          if (!e || (e.kind !== 'prompt' && e.kind !== 'reply')) return e
+          const s = await this.summarizer(e.kind, e.text).catch(() => ({ text: e.text, how: 'as-is' }))
+          return s.how === 'as-is' ? e : { ...e, text: s.text, summary: s.how }
+        }))
+        if (this.agentSharing) this.shareAgentEntries(out)
+      })
+      return entries.length
+    }
+    return this.shareAgentEntries(entries)
+  }
+
+  shareAgentEntries (entries) {
     const mine = new Set()
     for (const e of this.agentFeed) if (e && e.by === this.name) mine.add(e.id)
     const fresh = []
     for (const e of entries) {
       if (!e || !e.id || mine.has(e.id)) continue
       mine.add(e.id)
-      fresh.push({ id: String(e.id), by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text: String(e.text || ''), ts: e.ts || Date.now() })
+      fresh.push({ id: String(e.id), by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text: String(e.text || ''), ts: e.ts || Date.now(), ...(e.summary ? { summary: e.summary } : {}) })
     }
     if (!fresh.length) return 0
     this.doc.transact(() => {
@@ -837,6 +857,23 @@ export class Session extends EventEmitter {
     return on
   }
 
+  /** Turns summaries of your AI chat on or off for this folder (remembered). */
+  setSummarize (fn) {
+    this.summarizer = fn || null
+    this.saveConfig({ summarize: !!fn })
+    this.publishAgentState()
+    this.scheduleStatusWrite()
+    return !!fn
+  }
+
+  saveConfig (patch) {
+    try {
+      const file = path.join(this.stateDir, 'config.json')
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+      fs.writeFileSync(file, JSON.stringify({ ...cfg, ...patch }, null, 2), { mode: 0o600 })
+    } catch {}
+  }
+
   /** Live status from the AI chat reader ("working", "idle", "unavailable"). */
   setAgentState (state) {
     this.agentState = state ? { tool: state.tool || null, status: state.status || 'idle', ...(state.reason ? { reason: state.reason } : {}), ...(state.notes ? { notes: state.notes } : {}) } : null
@@ -847,7 +884,7 @@ export class Session extends EventEmitter {
     if (!this.conn) return
     const st = this.agentState || { tool: null, status: 'idle' }
     // While paused, partners only learn that sharing is off, not whether you're working.
-    const shared = this.agentSharing ? { ...st, sharing: true } : { tool: st.tool, status: 'idle', sharing: false }
+    const shared = this.agentSharing ? { ...st, sharing: true, ...(this.summarizer ? { summarized: true } : {}) } : { tool: st.tool, status: 'idle', sharing: false }
     this.conn.awareness.setLocalStateField('agent', shared)
   }
 
@@ -937,7 +974,7 @@ export class Session extends EventEmitter {
         focus: this.focus,
         agents: [...this.agents],
         color: this.conn?.awareness.getLocalState()?.color,
-        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing }
+        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing, summarized: !!this.summarizer }
       },
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),

@@ -522,6 +522,7 @@ function settingsHtml () {
         <span class="hint">Each session gets its own folder in here.</span>
       </div>
       ${toggle('shareAgent', p.shareAgent, 'Share my AI chat', 'Partners see your prompts, the replies and which files it touches. You can pause it inside any session.')}
+      ${toggle('summarize', p.summarize, 'Summarize my chats', 'Your prompts and your AI’s replies are shortened to a sentence or two on this computer before they’re shared. Uses your claude CLI (a few Haiku tokens each); if it isn’t available, the text is just shortened.')}
       ${toggle('preferLocal', p.preferLocal, 'Keep my files when joining a folder that has some', 'When off, their versions of the same files win.')}
       <div class="sec-actions"><span></span><button class="btn primary" type="submit">Save</button></div>
     </div>
@@ -603,7 +604,7 @@ function bindSettings () {
 
   const sess = $('#sessions-sec')
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir'))
-  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), preferLocal: !!f.get('preferLocal') }))
+  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
 
   const relay = $('#relay-sec')
   relay.querySelectorAll('[name=relayMode]').forEach((r) => {

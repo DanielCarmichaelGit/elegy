@@ -704,3 +704,6 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 @media (max-width: 900px) {
   .git-panel { position: fixed; top: 60px; right: 8px; left: 8px; width: auto; }
 }
+.tag.summary { font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--panel-2); }
+.pm-toggle { cursor: pointer; }
+.pm-toggle input { accent-color: var(--ok); }

@@ -244,6 +244,14 @@ function bindTop () {
   wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); btn.focus() } })
   document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) close() }, { signal: mounted.signal })
 
+  menu.addEventListener('change', async (e) => {
+    if (!e.target.matches('[data-summarize]')) return
+    const on = e.target.checked
+    try {
+      await api('POST', `/api/sessions/${current}/summarize`, { on })
+      toast(on ? 'Your prompts and replies are summarized before sharing' : 'Sharing your AI chat word for word')
+    } catch (err) { toast(err.message); e.target.checked = !on }
+  })
   menu.addEventListener('click', async (e) => {
     const t = e.target.closest('[data-person],[data-dm],[data-sharing]')
     if (!t) return
@@ -423,7 +431,8 @@ function renderPeopleMenu () {
     ? `<div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div>`
     : a.sharing === false
       ? `<div class="pm-share"><span>AI chat sharing is paused</span><button class="btn sm" data-sharing="on">Resume</button></div>`
-      : `<div class="pm-share"><span><span class="dot-ok"></span>Sharing your AI chat</span><button class="btn sm ghost" data-sharing="off">Pause</button></div>`
+      : `<div class="pm-share"><span><span class="dot-ok"></span>Sharing your AI chat</span><button class="btn sm ghost" data-sharing="off">Pause</button></div>
+         <label class="pm-share pm-toggle"><span>Summarize it first</span><input type="checkbox" data-summarize ${a.summarized ? 'checked' : ''}></label>`
   const row = (p) => {
     const editing = p.editing && p.editing[0] ? `<div class="pm-sub">Editing <code>${esc(p.editing[0].path)}</code></div>` : ''
     return `<div class="pm-row">

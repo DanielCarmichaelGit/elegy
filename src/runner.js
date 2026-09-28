@@ -9,6 +9,7 @@ import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { keyFor } from './settings.js'
+import { createSummarizer } from './summarize.js'
 
 /**
  * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
@@ -68,7 +69,7 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -83,12 +84,15 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const previous = readConfig(dir)
   // Sharing your AI chat follows your setting; a pause or resume is remembered for this folder.
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
+  const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
   fs.mkdirSync(path.join(dir, '.cowove'), { recursive: true })
   fs.writeFileSync(path.join(dir, '.cowove', 'config.json'),
-    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent }, null, 2), { mode: 0o600 })
+    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize }, null, 2), { mode: 0o600 })
   ensureGitExclude(dir)
 
   const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent })
+  const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
+  if (summarize) session.summarizer = summarizer()
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
@@ -122,6 +126,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
     session,
     invite,
     viewInvite,
+    summarizer,
     dir,
     stop: async () => {
       if (stopped) return

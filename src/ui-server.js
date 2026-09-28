@@ -32,6 +32,7 @@ function profile () {
     color: s.color || null,
     joinDir: s.joinDir || '~/cowove',
     shareAgent: s.shareAgent !== false,
+    summarize: !!s.summarize,
     preferLocal: !!s.preferLocal,
     relayMode: s.relayMode === 'local' || !s.relay ? 'local' : 'hosted',
     publicUrl: s.publicUrl || '',
@@ -58,6 +59,7 @@ function updateProfile (b) {
   }
   if ('joinDir' in b) patch.joinDir = String(b.joinDir || '').trim() || undefined
   if ('shareAgent' in b) patch.shareAgent = b.shareAgent ? undefined : false
+  if ('summarize' in b) patch.summarize = b.summarize ? true : undefined
   if ('preferLocal' in b) patch.preferLocal = b.preferLocal ? true : undefined
   if ('relayMode' in b) patch.relayMode = b.relayMode === 'local' ? 'local' : undefined
   if ('publicUrl' in b) patch.publicUrl = String(b.publicUrl || '').trim() || undefined
@@ -190,6 +192,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       tool,
       color: me.color,
       shareByDefault: me.shareAgent,
+      summarizeByDefault: me.summarize,
       prefer: prefer === 'local' ? 'local' : 'remote',
       inviteServer,
       onLog: log,
@@ -287,6 +290,11 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': async (b, id) => (await get(id).removeMember(b.key), { ok: true }),
+    'POST /api/sessions/:id/summarize': (b, id) => {
+      const r = runs.get(id)
+      if (!r) throw httpError(404, 'That session is not running.')
+      return { on: r.run.session.setSummarize(b.on ? r.run.summarizer() : null) }
+    },
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
     'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))) } },
     'GET /api/settings': () => profile(),
