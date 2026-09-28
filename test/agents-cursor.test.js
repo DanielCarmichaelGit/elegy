@@ -13,7 +13,7 @@ const skip = !sqlite && 'node:sqlite not available'
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function makeCursor () {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-cursor-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-cursor-'))
   const userDir = path.join(root, 'User')
   const project = path.join(root, 'proj')
   const otherProject = path.join(root, 'other')

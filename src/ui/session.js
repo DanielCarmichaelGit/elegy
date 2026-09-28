@@ -66,7 +66,7 @@ export function mountSession (id) {
       <button class="btn sm" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-chat" title="Chat" aria-label="Show chat">${I.chat}<span class="badge" id="chat-badge" hidden></span></button>
       <button class="btn sm ghost wide-only" id="leave-btn">Leave</button>
-      <button class="btn sm ghost icon" data-shutdown title="Shut down elegy" aria-label="Shut down elegy">${I.power}</button>
+      <button class="btn sm ghost icon" data-shutdown title="Shut down cowove" aria-label="Shut down cowove">${I.power}</button>
     </header>
     <div class="ws-body" id="ws-body">
       <aside class="ws-tree" aria-label="Project files">

@@ -244,17 +244,17 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   }
 
   // Files shared in chat are stored on the relay, not in the synced project.
-  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-relay-')), 'files')
+  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-relay-')), 'files')
   const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x')
     const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
     if (!m) {
       res.writeHead(200, { 'content-type': 'text/plain' })
-      return res.end('elegy relay ok\n')
+      return res.end('cowove relay ok\n')
     }
     const [, name, id] = m
     const text = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain' }); res.end(msg) }
-    if (!getRoom(name).authorize(req.headers['x-elegy-secret'] || '')) return text(401, 'wrong room secret')
+    if (!getRoom(name).authorize(req.headers['x-cowove-secret'] || '')) return text(401, 'wrong room secret')
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) return receiveFile(req, dir, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))
     if (req.method === 'GET' && id) {
@@ -276,7 +276,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
     const room = getRoom(name)
     if (!room.authorize(secret)) return reject(socket, 401, 'Wrong room secret')
-    if (!publicKey) return reject(socket, 400, 'This relay needs a newer elegy; please update')
+    if (!publicKey) return reject(socket, 400, 'This relay needs a newer cowove; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))

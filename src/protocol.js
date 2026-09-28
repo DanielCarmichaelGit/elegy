@@ -8,7 +8,7 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 export const MSG_SYNC = 0
 export const MSG_AWARENESS = 1
 export const MSG_QUERY_AWARENESS = 3
-// elegy extensions (ignored by plain y-websocket clients):
+// cowove extensions (ignored by plain y-websocket clients):
 export const MSG_AUTH = 10 // relay -> client: nonce; client -> relay: signature
 export const MSG_CLAIM = 11 // client -> relay: JSON { id, op: 'claim'|'release', pattern, note }
 export const MSG_CLAIMS = 12 // relay -> client: JSON { claims, reply?: { id, ok, error, released } }

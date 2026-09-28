@@ -1,5 +1,5 @@
-// Renders a session status snapshot as Markdown. Used for .elegy/STATUS.md,
-// `elegy status`, and the MCP `elegy_status` tool, so every tool sees the same view.
+// Renders a session status snapshot as Markdown. Used for .cowove/STATUS.md,
+// `cowove status`, and the MCP `cowove_status` tool, so every tool sees the same view.
 
 const ago = (ts) => {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
@@ -10,7 +10,7 @@ const ago = (ts) => {
 
 export function renderStatus (st) {
   const out = []
-  out.push(`# Elegy pair session: room \`${st.room}\``)
+  out.push(`# Cowove pair session: room \`${st.room}\``)
   out.push('')
   out.push(`Relay: ${st.connected ? 'connected' : '**disconnected** (edits are kept and will sync on reconnect)'} · ${st.fileCount} shared files`)
   out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
@@ -57,7 +57,7 @@ function aiLine (a) {
   if (a.sharing === false) return 'sharing paused'
   if (a.status === 'unavailable') return `${a.tool || 'feed'} unavailable`
   if (!a.tool) return ''
-  return `${a.tool} ${a.status === 'working' ? 'is working' : 'idle'} (see elegy_partner_feed)`
+  return `${a.tool} ${a.status === 'working' ? 'is working' : 'idle'} (see cowove_partner_feed)`
 }
 
 export function renderMessage (m, me) {

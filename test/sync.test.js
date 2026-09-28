@@ -12,7 +12,7 @@ import WebSocket from 'ws'
 
 let srv, server
 const sessions = []
-const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `elegy-${name}-`))
+const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-${name}-`))
 const read = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel), 'utf8') } catch { return null } }
 const write = (dir, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
@@ -29,7 +29,7 @@ async function waitFor (fn, ms = 5000) {
   throw new Error(`timed out; last value: ${last instanceof Error ? last.message : JSON.stringify(last)}`)
 }
 
-// One key per person, kept across reconnects like ~/.elegy/identity.json.
+// One key per person, kept across reconnects like ~/.cowove/identity.json.
 const identities = new Map()
 const identityOf = (name) => { if (!identities.has(name)) identities.set(name, generateIdentity()); return identities.get(name) }
 
@@ -99,10 +99,10 @@ test('binary files sync byte for byte', async () => {
 })
 
 test('unsafe paths from a peer are never written', async () => {
-  const evil = path.join(path.dirname(dirB), 'elegy-escape.txt')
+  const evil = path.join(path.dirname(dirB), 'cowove-escape.txt')
   fs.rmSync(evil, { force: true })
   A.doc.transact(() => {
-    A.files.set('../elegy-escape.txt', new Y.Text('pwned'))
+    A.files.set('../cowove-escape.txt', new Y.Text('pwned'))
     A.files.set('.git/hooks/pre-commit', new Y.Text('pwned'))
     A.files.set('.env', new Y.Text('pwned'))
   })
@@ -142,8 +142,8 @@ test('claims are enforced: others\' edits are undone locally and never shared', 
   // Edit: bob's disk goes back to the shared text; his version is kept aside.
   write(dirB, 'locked/a.txt', 'bob was here\n')
   await waitFor(() => read(dirB, 'locked/a.txt') === 'original\n')
-  const saved = fs.readdirSync(path.join(dirB, '.elegy', 'rejected'))
-  assert.ok(saved.some((ts) => read(path.join(dirB, '.elegy', 'rejected', ts), 'locked/a.txt') === 'bob was here\n'))
+  const saved = fs.readdirSync(path.join(dirB, '.cowove', 'rejected'))
+  assert.ok(saved.some((ts) => read(path.join(dirB, '.cowove', 'rejected', ts), 'locked/a.txt') === 'bob was here\n'))
   // New file inside the claim: removed. Delete: restored.
   write(dirB, 'locked/new.txt', 'sneaky')
   await waitFor(() => read(dirB, 'locked/new.txt') === null)
@@ -184,8 +184,8 @@ test('the claimer reverts changes from clients that do not enforce claims', asyn
   await waitFor(() => B.files.get('guarded.txt').toString() === 'safe\n')
   assert.equal(read(dirA, 'guarded.txt'), 'safe\n')
   await waitFor(() => read(dirB, 'guarded.txt') === 'safe\n')
-  const saved = fs.readdirSync(path.join(dirA, '.elegy', 'rejected'))
-  assert.ok(saved.some((ts) => read(path.join(dirA, '.elegy', 'rejected', ts), 'guarded.txt') === 'hacked safe\n'))
+  const saved = fs.readdirSync(path.join(dirA, '.cowove', 'rejected'))
+  assert.ok(saved.some((ts) => read(path.join(dirA, '.cowove', 'rejected', ts), 'guarded.txt') === 'hacked safe\n'))
   // Creating a file under someone's claim is reverted too.
   await A.claim('fort')
   await waitFor(() => B.claimFor('fort/a.txt'))
@@ -239,7 +239,7 @@ test('a client that cannot prove its key is refused', async () => {
   await s.stop().catch(() => {})
 })
 
-test('clients without an identity (older elegy) are told to update', async () => {
+test('clients without an identity (older cowove) are told to update', async () => {
   const ws = new WebSocket(`${server}/test?secret=pw`)
   ws.on('error', () => {})
   const status = await new Promise((resolve) => {
@@ -247,7 +247,7 @@ test('clients without an identity (older elegy) are told to update', async () =>
     ws.on('open', () => resolve('open'))
   })
   ws.terminate()
-  assert.match(status, /^400 .*newer elegy/)
+  assert.match(status, /^400 .*newer cowove/)
 })
 
 test('presence under someone else\'s name is dropped', async () => {
@@ -293,13 +293,13 @@ test('files sent in chat are delivered without touching the project', async () =
   B.on('log', (m) => received.push(m))
   const sent = await A.sendFile(path.join(outside, 'shot.png'), { text: 'look at this' })
   assert.equal(sent.file.name, 'shot.png')
-  // Bob's session downloads it into .elegy/inbox automatically.
+  // Bob's session downloads it into .cowove/inbox automatically.
   const inboxFile = await waitFor(() => {
     const m = B.messages({ markRead: false }).find((x) => x.id === sent.id)
     return m && m.file.localPath
   })
   assert.ok(fs.readFileSync(path.join(dirB, inboxFile)).equals(payload))
-  assert.ok(inboxFile.startsWith('.elegy/inbox/'))
+  assert.ok(inboxFile.startsWith('.cowove/inbox/'))
   assert.equal(read(dirB, 'shot.png'), null, 'shared files must not land in the project tree')
   assert.ok(received.some((l) => l.includes('received shot.png')))
   // Fetch it again somewhere else.
@@ -311,7 +311,7 @@ test('files sent in chat are delivered without touching the project', async () =
 })
 
 test('relay rejects file access with the wrong secret', async () => {
-  const res = await fetch(`http://127.0.0.1:${srv.port}/files/test`, { method: 'POST', headers: { 'x-elegy-secret': 'nope' }, body: 'x' })
+  const res = await fetch(`http://127.0.0.1:${srv.port}/files/test`, { method: 'POST', headers: { 'x-cowove-secret': 'nope' }, body: 'x' })
   assert.equal(res.status, 401)
 })
 
@@ -340,7 +340,7 @@ test('first join backs up conflicting local files and takes the session version'
   write(dirC, 'README.md', 'my own readme\n')
   const C = await open(dirC, 'carol')
   assert.equal(read(dirC, 'README.md'), '# hello\n')
-  const conflicts = path.join(dirC, '.elegy', 'conflicts')
+  const conflicts = path.join(dirC, '.cowove', 'conflicts')
   const [stamp] = fs.readdirSync(conflicts)
   assert.equal(read(path.join(conflicts, stamp), 'README.md'), 'my own readme\n')
   await C.stop()

@@ -1,17 +1,17 @@
-// Registry of running elegy processes (relays, the app, folder syncs) so
-// `elegy stop` and the app's Shut down button can stop all of them.
-// Each process writes ~/.elegy/procs/<pid>.json and removes it on exit.
+// Registry of running cowove processes (relays, the app, folder syncs) so
+// `cowove stop` and the app's Shut down button can stop all of them.
+// Each process writes ~/.cowove/procs/<pid>.json and removes it on exit.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const procsDir = () => path.join(os.homedir(), '.elegy', 'procs')
+const procsDir = () => path.join(os.homedir(), '.cowove', 'procs')
 
 const alive = (pid) => {
   try { process.kill(pid, 0); return true } catch (err) { return err.code === 'EPERM' }
 }
 
-/** Records this process as a running elegy `kind` ('relay', 'app', 'sync'). */
+/** Records this process as a running cowove `kind` ('relay', 'app', 'sync'). */
 export function registerProcess (kind, info = {}) {
   const file = path.join(procsDir(), `${process.pid}.json`)
   fs.mkdirSync(procsDir(), { recursive: true })
@@ -19,7 +19,7 @@ export function registerProcess (kind, info = {}) {
   process.on('exit', () => { try { fs.rmSync(file, { force: true }) } catch {} })
 }
 
-/** Running elegy processes, oldest first. Cleans up entries for dead ones. */
+/** Running cowove processes, oldest first. Cleans up entries for dead ones. */
 export function listProcesses () {
   let files = []
   try { files = fs.readdirSync(procsDir()).filter((f) => f.endsWith('.json')) } catch { return [] }
@@ -35,7 +35,7 @@ export function listProcesses () {
 }
 
 /**
- * Stops every registered elegy process except `exclude` (a pid). Asks nicely
+ * Stops every registered cowove process except `exclude` (a pid). Asks nicely
  * first (so syncs flush and relays save), then force-kills stragglers.
  * Returns the processes that were stopped.
  */
@@ -51,7 +51,7 @@ export async function stopProcesses ({ exclude = process.pid, timeoutMs = 5000 }
   return targets
 }
 
-/** One-line description of a registered process, for `elegy stop`. */
+/** One-line description of a registered process, for `cowove stop`. */
 export function describeProcess (p) {
   if (p.kind === 'relay') return `relay on :${p.port} (pid ${p.pid})`
   if (p.kind === 'app') return `app on :${p.port} (pid ${p.pid})`

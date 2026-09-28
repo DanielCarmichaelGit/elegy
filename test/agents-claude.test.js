@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startClaudeCodeReader, slugFor } from '../src/agents/claude-code.js'
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-cc-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-cc-'))
 const project = path.join(home, 'code', 'my-app')
 fs.mkdirSync(path.join(project, 'web'), { recursive: true })
 const projDir = path.join(home, '.claude', 'projects', slugFor(project))

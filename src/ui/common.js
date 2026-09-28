@@ -1,13 +1,13 @@
-// Shared state and helpers for the elegy app (native ES modules, no build step).
+// Shared state and helpers for the cowove app (native ES modules, no build step).
 
 // ---------------------------------------------------------------- token --
 const params = new URLSearchParams(location.search)
 if (params.get('t')) {
-  try { sessionStorage.setItem('elegy-token', params.get('t')) } catch {}
+  try { sessionStorage.setItem('cowove-token', params.get('t')) } catch {}
   history.replaceState(null, '', '/')
 }
 export let TOKEN = params.get('t')
-try { TOKEN = TOKEN || sessionStorage.getItem('elegy-token') } catch {}
+try { TOKEN = TOKEN || sessionStorage.getItem('cowove-token') } catch {}
 
 // ---------------------------------------------------------------- icons --
 export const I = {
@@ -84,7 +84,7 @@ export function toast (msg) {
 export async function api (method, path, body, headers = {}) {
   const res = await fetch(path, {
     method,
-    headers: { 'x-elegy-token': TOKEN || '', ...(body && !(body instanceof Blob) ? { 'content-type': 'application/json' } : {}), ...headers },
+    headers: { 'x-cowove-token': TOKEN || '', ...(body && !(body instanceof Blob) ? { 'content-type': 'application/json' } : {}), ...headers },
     body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined
   })
   const data = await res.json().catch(() => ({}))
@@ -94,14 +94,14 @@ export async function api (method, path, body, headers = {}) {
 
 export function decodeInvite (code) {
   try {
-    const raw = code.trim().replace(/^elegy join\s+/, '')
+    const raw = code.trim().replace(/^cowove join\s+/, '')
     const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')))
     return j && j.s && j.r ? { server: j.s, room: j.r } : null
   } catch { return null }
 }
 
-export function remember (key, value) { try { localStorage.setItem(`elegy-${key}`, value) } catch {} }
-export function recall (key, fallback = '') { try { return localStorage.getItem(`elegy-${key}`) ?? fallback } catch { return fallback } }
+export function remember (key, value) { try { localStorage.setItem(`cowove-${key}`, value) } catch {} }
+export function recall (key, fallback = '') { try { return localStorage.getItem(`cowove-${key}`) ?? fallback } catch { return fallback } }
 
 /** Tools someone is using, for badges. */
 export const toolsOf = (p) => [...new Set([p.tool, ...(p.agents || [])].filter((t) => t && t !== 'unknown'))]

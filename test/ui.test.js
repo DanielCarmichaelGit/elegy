@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'elegy-home-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-home-'))
 process.env.HOME = home // keep recent.json and relay data out of the real home
 
 const { startUi } = await import('../src/ui-server.js')
@@ -19,7 +19,7 @@ after(async () => { await ui.close() })
 
 const api = (method, p, body) => fetch(base + p, {
   method,
-  headers: { 'x-elegy-token': ui.token, 'content-type': 'application/json' },
+  headers: { 'x-cowove-token': ui.token, 'content-type': 'application/json' },
   body: body ? JSON.stringify(body) : undefined
 }).then(async (r) => ({ status: r.status, body: await r.json() }))
 
@@ -38,7 +38,7 @@ test('API requires the launch token', async () => {
 test('rejects requests for other hostnames (DNS rebinding)', async () => {
   const http = await import('node:http')
   const status = await new Promise((resolve) => {
-    http.get({ host: '127.0.0.1', port: ui.port, path: '/api/state', headers: { host: 'evil.example.com', 'x-elegy-token': ui.token } }, (res) => resolve(res.statusCode))
+    http.get({ host: '127.0.0.1', port: ui.port, path: '/api/state', headers: { host: 'evil.example.com', 'x-cowove-token': ui.token } }, (res) => resolve(res.statusCode))
   })
   assert.equal(status, 403)
 })
@@ -58,7 +58,7 @@ test('create a hosted session, chat, send a file, stop', async () => {
 
   const up = await fetch(`${base}/api/sessions/${id}/send`, {
     method: 'POST',
-    headers: { 'x-elegy-token': ui.token, 'x-filename': encodeURIComponent('notes.txt'), 'x-text': encodeURIComponent('see notes') },
+    headers: { 'x-cowove-token': ui.token, 'x-filename': encodeURIComponent('notes.txt'), 'x-text': encodeURIComponent('see notes') },
     body: 'some notes'
   })
   const sent = await up.json()
@@ -118,7 +118,7 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
   assert.equal(text.body.text, 'export const login = 1\n')
   const bin = await api('GET', `/api/sessions/${id}/file?path=logo.png`)
   assert.deepEqual(bin.body, { path: 'logo.png', binary: true, size: 6 })
-  for (const bad of ['../secret', '/etc/passwd', 'src/../../x', 'nope.txt', '.elegy/config.json']) {
+  for (const bad of ['../secret', '/etc/passwd', 'src/../../x', 'nope.txt', '.cowove/config.json']) {
     const r = await api('GET', `/api/sessions/${id}/file?path=${encodeURIComponent(bad)}`)
     assert.equal(r.status, 404, bad)
   }
@@ -140,7 +140,7 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
   ])
 
   assert.deepEqual((await api('POST', `/api/sessions/${id}/sharing`, { on: false })).body, { on: false })
-  const cfg = JSON.parse(fs.readFileSync(path.join(dir, '.elegy', 'config.json'), 'utf8'))
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, '.cowove', 'config.json'), 'utf8'))
   assert.equal(cfg.shareAgent, false, 'pause is remembered')
   const st = await api('GET', '/api/state')
   assert.equal(st.body.sessions.find((s) => s.id === id).status.me.agent.sharing, false)

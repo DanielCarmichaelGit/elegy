@@ -1,5 +1,5 @@
 // Local control API (127.0.0.1 only) so the CLI and the MCP server can talk to
-// a running session. Discovery info is written to .elegy/daemon.json.
+// a running session. Discovery info is written to .cowove/daemon.json.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -51,7 +51,7 @@ export async function startControl (session, extras = {}) {
   }
 }
 
-// Server-sent events: pushes each new message as it arrives (used by `elegy chat`).
+// Server-sent events: pushes each new message as it arrives (used by `cowove chat`).
 function streamEvents (session, req, res) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
   res.write(': connected\n\n')
@@ -71,10 +71,10 @@ function streamEvents (session, req, res) {
 }
 
 /** Finds the nearest folder (from `start` upward) with a running session. */
-export function findDaemon (start = process.env.ELEGY_DIR || process.cwd()) {
+export function findDaemon (start = process.env.COWOVE_DIR || process.cwd()) {
   let dir = path.resolve(start)
   while (true) {
-    const file = path.join(dir, '.elegy', 'daemon.json')
+    const file = path.join(dir, '.cowove', 'daemon.json')
     if (fs.existsSync(file)) {
       const info = JSON.parse(fs.readFileSync(file, 'utf8'))
       try { process.kill(info.pid, 0) } catch { return null } // stale

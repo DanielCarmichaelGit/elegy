@@ -4,27 +4,27 @@ import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 
-const HELP = `elegy: real-time pair vibe coding with any AI tool
+const HELP = `cowove: real-time pair vibe coding with any AI tool
 
 Usage:
-  elegy ui                                            Open the app in your browser (start, join, chat)
-  elegy serve [--port 4321] [--data ./elegy-data]   Run a relay server
-  elegy join --server <ws(s)://relay>                 Start a new session in this folder
-  elegy join <invite-code>                            Join a partner's session in this folder
-  elegy join                                          Rejoin this folder's last session
-  elegy setup                                         Connect Claude Code / Cursor / others via MCP
-  elegy status                                        Show collaborators, claims, activity, chat
-  elegy chat                                          Live chat (messages, DMs, files) in this terminal
-  elegy say [@name] <message>                         Message everyone, or one person with @name
-  elegy send <file> [@name] [message]                 Send a file (not added to the project)
-  elegy messages [--all] [--with name]                Show unread (or all) messages
-  elegy get <message-id> [dest]                       Download a shared file again
-  elegy focus <what you're doing>                     Tell collaborators what you're working on
-  elegy claim <path|glob> [reason]                    Mark files as yours for now
-  elegy release <path|glob|*>                         Release a claim
-  elegy invite                                        Print this session's invite code
-  elegy stop                                          Shut down everything elegy is running (relay, app, syncs)
-  elegy mcp                                           Run the MCP server (used by AI tools)
+  cowove ui                                            Open the app in your browser (start, join, chat)
+  cowove serve [--port 4321] [--data ./cowove-data]   Run a relay server
+  cowove join --server <ws(s)://relay>                 Start a new session in this folder
+  cowove join <invite-code>                            Join a partner's session in this folder
+  cowove join                                          Rejoin this folder's last session
+  cowove setup                                         Connect Claude Code / Cursor / others via MCP
+  cowove status                                        Show collaborators, claims, activity, chat
+  cowove chat                                          Live chat (messages, DMs, files) in this terminal
+  cowove say [@name] <message>                         Message everyone, or one person with @name
+  cowove send <file> [@name] [message]                 Send a file (not added to the project)
+  cowove messages [--all] [--with name]                Show unread (or all) messages
+  cowove get <message-id> [dest]                       Download a shared file again
+  cowove focus <what you're doing>                     Tell collaborators what you're working on
+  cowove claim <path|glob> [reason]                    Mark files as yours for now
+  cowove release <path|glob|*>                         Release a claim
+  cowove invite                                        Print this session's invite code
+  cowove stop                                          Shut down everything cowove is running (relay, app, syncs)
+  cowove mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
   --name <you>        Your display name (default: OS username)
@@ -69,10 +69,10 @@ async function serve () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, data: { type: 'string' } } })
   const { startServer } = await import('../src/server.js')
   const port = Number(values.port || process.env.PORT || 4321)
-  const dataDir = path.resolve(values.data || process.env.ELEGY_DATA || './elegy-data')
+  const dataDir = path.resolve(values.data || process.env.COWOVE_DATA || './cowove-data')
   const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir })
-  console.log(`elegy relay listening on :${srv.port} (data: ${dataDir})`)
-  console.log(`start a session with:  elegy join --server ws://<this-host>:${srv.port}`)
+  console.log(`cowove relay listening on :${srv.port} (data: ${dataDir})`)
+  console.log(`start a session with:  cowove join --server ws://<this-host>:${srv.port}`)
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('relay', { port: srv.port, dataDir })
   const shutdown = async () => { await srv.close(); process.exit(0) }
@@ -97,19 +97,19 @@ async function join () {
   let conn
   if (positionals[0]) {
     try { conn = decodeInvite(positionals[0]) } catch (err) { fail(err.message) }
-  } else if (values.server || process.env.ELEGY_SERVER) {
-    conn = newConn(values.server || process.env.ELEGY_SERVER)
+  } else if (values.server || process.env.COWOVE_SERVER) {
+    conn = newConn(values.server || process.env.COWOVE_SERVER)
     if (values.room) conn.room = values.room
-    if (values.secret || process.env.ELEGY_SECRET) conn.secret = values.secret || process.env.ELEGY_SECRET
+    if (values.secret || process.env.COWOVE_SECRET) conn.secret = values.secret || process.env.COWOVE_SECRET
   } else if (saved.server) {
     conn = { server: saved.server, room: saved.room, secret: saved.secret }
   } else {
-    fail('Give a relay to start a session (elegy join --server wss://…) or an invite code to join one.\nOr run `elegy ui` to do it in your browser.')
+    fail('Give a relay to start a session (cowove join --server wss://…) or an invite code to join one.\nOr run `cowove ui` to do it in your browser.')
   }
 
   const stamp = () => new Date().toLocaleTimeString()
   const name = values.name || saved.name || os.userInfo().username
-  console.log(`elegy: syncing ${dir}`)
+  console.log(`cowove: syncing ${dir}`)
   console.log(`  room ${conn.room} on ${conn.server} as "${name}"`)
   let run
   try {
@@ -122,7 +122,7 @@ async function join () {
       kind: values.agent ? 'agent' : 'human',
       inviteServer: saved.room === conn.room ? saved.inviteServer : undefined,
       onLog: (m) => console.log(`[${stamp()}] ${m}`),
-      onDebug: process.env.ELEGY_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
+      onDebug: process.env.COWOVE_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
       onFatal: (err) => fail(err.message)
     })
   } catch (err) {
@@ -131,8 +131,8 @@ async function join () {
 
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('sync', { dir })
-  console.log(`\nInvite your partner. They run this in an empty (or matching) project folder:\n\n  elegy join ${run.invite}\n`)
-  console.log('Tip: run `elegy setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
+  console.log(`\nInvite your partner. They run this in an empty (or matching) project folder:\n\n  cowove join ${run.invite}\n`)
+  console.log('Tip: run `cowove setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
 
   const stop = async () => {
     console.log('\nstopping…')
@@ -149,7 +149,7 @@ async function ui () {
   const { registerProcess, stopProcesses } = await import('../src/procs.js')
   const app = await startUi({
     port: Number(values.port || 7420),
-    // The app's "Shut down" button: stop every other elegy process, then this one.
+    // The app's "Shut down" button: stop every other cowove process, then this one.
     onShutdown: async () => {
       console.log('\nshutting down everything…')
       await stopProcesses()
@@ -158,8 +158,8 @@ async function ui () {
     }
   })
   registerProcess('app', { port: app.port })
-  console.log(`elegy is running at:\n\n  ${app.url}\n`)
-  console.log('Keep this terminal open while you work. Ctrl+C to stop, or `elegy stop` to shut everything down.')
+  console.log(`cowove is running at:\n\n  ${app.url}\n`)
+  console.log('Keep this terminal open while you work. Ctrl+C to stop, or `cowove stop` to shut everything down.')
   if (!values['no-open']) openBrowser(app.url)
   const stop = async () => { console.log('\nstopping…'); await app.close(); process.exit(0) }
   process.on('SIGINT', stop)
@@ -179,14 +179,14 @@ async function doSetup () {
   const changed = setup(process.cwd())
   if (!changed.length) return console.log('already set up')
   console.log('updated:\n' + changed.map((c) => `  - ${c}`).join('\n'))
-  console.log('\nRestart your AI tool (or reload MCP servers) to pick up the "elegy" MCP server.')
-  console.log('Other tools: point them at AGENTS.md, or have them run `elegy status`.')
+  console.log('\nRestart your AI tool (or reload MCP servers) to pick up the "cowove" MCP server.')
+  console.log('Other tools: point them at AGENTS.md, or have them run `cowove status`.')
 }
 
 async function daemonOrFail () {
   const { findDaemon, call } = await import('../src/control.js')
   const d = findDaemon()
-  if (!d) fail('elegy is not running here. Start it with `elegy join` in the project folder.')
+  if (!d) fail('cowove is not running here. Start it with `cowove join` in the project folder.')
   return { d, call }
 }
 
@@ -210,14 +210,14 @@ function splitRecipient (args) {
 
 async function say () {
   const { to, rest } = splitRecipient(argv)
-  if (!rest.length) fail('usage: elegy say [@name] <message>')
+  if (!rest.length) fail('usage: cowove say [@name] <message>')
   await simple('/say', { text: rest.join(' '), to }, (r) =>
     to ? `sent to ${to}${r.recipientOnline ? '' : ' (offline, they will see it when they reconnect)'}` : 'sent')
 }
 
 async function sendFile () {
   const [file, ...more] = argv
-  if (!file) fail('usage: elegy send <file> [@name] [message]')
+  if (!file) fail('usage: cowove send <file> [@name] [message]')
   if (!fs.existsSync(file)) fail(`no such file: ${file}`)
   const { to, rest } = splitRecipient(more)
   await simple('/send', { path: path.resolve(file), to, text: rest.join(' ') }, (r) =>
@@ -236,7 +236,7 @@ async function messages () {
 }
 
 async function getFile () {
-  if (!argv[0]) fail('usage: elegy get <message-id> [dest]')
+  if (!argv[0]) fail('usage: cowove get <message-id> [dest]')
   await simple('/get', { id: argv[0], dest: argv[1] ? path.resolve(argv[1]) : undefined }, (r) => `saved to ${r.path}`)
 }
 
@@ -282,9 +282,9 @@ async function chat () {
           else if (event === 'log' && !payload.startsWith('💬')) print(`  · ${payload}`)
         }
       }
-      if (!ctrl.signal.aborted) { print('lost connection to elegy'); process.exit(1) }
+      if (!ctrl.signal.aborted) { print('lost connection to cowove'); process.exit(1) }
     } catch (err) {
-      if (!ctrl.signal.aborted) { print(`lost connection to elegy: ${err.message}`); process.exit(1) }
+      if (!ctrl.signal.aborted) { print(`lost connection to cowove: ${err.message}`); process.exit(1) }
     }
   })()
 
@@ -327,10 +327,10 @@ async function invite () {
   const { encodeInvite } = await import('../src/runner.js')
   let dir = process.cwd()
   while (true) {
-    const f = path.join(dir, '.elegy', 'config.json')
+    const f = path.join(dir, '.cowove', 'config.json')
     if (fs.existsSync(f)) {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'))
-      return console.log(`elegy join ${encodeInvite({ ...c, server: c.inviteServer || c.server })}`)
+      return console.log(`cowove join ${encodeInvite({ ...c, server: c.inviteServer || c.server })}`)
     }
     if (path.dirname(dir) === dir) fail('no session configured in this folder')
     dir = path.dirname(dir)
@@ -340,7 +340,7 @@ async function invite () {
 async function stopAll () {
   const { stopProcesses, describeProcess } = await import('../src/procs.js')
   const stopped = await stopProcesses()
-  if (!stopped.length) return console.log('nothing to stop: elegy is not running')
+  if (!stopped.length) return console.log('nothing to stop: cowove is not running')
   console.log('stopped:\n' + stopped.map((p) => `  - ${describeProcess(p)}`).join('\n'))
 }
 

@@ -37,7 +37,7 @@ export class Session extends EventEmitter {
     this.identity = identity
     this.tool = tool
     this.prefer = prefer
-    this.stateDir = path.join(this.root, '.elegy')
+    this.stateDir = path.join(this.root, '.cowove')
     this.stateFile = path.join(this.stateDir, 'state.bin')
 
     this.doc = new Y.Doc()
@@ -132,7 +132,7 @@ export class Session extends EventEmitter {
           if (msg.file) {
             this.fetchFile(msg).then(
               (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
-              (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: elegy get ${msg.id})`)
+              (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: cowove get ${msg.id})`)
             )
           }
         }
@@ -273,7 +273,7 @@ export class Session extends EventEmitter {
   /** Pushes the on-disk state of a path into the shared doc. Returns true if anything changed. */
   ingest (rel) {
     if (!this.syncable(rel)) return false
-    if (rel === '.gitignore' || rel === '.elegyignore') this.ig = loadIgnore(this.root)
+    if (rel === '.gitignore' || rel === '.cowoveignore') this.ig = loadIgnore(this.root)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) {
       if (disk.tooLarge && !this.warnedLarge.has(rel)) {
@@ -377,7 +377,7 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * A partner changed a path we claimed (their elegy should have refused, so
+   * A partner changed a path we claimed (their cowove should have refused, so
    * it's an old or misbehaving client): keep their version aside and put ours
    * back into the shared doc.
    */
@@ -393,7 +393,7 @@ export class Session extends EventEmitter {
     // Outside the observer, so the revert goes out as its own update.
     queueMicrotask(() => {
       try {
-        if (this.ingest(rel)) this.log(`🔒 reverted a partner's change to ${rel}, which you claimed; theirs is in .elegy/rejected`)
+        if (this.ingest(rel)) this.log(`🔒 reverted a partner's change to ${rel}, which you claimed; theirs is in .cowove/rejected`)
       } catch (err) { this.log(`could not revert ${rel}: ${err.message}`) }
     })
   }
@@ -430,7 +430,7 @@ export class Session extends EventEmitter {
       }
       this.lastKnown.set(rel, shared)
     }
-    if (rel === '.gitignore' || rel === '.elegyignore') this.ig = loadIgnore(this.root)
+    if (rel === '.gitignore' || rel === '.cowoveignore') this.ig = loadIgnore(this.root)
 
     if (this.ready) {
       this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })
@@ -558,7 +558,7 @@ export class Session extends EventEmitter {
     if (st.size > MAX_SHARED_FILE_BYTES) throw new Error(`${filePath} is larger than ${MAX_SHARED_FILE_BYTES / 1024 / 1024} MB`)
     const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}`, {
       method: 'POST',
-      headers: { 'x-elegy-secret': this.secret, 'content-type': 'application/octet-stream' },
+      headers: { 'x-cowove-secret': this.secret, 'content-type': 'application/octet-stream' },
       body: fs.readFileSync(abs)
     })
     if (!res.ok) throw new Error(`upload failed: ${await res.text()}`)
@@ -566,14 +566,14 @@ export class Session extends EventEmitter {
     return this.say(text, { to, file: { id: fileId, name: path.basename(abs), size: st.size } })
   }
 
-  /** Downloads a message's attachment (to .elegy/inbox/ by default). */
+  /** Downloads a message's attachment (to .cowove/inbox/ by default). */
   async fetchFile (msgOrId, dest) {
     const msg = typeof msgOrId === 'string' ? this.chat.toArray().find((m) => m.id === msgOrId || (m.file && m.file.id === msgOrId)) : msgOrId
     if (!msg || !msg.file || !this.canSee(msg)) throw new Error('no such file')
     const target = dest ? path.resolve(dest) : this.inboxPath(msg)
     const finalPath = fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, safeName(msg.file.name)) : target
     const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${msg.file.id}`, {
-      headers: { 'x-elegy-secret': this.secret }
+      headers: { 'x-cowove-secret': this.secret }
     })
     if (!res.ok) throw new Error(`download failed: ${await res.text()}`)
     fs.mkdirSync(path.dirname(finalPath), { recursive: true })

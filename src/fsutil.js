@@ -9,7 +9,7 @@ export const MAX_BINARY_BYTES = 8 * 1024 * 1024
 // Never synced, regardless of .gitignore. .env files are excluded so secrets
 // stay on each person's machine.
 const ALWAYS_IGNORED = [
-  '.git', '.elegy', 'node_modules', '.DS_Store', 'Thumbs.db',
+  '.git', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db',
   '.env', '.env.*', '!.env.example',
   '*.swp', '*.swo', '*~', '.#*'
 ]
@@ -18,10 +18,10 @@ export function toPosix (p) {
   return p.split(path.sep).join('/')
 }
 
-/** Builds the ignore matcher from built-ins, .gitignore and .elegyignore. */
+/** Builds the ignore matcher from built-ins, .gitignore and .cowoveignore. */
 export function loadIgnore (root) {
   const ig = ignore().add(ALWAYS_IGNORED)
-  for (const file of ['.gitignore', '.elegyignore']) {
+  for (const file of ['.gitignore', '.cowoveignore']) {
     try { ig.add(fs.readFileSync(path.join(root, file), 'utf8')) } catch {}
   }
   return ig
@@ -52,7 +52,7 @@ export function isSafeRelPath (rel) {
     if (part === '' || part === '.' || part === '..') return false
   }
   const first = parts[0].toLowerCase()
-  if (first === '.git' || first === '.elegy') return false
+  if (first === '.git' || first === '.cowove') return false
   return true
 }
 

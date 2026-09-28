@@ -107,7 +107,7 @@ export class Connection extends EventEmitter {
   authenticate (buf) {
     const dec = decoding.createDecoder(buf)
     if (decoding.readVarUint(dec) !== MSG_AUTH) {
-      this.emit('fatal', new Error('The relay runs an older elegy that cannot check identities; update it'))
+      this.emit('fatal', new Error('The relay runs an older cowove that cannot check identities; update it'))
       return this.close()
     }
     const nonce = decoding.readVarUint8Array(dec)
