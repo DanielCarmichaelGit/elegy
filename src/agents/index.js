@@ -2,10 +2,12 @@
 // are best-effort: a failure in one never affects syncing or the others.
 import { startClaudeCodeReader } from './claude-code.js'
 import { startCursorReader } from './cursor.js'
+import { startCursorTranscriptReader } from './cursor-transcripts.js'
 
 const READERS = [
   ['Claude Code', startClaudeCodeReader],
-  ['Cursor', startCursorReader]
+  ['Cursor', startCursorReader],
+  ['Cursor', startCursorTranscriptReader]
 ]
 
 /**
