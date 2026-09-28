@@ -26,6 +26,7 @@ Usage:
   elegy release <path|glob|*>                         Release a claim
   elegy invite                                        Print this session's invite code
   elegy stop                                          Shut down everything elegy is running (relay, app, syncs)
+  elegy doctor [folder] [--watch 30]                  Check what elegy can see of your Claude Code / Cursor chats
   elegy mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
@@ -61,6 +62,12 @@ async function main () {
     case 'release': return simple('/release', { pattern: argv[0] || '*' }, (r) => `released ${r.released} claim(s)`)
     case 'invite': return invite()
     case 'stop': return stopAll()
+    case 'doctor': {
+      const i = argv.indexOf('--watch')
+      const secs = i >= 0 ? Number(argv[i + 1]) || 30 : 0
+      const dir = argv.find((a, k) => !a.startsWith('--') && !(i >= 0 && k === i + 1))
+      return (await import('../src/doctor.js')).doctor({ dir, watchSeconds: secs })
+    }
     case undefined: case '-h': case '--help': case 'help':
       process.stdout.write(HELP); return
     default:

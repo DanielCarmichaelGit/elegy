@@ -211,3 +211,24 @@ test('reads every Cursor workspace for the folder, not just the first one found'
   f.r.stop()
   assert.deepEqual(f.texts().sort(), ['current window', 'old window'])
 })
+
+test('elegy doctor reports what it sees without printing chat text', { skip }, async () => {
+  const { doctor } = await import('../src/doctor.js')
+  const c = makeCursor()
+  c.addBubble('c1', 'b1', { type: 1, text: 'my secret prompt' })
+  c.addBubble('c1', 'b2', { type: 2, text: 'reply', toolFormerData: { name: 'edit_file' } })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: Date.now() }])
+  const lines = []
+  await doctor({ dir: c.project, cursorDir: c.userDir, print: (l) => lines.push(l) })
+  const out = lines.join('\n')
+  assert.match(out, /workspace folder\(s\) for this project: aaa/)
+  assert.match(out, /1 conversation\(s\) in the workspace list/)
+  assert.match(out, /2 message\(s\)/)
+  assert.match(out, /you: 16 chars/)
+  assert.match(out, /AI: 5 chars \(tool edit_file\)/)
+  assert.doesNotMatch(out, /secret/)
+
+  lines.length = 0
+  await doctor({ dir: path.join(c.root, 'elsewhere'), cursorDir: c.userDir, print: (l) => lines.push(l) })
+  assert.match(lines.join('\n'), /never opened this exact folder[\s\S]*proj/)
+})

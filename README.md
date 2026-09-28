@@ -147,6 +147,7 @@ pick up the MCP server.
 | `elegy get <message-id> [dest]` | Download a shared file again |
 | `elegy setup` | Wire up MCP + agent instructions |
 | `elegy mcp` | The MCP server itself (your AI tool launches this) |
+| `elegy doctor [--watch 30]` | Check what elegy can see of your Claude Code / Cursor chats (safe to share: no chat text) |
 
 ### MCP tools for agents
 
