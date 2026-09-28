@@ -45,10 +45,30 @@ within milliseconds. Your agents can also see what the other agents are doing.
 
 ## Quick start
 
+### Download the app
+
+Get cowove for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/cowove-mac-arm64.dmg),
+[Mac (Intel)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/cowove-mac-x64.dmg) or
+[Windows](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/cowove-windows-x64.exe), and open it.
+Everything happens in the app: start a session, send the invite link, and
+partners click it to join. Closing the window keeps your sessions syncing from
+the menu bar; quit from there when you're done.
+
+The app isn't signed by Apple yet, so the first time you open it macOS may say
+it can't check it. Open **System Settings → Privacy & Security** and click
+**Open Anyway**.
+
+To let your AI tools use cowove (its MCP server and the `cowove` command),
+choose **cowove → Install the cowove Command…** in the menu bar.
+
+### From source
+
 Requires Node.js 20+.
 
 ```bash
 git clone <this repo> && cd cowove && npm install && npm link   # puts `cowove` on your PATH
+npm run app                                                     # run the desktop app from source
+npm run dist:mac                                                # build the Mac app into dist/
 ```
 
 ### The easy way: the app

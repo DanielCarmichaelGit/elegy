@@ -203,7 +203,7 @@ function homeHtml () {
   <section class="card welcome">
     <div class="welcome-steps">
       <div><span class="n">1</span><b>Start a session</b><p class="hint">Pick a folder on your computer to work on together.</p></div>
-      <div><span class="n">2</span><b>Send an invite</b><p class="hint">Partners paste it into cowove. You approve who gets in.</p></div>
+      <div><span class="n">2</span><b>Send an invite link</b><p class="hint">Partners click it or paste it into cowove. You approve who gets in.</p></div>
       <div><span class="n">3</span><b>Code together</b><p class="hint">Files sync live, and you can watch each other's AI work.</p></div>
     </div>
     <div class="welcome-actions">
@@ -421,15 +421,15 @@ function githubPicker (root) {
   return { open, value }
 }
 
-function joinSessionDialog () {
+export function joinSessionDialog (invite = '') {
   const p = state.profile
   const { form, close } = dialog(`
     <h3>Join a session</h3>
-    <p class="lead">Paste the invite your partner sent you. They'll be asked to let you in.</p>
+    <p class="lead">${invite ? 'You were invited to a session. Choose where the files go, then join.' : 'Paste the invite link your partner sent you.'} They'll be asked to let you in.</p>
     <div class="field">
-      <label for="j-invite">Invite</label>
-      <textarea class="input mono" id="j-invite" rows="3" placeholder="cowove join eyJz…" required></textarea>
-      <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a cowove invite. Copy the whole thing they sent.</span>
+      <label for="j-invite">Invite link</label>
+      <textarea class="input mono" id="j-invite" rows="2" spellcheck="false" placeholder="https://cowove-relay.fly.dev/join/…" required></textarea>
+      <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a cowove invite link. Copy the whole link they sent.</span>
     </div>
     <div class="field">
       <label for="j-dir">Put the files in</label>
@@ -445,13 +445,15 @@ function joinSessionDialog () {
     form.querySelector('#invite-hint').hidden = !inv.value.trim() || !!d
     form.querySelector('#j-dir').placeholder = `${p.joinDir}/${d ? d.room : '<room>'}`
   })
+  if (invite) { inv.value = invite; inv.dispatchEvent(new Event('input')) }
   form.querySelector('#j-browse').onclick = () => pickFolder(form.querySelector('#j-dir'))
   form.onsubmit = async (e) => {
     e.preventDefault()
-    if (!decodeInvite(inv.value)) { form.querySelector('#j-error').textContent = 'Paste the invite your partner sent you.'; return }
+    if (!decodeInvite(inv.value)) { form.querySelector('#j-error').textContent = 'Paste the invite link your partner sent you.'; return }
     if (await submit(form, '#j-error', { mode: 'join', invite: inv.value, dir: form.querySelector('#j-dir').value.trim() || undefined })) close()
   }
-  inv.focus()
+  if (invite) form.querySelector('button[type=submit]').focus()
+  else inv.focus()
 }
 
 async function submit (form, errSel, body, busy = 'Connecting…') {

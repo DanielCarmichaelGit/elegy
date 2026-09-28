@@ -759,32 +759,42 @@ img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.
 .ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
 p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
 
-/** Where an invite link lands in a browser: says how to open it in cowove. */
+const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/elegy/releases/latest/download'
+
+/** Where an invite link lands in a browser: opens the cowove app, or offers to download it. */
 function joinPage (room) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>Join on cowove</title><link rel="icon" href="/logo.svg">
 <style>${PAGE_STYLE}
-ol{text-align:left;color:var(--muted);margin:20px 0 0;padding-left:20px}li{margin:8px 0}li b{color:var(--text)}
-.box{display:flex;gap:8px;align-items:center;background:var(--code);border-radius:10px;padding:8px 8px 8px 12px;margin-top:18px;text-align:left}
-.box code{flex:1;min-width:0;overflow-wrap:anywhere;font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
-button{border:0;border-radius:8px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:600;padding:8px 14px;cursor:pointer}
+.btn{display:block;width:100%;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:650;padding:12px 16px;margin-top:22px;cursor:pointer;text-decoration:none;font-size:16px}
+.btn.alt{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:10px;font-size:15px}
+.dl{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px}.dl a{font-weight:600}
+.small{font-size:13px}
+details{margin-top:18px;text-align:left;color:var(--muted);font-size:13px}summary{cursor:pointer;text-align:center}
+code.block{display:block;background:var(--code);border-radius:8px;padding:8px 10px;margin-top:8px;overflow-wrap:anywhere;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
 </style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>You're invited to code together</h1>
-<p>Someone invited you to the cowove session <b>${room}</b>.</p>
-<div class="box"><code id="link"></code><button id="copy">Copy</button></div>
-<ol>
-<li>Open cowove (run <code>cowove ui</code>), choose <b>Join a session</b> and paste this link.</li>
-<li>Or in a terminal, in the folder you want the project in: <code id="cmd">cowove join &lt;this link&gt;</code></li>
-</ol>
-<p>New to cowove? <a href="https://github.com/DanielCarmichaelGit/elegy#quick-start">Install it</a> (takes a minute), then come back to this page.</p>
+<p>Join the cowove session <b>${room}</b>.</p>
+<a class="btn" id="open" href="#">Open in cowove</a>
+<p id="missing" hidden>This link is missing its secret. Ask for the full invite link.</p>
+<div id="get">
+<p>Don't have cowove yet? Download it, open it, then click <b>Open in cowove</b> again.</p>
+<div class="dl" id="dl">
+<a href="${DOWNLOADS}/cowove-mac-arm64.dmg">Mac (Apple silicon)</a> ·
+<a href="${DOWNLOADS}/cowove-mac-x64.dmg">Mac (Intel)</a> ·
+<a href="${DOWNLOADS}/cowove-windows-x64.exe">Windows</a>
+</div>
+<p class="small">On a Mac, the first time you open it macOS may say it can't check cowove. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>.</p>
+</div>
+<details><summary>Use the terminal instead</summary>
+In the folder where you want the project, run:<code class="block" id="cmd"></code>
+<button class="btn alt" id="copy">Copy invite link</button></details>
 </div><script>
 const link = location.href
-document.getElementById('link').textContent = link
-document.getElementById('cmd').textContent = 'cowove join ' + link
-if (!location.hash) document.getElementById('link').textContent = link + '  (this link is missing its secret; ask for the full link)'
+document.getElementById('open').href = 'cowove://join?invite=' + encodeURIComponent(link)
+document.getElementById('cmd').textContent = 'cowove join "' + link + '"'
+if (!location.hash) { document.getElementById('missing').hidden = false; document.getElementById('open').hidden = true }
 document.getElementById('copy').onclick = async (e) => {
-  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch {
-    const r = document.createRange(); r.selectNodeContents(document.getElementById('link')); getSelection().removeAllRanges(); getSelection().addRange(r)
-  }
+  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch { prompt('Copy this link:', link) }
 }
 </script></body></html>`
 }

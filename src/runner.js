@@ -22,7 +22,7 @@ export function encodeInvite (c) {
 
 /** Reads an invite link (or an older base64 invite code), with or without "cowove join" in front. */
 export function decodeInvite (code) {
-  const raw = String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, '').split(/\s/)[0]
+  const raw = String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
   const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
   if (m) {
     try {
