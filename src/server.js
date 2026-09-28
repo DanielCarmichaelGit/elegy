@@ -365,6 +365,11 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' })
       return res.end(fs.readFileSync(LOGO))
     }
+    const j = url.pathname.match(/^\/join\/([A-Za-z0-9_-]{1,64})\/?$/)
+    if (j) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+      return res.end(joinPage(j[1]))
+    }
     const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
     if (!m) {
       if (url.pathname !== '/') return text(404, 'not found')
@@ -524,18 +529,50 @@ function reject (socket, code, message) {
   socket.destroy()
 }
 
+const PAGE_STYLE = `
+:root{--bg:#f6f4f0;--card:#fff;--text:#1c1929;--muted:#6d6882;--ok:#22a06b;--border:#e7e2da;--code:#f1eee8;--accent:#1c1929;--on-accent:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#0e0c17;--card:#161327;--text:#f0edf8;--muted:#a09ab8;--border:#2a2542;--code:#221e38;--accent:#f0edf8;--on-accent:#0e0c17}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;max-width:440px;width:100%;text-align:center}
+img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.02em}
+.ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
+
+/** Where an invite link lands in a browser: says how to open it in cowove. */
+function joinPage (room) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Join on cowove</title><link rel="icon" href="/logo.svg">
+<style>${PAGE_STYLE}
+ol{text-align:left;color:var(--muted);margin:20px 0 0;padding-left:20px}li{margin:8px 0}li b{color:var(--text)}
+.box{display:flex;gap:8px;align-items:center;background:var(--code);border-radius:10px;padding:8px 8px 8px 12px;margin-top:18px;text-align:left}
+.box code{flex:1;min-width:0;overflow-wrap:anywhere;font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
+button{border:0;border-radius:8px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:600;padding:8px 14px;cursor:pointer}
+</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>You're invited to code together</h1>
+<p>Someone invited you to the cowove session <b>${room}</b>.</p>
+<div class="box"><code id="link"></code><button id="copy">Copy</button></div>
+<ol>
+<li>Open cowove (run <code>cowove ui</code>), choose <b>Join a session</b> and paste this link.</li>
+<li>Or in a terminal, in the folder you want the project in: <code id="cmd">cowove join &lt;this link&gt;</code></li>
+</ol>
+<p>New to cowove? <a href="https://github.com/DanielCarmichaelGit/elegy#quick-start">Install it</a> (takes a minute), then come back to this page.</p>
+</div><script>
+const link = location.href
+document.getElementById('link').textContent = link
+document.getElementById('cmd').textContent = 'cowove join ' + link
+if (!location.hash) document.getElementById('link').textContent = link + '  (this link is missing its secret; ask for the full link)'
+document.getElementById('copy').onclick = async (e) => {
+  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch {
+    const r = document.createRange(); r.selectNodeContents(document.getElementById('link')); getSelection().removeAllRanges(); getSelection().addRange(r)
+  }
+}
+</script></body></html>`
+}
+
 function statusPage (s) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>cowove relay</title><link rel="icon" href="/logo.svg">
-<style>
-:root{--bg:#f6f4f0;--card:#fff;--text:#1c1929;--muted:#6d6882;--ok:#22a06b;--border:#e7e2da}
-@media (prefers-color-scheme:dark){:root{--bg:#0e0c17;--card:#161327;--text:#f0edf8;--muted:#a09ab8;--border:#2a2542}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;max-width:440px;text-align:center}
-img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.02em}
-.ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
-p{color:var(--muted);margin:12px 0 0}code{font-size:13px}
-</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>cowove relay</h1>
+<style>${PAGE_STYLE}</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>cowove relay</h1>
 <div class="ok"><i></i>Running</div>
 <p>${s.connections} connection${s.connections === 1 ? '' : 's'} · ${s.roomsLoaded} active room${s.roomsLoaded === 1 ? '' : 's'}${s.requiresKey ? ' · starting sessions needs a relay key' : ''}</p>
 <p>Point cowove at this relay with<br><code>cowove relay set wss://&lt;this address&gt;</code></p></div></body></html>`

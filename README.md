@@ -39,7 +39,7 @@ within milliseconds. Your agents can also see what the other agents are doing.
   read-only file tabs where changed lines light up.
 - **Agents coordinate, and can join by themselves.** An MCP server gives each
   agent tools to see who's online, read a partner's AI feed, see where people
-  are working, *claim* files and message each other. With an invite code, an
+  are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `cowove` CLI or read `.cowove/STATUS.md`.
 
@@ -60,8 +60,8 @@ cowove ui
 This opens cowove in your browser, where you can:
 
 - **Start a session:** pick your project folder, then either host the relay on
-  your computer with one click or point at a hosted relay. You get an invite code to send.
-- **Join a session:** paste an invite code and pick where the project should go.
+  your computer with one click or point at a hosted relay. You get an invite link to send.
+- **Join a session:** paste an invite link and pick where the project should go.
 - **Work together:** see who's online, what they're working on and which files
   they just changed. Chat, send direct messages, and drag and drop files to share
   them. You can also claim files, and rejoin recent sessions later.
@@ -83,13 +83,14 @@ cd ~/code/my-app
 cowove join --server wss://your-relay.example.com --name you --tool claude
 ```
 
-It prints an invite code. Send it to your friend.
+It prints an invite link like `https://cowove-relay.fly.dev/join/room-1a2b#…`.
+Send it to your friend. Opening it in a browser shows them how to join.
 
 **3. Your friend joins** from an empty folder (or their own clone of the same repo):
 
 ```bash
 mkdir my-app && cd my-app
-cowove join <invite-code> --name friend --tool cursor
+cowove join <invite-link> --name friend --tool cursor
 ```
 
 Keep `cowove join` running in a terminal while you work. It logs who joined,
@@ -118,7 +119,7 @@ pick up the MCP server.
 | `cowove join` / `cowove join --server <url>` | Start a new session for this folder (on your default relay, or the one given) |
 | `cowove join <invite>` | Join a session |
 | `cowove join` | Rejoin this folder's last session (merges offline edits) |
-| `cowove invite` | Print the invite code again |
+| `cowove invite` | Print the invite link again |
 | `cowove status` | Who's online, focus, recent edits, claims, messages |
 | `cowove focus "adding auth"` | Tell others what you're working on |
 | `cowove claim 'src/auth/**' "rewriting login"` | Lock files/folders/globs so only you can change them |
@@ -135,8 +136,8 @@ pick up the MCP server.
 
 | Tool | Purpose |
 |---|---|
-| `cowove_join_session` | Join a session from an invite code, as an agent (no human needed) |
-| `cowove_start_session` | Start a new session for a folder and get an invite code |
+| `cowove_join_session` | Join a session from an invite link, as an agent (no human needed) |
+| `cowove_start_session` | Start a new session for a folder and get an invite link |
 | `cowove_leave_session` / `cowove_session_info` | Leave; or see the folder, your name, who's online, and the invite |
 | `cowove_status` | Collaborators, their focus, recently edited files, claims, messages |
 | `cowove_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
@@ -194,7 +195,7 @@ changes, its feed shows as unavailable and syncing carries on.
 ## Agents as participants
 
 An AI agent can be a full member of a session, with no human running cowove for
-it. Give the agent an invite code and it calls `cowove_join_session`. The project
+it. Give the agent an invite link and it calls `cowove_join_session`. The project
 syncs into its folder, and everyone sees it in the session with an agent badge.
 It can then read partners' AI feeds, claim files, chat, and edit files that
 sync to everyone. It can also start a session with `cowove_start_session` and
@@ -220,7 +221,7 @@ screens, not from the relay operator.
 ## Hosting the relay
 
 Host a relay once, and starting a session becomes one click: no tunnels, and
-friends just paste an invite code. The relay is a single small process. It
+friends just paste an invite link. The relay is a single small process. It
 comes ready to deploy with a Fly.io config (`fly.toml`, about $2–5/month), a
 Render blueprint (`render.yaml`), a docker-compose file with automatic HTTPS
 for any server (`deploy/`), and a prebuilt image published by CI
@@ -268,8 +269,10 @@ and the changes sync to everyone.
 
 ## Security
 
-- Each room has a secret (inside the invite code). The first client to open a
-  room sets it, and everyone else must match. Treat invite codes like passwords.
+- Each room has a secret. It sits after the `#` in the invite link, so a
+  browser opening the link never sends it to the relay. The first client to
+  open a room sets it, and everyone else must match. Treat invite links like
+  passwords.
 - Each person has a signing key in `~/.cowove/identity.json`, made on first use.
   The first time a name joins a room, the relay ties that name to the key. After
   that, only that key can use the name: the relay checks a signature on every

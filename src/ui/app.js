@@ -227,14 +227,14 @@ export function openInvite (id) {
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
     <h3 id="inv-title">Invite someone</h3>
-    <p class="lead">Send them this code. They paste it into <b>Join a session</b> in cowove, or run the command in a terminal.</p>
-    <div class="label" style="margin-bottom:6px">Invite code</div>
-    <div class="codebox"><code id="inv-code">${esc(s.invite)}</code><button class="btn icon" data-copy="inv-code" title="Copy" aria-label="Copy invite code">${I.copy}</button></div>
+    <p class="lead">Send them this link. They paste it into <b>Join a session</b> in cowove, or run the command in a terminal. Opening it in a browser explains what to do.</p>
+    <div class="label" style="margin-bottom:6px">Invite link</div>
+    <div class="codebox"><code id="inv-code">${esc(s.invite)}</code><button class="btn icon" data-copy="inv-code" title="Copy" aria-label="Copy invite link">${I.copy}</button></div>
     <div class="label" style="margin-bottom:6px">Or in a terminal</div>
     <div class="codebox"><code id="inv-cmd">cowove join ${esc(s.invite)}</code><button class="btn icon" data-copy="inv-cmd" title="Copy" aria-label="Copy command">${I.copy}</button></div>
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
     ${local ? '<p class="hint warn">This is a local-network address. If your partner is somewhere else, run <code>cloudflared tunnel --url http://localhost:4321</code> and start a new session with the tunnel address as the public address (or use a hosted relay).</p>' : ''}
-    <p class="hint">Anyone with this code can edit the project. Only share it with people you trust.</p>
+    <p class="hint">Anyone with this link can edit the project. Only share it with people you trust.</p>
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`
   document.body.appendChild(back)

@@ -372,7 +372,7 @@ function bindMain () {
   })
   $('#main').addEventListener('click', async (e) => {
     if (e.target.closest('[data-copy-invite]')) {
-      try { await navigator.clipboard.writeText(sum().invite); toast('Invite copied') } catch { openInvite(current) }
+      try { await navigator.clipboard.writeText(sum().invite); toast('Invite link copied') } catch { openInvite(current) }
       return
     }
     const b = e.target.closest('[data-person]')
@@ -442,10 +442,10 @@ function renderMain () {
         el.innerHTML = `<div class="main-empty invite-empty">
           <div class="ill">${I.link}</div>
           <h3>Invite someone to code with you</h3>
-          <p class="hint">Send them this invite. They paste it into <b>Join a session</b> in cowove.</p>
+          <p class="hint">Send them this link. They paste it into <b>Join a session</b> in cowove.</p>
           <div class="codebox"><code id="empty-invite">${esc(invite)}</code></div>
-          <button class="btn primary" data-copy-invite>${I.copy}<span>Copy invite</span></button>
-          <p class="hint small">Once they join, you'll see their AI chat here as it happens.${inviteIsLocal(invite) ? ' This invite only works on your network. For someone elsewhere, see <b>Invite</b>.' : ''}</p>
+          <button class="btn primary" data-copy-invite>${I.copy}<span>Copy invite link</span></button>
+          <p class="hint small">Once they join, you'll see their AI chat here as it happens.${inviteIsLocal(invite) ? ' This link only works on your network. For someone elsewhere, see <b>Invite</b>.' : ''}</p>
         </div>`
         return
       }

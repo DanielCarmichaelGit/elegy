@@ -2,7 +2,7 @@
 
 The relay is the one piece everyone in a session connects to. Host it once,
 and starting a session becomes one click with no tunnels or networking to
-think about. Anyone you invite just pastes the invite code.
+think about. Anyone you invite just pastes the invite link.
 
 The relay is a single small Node process with a data folder:
 
@@ -86,7 +86,7 @@ You can also set it from the app: enter the address and key when starting a
 session and leave **Make this my default relay** ticked.
 
 **People you invite don't need the key.** The key only lets you start new
-sessions. Joining a session only needs its invite code, which carries the
+sessions. Joining a session only needs its invite link, which carries the
 relay address and that session's own secret, but never your relay key.
 
 ## Settings

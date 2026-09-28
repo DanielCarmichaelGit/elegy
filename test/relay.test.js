@@ -8,6 +8,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
+import { encodeInvite, decodeInvite } from '../src/runner.js'
 import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 import { generateIdentity } from '../src/identity.js'
@@ -31,6 +32,28 @@ test('health endpoint and status page', async () => {
   assert.match(page, /Running/)
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/nope`)).status, 404)
   await srv.close()
+})
+
+test('invite links open a join page that never needs the secret', async () => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  const page = await fetch(`http://127.0.0.1:${srv.port}/join/room-abc`)
+  assert.equal(page.status, 200)
+  assert.match(await page.text(), /room-abc/)
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/join/bad%20room`)).status, 404)
+  assert.equal(srv.rooms.has('room-abc'), false, 'viewing the page does not create a room')
+  await srv.close()
+})
+
+test('invites are links, and older codes still work', () => {
+  const conn = { server: 'wss://relay.example.com', room: 'room-1a2b', secret: 'abc_D-9' }
+  const link = encodeInvite(conn)
+  assert.equal(link, 'https://relay.example.com/join/room-1a2b#abc_D-9')
+  assert.deepEqual(decodeInvite(link), conn)
+  assert.deepEqual(decodeInvite(`  cowove join ${link}\n`), conn)
+  assert.deepEqual(decodeInvite(encodeInvite({ server: 'ws://192.168.1.4:4321/', room: 'r', secret: 's' })), { server: 'ws://192.168.1.4:4321', room: 'r', secret: 's' })
+  const old = Buffer.from(JSON.stringify({ s: conn.server, r: conn.room, k: conn.secret })).toString('base64url')
+  assert.deepEqual(decodeInvite(old), conn)
+  assert.throws(() => decodeInvite('nonsense'), /invite link is not valid/)
 })
 
 test('a relay key is needed to create rooms, not to join them', async () => {

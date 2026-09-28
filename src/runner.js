@@ -10,16 +10,29 @@ import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { keyFor } from './settings.js'
 
-export const encodeInvite = (c) => Buffer.from(JSON.stringify({ s: c.server, r: c.room, k: c.secret })).toString('base64url')
+/**
+ * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
+ * The secret sits after `#`, so browsers never send it to the relay.
+ */
+export function encodeInvite (c) {
+  const base = String(c.server).replace(/\/+$/, '').replace(/^ws(s?):\/\//, 'http$1://')
+  return `${base}/join/${encodeURIComponent(c.room)}#${encodeURIComponent(c.secret || '')}`
+}
 
+/** Reads an invite link (or an older base64 invite code), with or without "cowove join" in front. */
 export function decodeInvite (code) {
+  const raw = String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, '').split(/\s/)[0]
+  const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
+  if (m) {
+    try {
+      return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]), secret: decodeURIComponent(m[4] || '') }
+    } catch {}
+  }
   let j
   try {
-    j = JSON.parse(Buffer.from(String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, ''), 'base64url').toString('utf8'))
-  } catch {
-    throw new Error('That invite code is not valid.')
-  }
-  if (!j || !j.s || !j.r) throw new Error('That invite code is not valid.')
+    j = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
+  } catch {}
+  if (!j || !j.s || !j.r) throw new Error('That invite link is not valid. Copy the whole link they sent.')
   return { server: j.s, room: j.r, secret: j.k || '' }
 }
 

@@ -46,7 +46,7 @@ test('cowove relay set/check, then cowove join starts on the default relay with 
     const t = setTimeout(() => reject(new Error('join did not start:\n' + out)), 10000)
     const onData = (d) => {
       out += d
-      const m = out.match(/cowove join ([A-Za-z0-9_-]{20,})/)
+      const m = out.match(/(https?:\/\/\S+\/join\/\S+)/)
       if (m) { clearTimeout(t); resolve(m[1]) }
     }
     child.stdout.on('data', onData)
@@ -55,7 +55,7 @@ test('cowove relay set/check, then cowove join starts on the default relay with 
   assert.match(out, /starting a new session on your default relay/)
   const inv = decodeInvite(invite)
   assert.equal(inv.server, url)
-  assert.ok(!Buffer.from(invite, 'base64url').toString().includes('team-key'), 'the relay key is never in invites')
+  assert.ok(!invite.includes('team-key'), 'the relay key is never in invites')
   child.kill('SIGTERM')
   await new Promise((r) => child.on('exit', r))
 

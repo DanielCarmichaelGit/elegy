@@ -75,7 +75,7 @@ function updateProfile (b) {
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui')
 const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
 // Fonts are bundled from npm so the app works offline and never calls a font CDN.
-const FONT_PACKAGES = ['newsreader', 'ibm-plex-sans', 'ibm-plex-mono']
+const FONT_PACKAGES = ['poppins', 'ibm-plex-mono']
 const require = createRequire(import.meta.url)
 const fontFile = (pkg, file) => {
   if (!FONT_PACKAGES.includes(pkg) || !/^[a-z0-9-]+\.woff2$/.test(file)) return null

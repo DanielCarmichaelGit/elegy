@@ -12,7 +12,7 @@ Usage:
   cowove relay set <url> [--key <key>]                 Use a hosted relay by default
   cowove relay [check [url] | clear]                   Show, test, or forget the default relay
   cowove join [--server <ws(s)://relay>]               Start a new session in this folder
-  cowove join <invite-code>                            Join a partner's session in this folder
+  cowove join <invite-link>                            Join a partner's session in this folder
   cowove join                                          Rejoin this folder's last session
   cowove setup                                         Connect Claude Code / Cursor / others via MCP
   cowove status                                        Show collaborators, claims, activity, chat
@@ -24,7 +24,7 @@ Usage:
   cowove focus <what you're doing>                     Tell collaborators what you're working on
   cowove claim <path|glob> [reason]                    Mark files as yours for now
   cowove release <path|glob|*>                         Release a claim
-  cowove invite                                        Print this session's invite code
+  cowove invite                                        Print this session's invite link
   cowove stop                                          Shut down everything cowove is running (relay, app, syncs)
   cowove mcp                                           Run the MCP server (used by AI tools)
 
@@ -112,7 +112,7 @@ async function join () {
   } else {
     const { defaultRelay } = await import('../src/settings.js')
     const d = defaultRelay()
-    if (!d) fail('Give a relay to start a session (cowove join --server wss://…), set a default with `cowove relay set <url>`,\nor pass an invite code to join one. Or run `cowove ui` to do it in your browser.')
+    if (!d) fail('Give a relay to start a session (cowove join --server wss://…), set a default with `cowove relay set <url>`,\nor pass an invite link to join one. Or run `cowove ui` to do it in your browser.')
     conn = newConn(d.relay, d.key)
     console.log(`starting a new session on your default relay ${d.relay}`)
   }
@@ -141,7 +141,7 @@ async function join () {
 
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('sync', { dir })
-  console.log(`\nInvite your partner. They run this in an empty (or matching) project folder:\n\n  cowove join ${run.invite}\n`)
+  console.log(`\nInvite your partner by sending them this link:\n\n  ${run.invite}\n\nThey paste it into cowove (Join a session), or run \`cowove join <link>\` in an empty (or matching) folder.\n`)
   console.log('Tip: run `cowove setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
 
   const stop = async () => {
@@ -376,7 +376,7 @@ async function invite () {
     const f = path.join(dir, '.cowove', 'config.json')
     if (fs.existsSync(f)) {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'))
-      return console.log(`cowove join ${encodeInvite({ ...c, server: c.inviteServer || c.server })}`)
+      return console.log(encodeInvite({ ...c, server: c.inviteServer || c.server }))
     }
     if (path.dirname(dir) === dir) fail('no session configured in this folder')
     dir = path.dirname(dir)

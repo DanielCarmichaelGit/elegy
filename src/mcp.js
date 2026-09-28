@@ -14,7 +14,7 @@ import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
 import { defaultRelay, normalizeRelay, keyFor } from './settings.js'
 
-const NOT_RUNNING = 'There is no live cowove session for this project. If the user gave you an invite code, join with ' +
+const NOT_RUNNING = 'There is no live cowove session for this project. If the user gave you an invite link, join with ' +
   'cowove_join_session. To start a new session, use cowove_start_session. A person can also run `cowove join` or `cowove ui`.'
 
 /** "claude-code" -> "Claude Code" etc., from the MCP client's name. */
@@ -33,7 +33,7 @@ export async function runMcp () {
     { name: 'cowove', version: '0.1.0' },
     {
       instructions: 'cowove lets several people (and their AI agents) edit one project live, each in their own tool. ' +
-        'If you are given a cowove invite code, join with cowove_join_session. In a session, files may change underneath ' +
+        'If you are given a cowove invite link, join with cowove_join_session. In a session, files may change underneath ' +
         'you at any time. Call cowove_status before starting a task; use cowove_partner_feed to see what a partner\'s AI is ' +
         'doing; announce your task with cowove_set_focus; claim files or folders before larger changes and do not edit files ' +
         'someone else has claimed. Always re-read a file right before you edit it.'
@@ -188,15 +188,15 @@ export async function runMcp () {
     const lines = [extra]
     if (info) lines.push(`Project folder: ${info.dir}`, `You appear as: ${info.name}${info.kind === 'agent' ? ' (AI agent)' : ''}`)
     if (st) lines.push(`Shared files: ${st.fileCount}`, `People online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
-    if (info && info.invite) lines.push(`Invite code (for others to join): ${info.invite}`)
+    if (info && info.invite) lines.push(`Invite link (for others to join): ${info.invite}`)
     if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with cowove_leave_session.')
     return lines.filter(Boolean).join('\n')
   }
 
   server.registerTool('cowove_join_session', {
-    description: 'Join a live cowove session from an invite code, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "cowove-<room>" subfolder) and kept in sync live. Other people see you in the session.',
+    description: 'Join a live cowove session from an invite link, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "cowove-<room>" subfolder) and kept in sync live. Other people see you in the session.',
     inputSchema: {
-      invite: z.string().describe('The invite code (or the full "cowove join <code>" command)'),
+      invite: z.string().describe('The invite link, like https://<relay>/join/<room>#<secret> (or the full "cowove join <link>" command)'),
       folder: z.string().optional().describe('Where to put the project, relative to the current folder'),
       name: z.string().optional().describe('Name to show to others (default: "<tool> agent (<your user name>)")')
     }
@@ -214,7 +214,7 @@ export async function runMcp () {
   })
 
   server.registerTool('cowove_start_session', {
-    description: 'Start a new live cowove session for a folder, as an AI agent, and get an invite code for others. Uses the user\'s default relay (set with `cowove relay set`) unless you pass one.',
+    description: 'Start a new live cowove session for a folder, as an AI agent, and get an invite link for others. Uses the user\'s default relay (set with `cowove relay set`) unless you pass one.',
     inputSchema: {
       relay: z.string().optional().describe('Relay address, e.g. wss://relay.example.com'),
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
@@ -226,7 +226,7 @@ export async function runMcp () {
       const server_ = relay ? normalizeRelay(relay) : d && d.relay
       if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or have them run `cowove relay set <url>`.')
       const r = await startAs({ conn: newConn(server_, relay ? keyFor(server_) : d.key), folder: folder || '.', name })
-      return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite code below with collaborators.`) }] }
+      return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite link below with collaborators.`) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }
     }
@@ -241,7 +241,7 @@ export async function runMcp () {
   })
 
   server.registerTool('cowove_session_info', {
-    description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite code.',
+    description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite link.',
     inputSchema: {}
   }, () => withDaemon(async (d) => describeSession(d.dir)))
 

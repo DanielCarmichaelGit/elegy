@@ -44,20 +44,22 @@ function sidebarHtml (view) {
       <span class="me-edit">Edit</span>
     </button>
 
+    <div class="menu-wrap" id="sessions-menu-wrap">
+      <button class="btn primary full sessions-btn" id="sessions-btn" aria-haspopup="true" aria-expanded="false">${I.folder}<span>Sessions</span>${running.length ? `<span class="badge-count">${running.length}</span>` : ''}<span class="caret">${I.caret}</span></button>
+      <div class="popover menu" id="sessions-menu" role="menu" hidden>
+        <button class="pop-item" role="menuitem" data-new-session>${I.plus}<span>New session…</span></button>
+        <button class="pop-item" role="menuitem" data-join-session>${I.link}<span>Join with an invite…</span></button>
+        ${running.length ? `<div class="pop-sep"></div><div class="pop-label">Open now</div>${running.map((s) => `
+        <button class="pop-item" role="menuitem" data-go="${s.id}"><span class="dot" style="background:${s.status.connected ? 'var(--ok)' : 'var(--warn)'}"></span><span class="grow">${esc(basename(s.dir))}</span><span class="hint">${s.status.peers.length + 1} here</span></button>`).join('')}` : ''}
+        ${state.recent.length ? `<div class="pop-sep"></div><div class="pop-label">Recent</div>${state.recent.slice(0, 5).map((r) => `
+        <button class="pop-item" role="menuitem" data-rejoin="${esc(r.dir)}"><span class="dot"></span><span class="grow">${esc(basename(r.dir))}</span><span class="hint">${esc(ago(r.lastUsed))}</span></button>`).join('')}` : ''}
+      </div>
+    </div>
+
     <nav class="side-nav" aria-label="Main">
       <button data-view="home" class="${view === 'home' ? 'on' : ''}">${I.home}<span>Home</span></button>
       <button data-view="settings" class="${view === 'settings' ? 'on' : ''}">${I.gear}<span>Settings</span></button>
     </nav>
-
-    ${running.length ? `
-    <div class="side-label">Open now</div>
-    <div class="side-sessions">
-      ${running.map((s) => `<button data-go="${s.id}" title="${esc(s.dir)}">
-        <span class="dot" style="background:${s.status.connected ? 'var(--ok)' : 'var(--warn)'}"></span>
-        <span class="nm">${esc(basename(s.dir))}</span>
-        <span class="ct" title="People here">${s.status.peers.length + 1}</span>
-      </button>`).join('')}
-    </div>` : ''}
 
     <div class="side-foot">
       <button class="relay-status" id="relay-status" data-view="settings" data-anchor="relay-sec" title="Relay settings"></button>
@@ -73,7 +75,43 @@ function bindSidebar () {
       if (b.dataset.anchor) requestAnimationFrame(() => $(`#${b.dataset.anchor}`)?.scrollIntoView({ block: 'start' }))
     }
   })
+  const btn = $('#sessions-btn')
+  const menu = $('#sessions-menu')
+  const setOpen = (open) => { menu.hidden = !open; btn.setAttribute('aria-expanded', String(open)) }
+  btn.onclick = () => setOpen(menu.hidden)
+  menu.addEventListener('click', () => setOpen(false))
+  menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setOpen(false); btn.focus() } })
+  if (!bindSidebar.listening) {
+    bindSidebar.listening = true
+    document.addEventListener('mousedown', (e) => {
+      const wrap = $('#sessions-menu-wrap')
+      if (wrap && !wrap.contains(e.target)) { $('#sessions-menu').hidden = true; $('#sessions-btn').setAttribute('aria-expanded', 'false') }
+    })
+  }
   document.querySelectorAll('.side [data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go) })
+  bindSessionActions(document.querySelector('.side'))
+}
+
+/** New / join / rejoin buttons, wherever they appear. */
+function bindSessionActions (root) {
+  root.querySelectorAll('[data-new-session]').forEach((b) => { b.onclick = () => newSessionDialog() })
+  root.querySelectorAll('[data-join-session]').forEach((b) => { b.onclick = () => joinSessionDialog() })
+  root.querySelectorAll('[data-rejoin]').forEach((b) => {
+    b.onclick = async () => {
+      const label = b.querySelector('.grow') ? null : b.textContent
+      b.disabled = true
+      if (label) b.textContent = 'Connecting…'
+      try {
+        const sum = await api('POST', '/api/sessions', { mode: 'rejoin', dir: b.dataset.rejoin })
+        state.sessions.set(sum.id, sum)
+        await go(sum.id)
+      } catch (err) {
+        toast(err.message)
+        b.disabled = false
+        if (label) b.textContent = label
+      }
+    }
+  })
 }
 
 // ---------------------------------------------------------- relay status --
@@ -121,50 +159,28 @@ function relayLabel (server) {
   return /^ws:\/\/(127\.0\.0\.1|localhost)/.test(server) ? 'This computer' : hostOf(server)
 }
 
+function relayExplainer () {
+  return isHosted()
+    ? `Everyone connects through your relay, <b>${esc(hostOf(state.profile.relay.url))}</b>. It passes changes between your computers so you can work from anywhere.`
+    : 'Everyone connects straight to this computer, so partners need to be on your network (or use a tunnel).'
+}
+
 function homeHtml () {
-  const p = state.profile
   const rows = sessionRows()
   return `
   <header class="page-head">
     <h1>${greeting()}, ${esc(firstName())}</h1>
-    <p>Start a session from one of your folders, or join one a partner shared with you.</p>
+    <p>${rows.some((r) => r.live) ? 'Pick up a session, or start something new from the Sessions menu.' : 'Start a session on one of your folders, or join one a partner shared with you.'}</p>
   </header>
 
-  <section class="choices">
-    <form class="card choice" id="create-form" autocomplete="off">
-      <div class="choice-head"><span class="choice-ico">${I.plus}</span><div><h2>Start a session</h2><p>Share a folder and invite someone in.</p></div></div>
-      <div class="field">
-        <label for="c-dir">Project folder</label>
-        <div class="row"><input class="input grow" id="c-dir" name="dir" placeholder="~/code/my-app" value="${esc(tildify(state.lastCreateDir || state.defaults.cwd || ''))}" required>
-        <button type="button" class="btn icon" data-browse="c-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
-      </div>
-      <button class="btn primary full" type="submit">Start session</button>
-      <p class="error" id="create-error"></p>
-      <p class="choice-foot">${I.globe}<span>${isHosted() ? `Partners connect through <b>${esc(hostOf(p.relay.url))}</b>` : 'Partners must be on your network'}</span>
-        <button type="button" class="linkish" data-view="settings" data-anchor="relay-sec">Change</button></p>
-    </form>
-
-    <form class="card choice" id="join-form" autocomplete="off">
-      <div class="choice-head"><span class="choice-ico">${I.link}</span><div><h2>Join a session</h2><p>Paste the invite your partner sent you.</p></div></div>
-      <div class="field">
-        <label for="j-invite">Invite</label>
-        <textarea class="input mono" id="j-invite" name="invite" rows="2" placeholder="cowove join eyJz…" required></textarea>
-        <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a cowove invite. Copy the whole thing they sent.</span>
-      </div>
-      <button class="btn primary full" type="submit">Join session</button>
-      <p class="error" id="join-error"></p>
-      <details class="choice-foot more" id="join-more">
-        <summary>${I.folder}<span>Files go to <b id="j-dir-summary">${esc(p.joinDir)}/&lt;room&gt;</b></span><u>Change</u></summary>
-        <div class="row" style="margin-top:10px"><input class="input grow" id="j-dir" name="dir" placeholder="${esc(p.joinDir)}/their-app">
-        <button type="button" class="btn icon" data-browse="j-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
-        <span class="hint">Just for this session. Set the usual place in <button type="button" class="linkish" data-view="settings" data-anchor="sessions-sec">Settings</button>.</span>
-      </details>
-    </form>
-  </section>
-
+  ${rows.length ? `
   <section class="sessions">
-    <div class="sec-head"><h2>Your sessions</h2>${rows.length ? `<span class="count">${rows.length}</span>` : ''}</div>
-    ${rows.length ? `<div class="card session-list">${rows.map((r) => `
+    <div class="sec-head"><h2>Your sessions</h2><span class="count">${rows.length}</span>
+      <span class="spacer"></span>
+      <button class="btn sm" data-join-session>${I.link}<span>Join</span></button>
+      <button class="btn sm primary" data-new-session>${I.plus}<span>New session</span></button>
+    </div>
+    <div class="card session-list">${rows.map((r) => `
       <div class="session-row${r.live ? ' live' : ''}">
         <div class="folder-ico${r.live ? ' live' : ''}">${I.folder}</div>
         <div class="meta">
@@ -182,65 +198,32 @@ function homeHtml () {
             : `<button class="btn sm" data-rejoin="${esc(r.dir)}">Rejoin</button>
                <button class="btn sm ghost icon" data-forget="${esc(r.dir)}" title="Remove from this list" aria-label="Remove ${esc(basename(r.dir))} from this list">${I.x}</button>`}
         </div>
-      </div>`).join('')}</div>`
-    : `<div class="card empty-card">${I.folder}<div><b>No sessions yet</b><p class="hint">Sessions you start or join show up here, so you can pick them up again in one click.</p></div></div>`}
+      </div>`).join('')}</div>
+  </section>` : `
+  <section class="card welcome">
+    <div class="welcome-steps">
+      <div><span class="n">1</span><b>Start a session</b><p class="hint">Pick a folder on your computer to work on together.</p></div>
+      <div><span class="n">2</span><b>Send an invite</b><p class="hint">Partners paste it into cowove. You approve who gets in.</p></div>
+      <div><span class="n">3</span><b>Code together</b><p class="hint">Files sync live, and you can watch each other's AI work.</p></div>
+    </div>
+    <div class="welcome-actions">
+      <button class="btn primary" data-new-session>${I.plus}<span>New session</span></button>
+      <button class="btn" data-join-session>${I.link}<span>Join with an invite</span></button>
+    </div>
+  </section>`}
+
+  <section class="card relay-note">
+    ${I.globe}
+    <p>${relayExplainer()} <button type="button" class="linkish" data-view="settings" data-anchor="relay-sec">Relay settings</button></p>
   </section>`
 }
 
 function bindHome () {
-  const create = $('#create-form')
-  const join = $('#join-form')
-
-  let joinDirTouched = false
-  const syncJoinDir = () => {
-    const d = decodeInvite($('#j-invite').value)
-    $('#j-dir-summary').textContent = $('#j-dir').value || `${state.profile.joinDir}/${d ? d.room : '<room>'}`
-  }
-  document.querySelectorAll('[data-browse]').forEach((b) => {
-    b.onclick = async () => {
-      const input = $(`#${b.dataset.browse}`)
-      const before = input.value
-      await pickFolder(input)
-      if (b.dataset.browse === 'j-dir' && input.value !== before) { joinDirTouched = true; syncJoinDir() }
-    }
-  })
-  $('#j-dir').addEventListener('input', () => { joinDirTouched = true; syncJoinDir() })
-  $('#j-invite').addEventListener('input', (e) => {
-    const inv = e.target.value.trim()
-    $('#invite-hint').hidden = !inv || !!decodeInvite(inv)
-    if (!joinDirTouched) syncJoinDir()
-  })
-
-  create.onsubmit = async (e) => {
-    e.preventDefault()
-    const dir = new FormData(create).get('dir')
-    state.lastCreateDir = dir
-    await submit(create, '#create-error', { mode: 'create', dir })
-  }
-  join.onsubmit = async (e) => {
-    e.preventDefault()
-    const f = new FormData(join)
-    if (!decodeInvite(f.get('invite') || '')) { $('#join-error').textContent = 'Paste the invite your partner sent you.'; return }
-    await submit(join, '#join-error', { mode: 'join', invite: f.get('invite'), dir: (f.get('dir') || '').trim() || undefined })
-  }
-
-  document.querySelectorAll('.session-list [data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go) })
-  document.querySelectorAll('[data-rejoin]').forEach((b) => {
-    b.onclick = async () => {
-      b.disabled = true
-      b.textContent = 'Connecting…'
-      try {
-        const sum = await api('POST', '/api/sessions', { mode: 'rejoin', dir: b.dataset.rejoin })
-        state.sessions.set(sum.id, sum)
-        await go(sum.id)
-      } catch (err) {
-        toast(err.message)
-        b.disabled = false
-        b.textContent = 'Rejoin'
-      }
-    }
-  })
-  document.querySelectorAll('[data-forget]').forEach((b) => {
+  const page = $('#page')
+  bindSessionActions(page)
+  page.querySelectorAll('.session-list [data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go) })
+  page.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => { go(b.dataset.view); if (b.dataset.anchor) requestAnimationFrame(() => $(`#${b.dataset.anchor}`)?.scrollIntoView({ block: 'start' })) } })
+  page.querySelectorAll('[data-forget]').forEach((b) => {
     b.onclick = async () => {
       try {
         state.recent = (await api('POST', '/api/recent/forget', { dir: b.dataset.forget })).recent
@@ -251,20 +234,91 @@ function bindHome () {
   })
 }
 
+// --------------------------------------------------------------- dialogs --
+function dialog (html) {
+  const back = document.createElement('div')
+  back.className = 'modal-back'
+  back.innerHTML = `<form class="card modal" role="dialog" aria-modal="true" autocomplete="off">${html}</form>`
+  document.body.appendChild(back)
+  const form = back.querySelector('form')
+  const close = () => back.remove()
+  back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
+  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
+  form.querySelector('[data-cancel]').onclick = close
+  return { back, form, close }
+}
+
+function newSessionDialog () {
+  const { form, close } = dialog(`
+    <h3>New session</h3>
+    <p class="lead">Pick the folder you want to work on together. You'll get invites to send once it starts.</p>
+    <div class="field">
+      <label for="n-dir">Project folder</label>
+      <div class="row"><input class="input grow" id="n-dir" name="dir" placeholder="~/code/my-app" value="${esc(tildify(state.lastCreateDir || state.defaults.cwd || ''))}" required>
+      <button type="button" class="btn icon" id="n-browse" title="Browse" aria-label="Browse">${I.folder}</button></div>
+    </div>
+    <div class="note">${I.globe}<span>${relayExplainer()}</span></div>
+    <p class="error" id="n-error"></p>
+    <div class="actions"><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Start session</button></div>`)
+  form.querySelector('#n-browse').onclick = () => pickFolder(form.querySelector('#n-dir'))
+  form.onsubmit = async (e) => {
+    e.preventDefault()
+    const dir = form.querySelector('#n-dir').value
+    state.lastCreateDir = dir
+    if (await submit(form, '#n-error', { mode: 'create', dir })) close()
+  }
+  form.querySelector('#n-dir').focus()
+}
+
+function joinSessionDialog () {
+  const p = state.profile
+  const { form, close } = dialog(`
+    <h3>Join a session</h3>
+    <p class="lead">Paste the invite your partner sent you. They'll be asked to let you in.</p>
+    <div class="field">
+      <label for="j-invite">Invite</label>
+      <textarea class="input mono" id="j-invite" rows="3" placeholder="cowove join eyJz…" required></textarea>
+      <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a cowove invite. Copy the whole thing they sent.</span>
+    </div>
+    <div class="field">
+      <label for="j-dir">Put the files in</label>
+      <div class="row"><input class="input grow" id="j-dir" placeholder="${esc(p.joinDir)}/<room>">
+      <button type="button" class="btn icon" id="j-browse" title="Browse" aria-label="Browse">${I.folder}</button></div>
+      <span class="hint">Leave empty to use a new folder in ${esc(p.joinDir)}.</span>
+    </div>
+    <p class="error" id="j-error"></p>
+    <div class="actions"><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Join session</button></div>`)
+  const inv = form.querySelector('#j-invite')
+  inv.addEventListener('input', () => {
+    const d = decodeInvite(inv.value)
+    form.querySelector('#invite-hint').hidden = !inv.value.trim() || !!d
+    form.querySelector('#j-dir').placeholder = `${p.joinDir}/${d ? d.room : '<room>'}`
+  })
+  form.querySelector('#j-browse').onclick = () => pickFolder(form.querySelector('#j-dir'))
+  form.onsubmit = async (e) => {
+    e.preventDefault()
+    if (!decodeInvite(inv.value)) { form.querySelector('#j-error').textContent = 'Paste the invite your partner sent you.'; return }
+    if (await submit(form, '#j-error', { mode: 'join', invite: inv.value, dir: form.querySelector('#j-dir').value.trim() || undefined })) close()
+  }
+  inv.focus()
+}
+
 async function submit (form, errSel, body) {
   const btn = form.querySelector('button[type=submit]')
   const label = btn.textContent
   btn.disabled = true
   btn.textContent = 'Connecting…'
-  $(errSel).textContent = ''
+  form.querySelector(errSel).textContent = ''
   try {
     const sum = await api('POST', '/api/sessions', body)
     state.sessions.set(sum.id, sum)
     await go(sum.id)
+    return true
   } catch (err) {
-    $(errSel).textContent = err.message
+    form.querySelector(errSel).textContent = err.message
     btn.disabled = false
     btn.textContent = label
+    return false
   }
 }
 

@@ -80,7 +80,7 @@ test('create a hosted session, chat, send a file, stop', async () => {
 test('bad invite gives a friendly error', async () => {
   const r = await api('POST', '/api/sessions', { mode: 'join', dir: path.join(home, 'x'), invite: 'nonsense' })
   assert.equal(r.status, 400)
-  assert.match(r.body.error, /invite code is not valid/)
+  assert.match(r.body.error, /invite link is not valid/)
 })
 
 test('shut down asks the host to stop everything', async () => {
