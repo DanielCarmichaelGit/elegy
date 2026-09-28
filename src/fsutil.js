@@ -7,9 +7,10 @@ export const MAX_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_BINARY_BYTES = 8 * 1024 * 1024
 
 // Never synced, regardless of .gitignore. .env files are excluded so secrets
-// stay on each person's machine.
+// stay on each person's machine; Claude Code worktrees are whole private
+// copies of the project.
 const ALWAYS_IGNORED = [
-  '.git', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db',
+  '.git', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db', '.claude/worktrees',
   '.env', '.env.*', '!.env.example',
   '*.swp', '*.swo', '*~', '.#*'
 ]

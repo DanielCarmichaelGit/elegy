@@ -67,6 +67,7 @@ export function mountSession (id) {
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
       ${gitMarkup()}
+      ${openInMarkup()}
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-chat" title="Chat" aria-label="Show chat">${I.chat}<span class="badge" id="chat-badge" hidden></span></button>
       <div class="overflow">
@@ -214,8 +215,46 @@ function autoOpenNewPeople (id) {
 }
 
 // --------------------------------------------------------------- top bar --
+// The AI apps installed here, the one from your profile first, so your AI works
+// in the synced folder and its chats reach the feed.
+function editorsByPreference () {
+  const all = state.defaults.editors || []
+  const mine = all.find((e) => e.tool === state.profile?.tool)
+  return mine ? [mine, ...all.filter((e) => e !== mine)] : all
+}
+
+function openInMarkup () {
+  const [first, ...rest] = editorsByPreference()
+  if (!first) return ''
+  return `<div class="open-in overflow">
+    <button class="btn sm" data-open-in="${esc(first.id)}">Open in ${esc(first.name)}</button>${rest.length ? `
+    <button class="btn sm icon" id="open-in-more" title="Open in another app" aria-label="Open in another app" aria-haspopup="true" aria-expanded="false">${I.chevDown}</button>
+    <div class="popover more-menu" id="open-in-menu" role="menu" hidden>
+      ${rest.map((e) => `<button class="pop-item" role="menuitem" data-open-in="${esc(e.id)}">Open in ${esc(e.name)}</button>`).join('')}
+    </div>` : ''}
+  </div>`
+}
+
+function bindOpenIn () {
+  const wrap = $('.open-in')
+  if (!wrap) return
+  const moreBtn = $('#open-in-more')
+  const menu = $('#open-in-menu')
+  const setMenu = (open) => { if (menu) { menu.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)) } }
+  if (moreBtn) moreBtn.onclick = () => setMenu(menu.hidden)
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setMenu(false); moreBtn?.focus() } })
+  document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) setMenu(false) }, { signal: mounted.signal })
+  wrap.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-open-in]')
+    if (!b) return
+    setMenu(false)
+    try { await api('POST', `/api/sessions/${current}/open-in`, { app: b.dataset.openIn }) } catch (err) { toast(err.message) }
+  })
+}
+
 function bindTop () {
   $('#invite-btn').onclick = () => openInvite(current)
+  bindOpenIn()
   $('#ask-commit').onclick = askForCommit
   $('#commit-chip').onclick = () => {
     if (sum().git) $('#git-btn')?.click()

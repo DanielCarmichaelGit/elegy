@@ -58,12 +58,14 @@ test('first joiner seeds the room, second joiner receives files', async () => {
   write(dirA, 'src/app.js', 'console.log(1)\n')
   write(dirA, '.env', 'SECRET=1\n')
   write(dirA, 'node_modules/x/index.js', 'x')
+  write(dirA, '.claude/worktrees/wt/src/app.js', 'worktree copy')
   A = await open(dirA, 'alice', { tool: 'claude' })
   B = await open(dirB, 'bob', { tool: 'cursor' })
   assert.equal(read(dirB, 'README.md'), '# hello\n')
   assert.equal(read(dirB, 'src/app.js'), 'console.log(1)\n')
   assert.equal(read(dirB, '.env'), null, '.env must never sync')
   assert.equal(read(dirB, 'node_modules/x/index.js'), null)
+  assert.equal(read(dirB, '.claude/worktrees/wt/src/app.js'), null, 'Claude Code worktrees must never sync')
 })
 
 test('edits propagate live in both directions', async () => {

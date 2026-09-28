@@ -721,3 +721,6 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .coord-reqs { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .coord-reqs li { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; }
 .coord-reqs li div { color: var(--muted); }
+.open-in { display: flex; }
+.open-in [data-open-in] + #open-in-more { margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.open-in .btn:has(+ #open-in-more) { border-top-right-radius: 0; border-bottom-right-radius: 0; }

@@ -13,6 +13,7 @@ import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
 import * as gitops from './git.js'
+import { installedEditors, openIn } from './editors.js'
 
 // The saved default relay, without its key.
 const savedRelay = () => {
@@ -260,12 +261,13 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
       recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))),
-      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES },
+      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors() },
       profile: profile(),
       relay: relay ? { port: relay.port, lan: `ws://${lanAddress()}:${relay.port}` } : null,
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
     'POST /api/sessions': (b) => start(b),
+    'POST /api/sessions/:id/open-in': async (b, id) => { await openIn(String(b.app || ''), get(id).root); return { ok: true } },
     'POST /api/sessions/:id/stop': (b, id) => stop(id).then(() => ({ ok: true })),
     'POST /api/sessions/:id/say': (b, id) => get(id).say(b.text, { to: b.to || null }),
     'POST /api/sessions/:id/focus': (b, id) => { get(id).setFocus(b.text); return { ok: true } },
