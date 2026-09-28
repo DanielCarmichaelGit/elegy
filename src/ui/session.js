@@ -55,7 +55,7 @@ export function mountSession (id) {
   $('#app').innerHTML = `
   <div class="ws" id="ws">
     <header class="ws-top">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>el<i>e</i>gy</span></button>
+      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>co<i>wo</i>ve</span></button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
       <button class="btn sm ghost icon narrow-only" id="toggle-tree" title="Files" aria-label="Show files">${I.tree}</button>

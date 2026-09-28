@@ -135,7 +135,7 @@ export function renderLocked (msg) {
   $('#app').innerHTML = `
     <div class="home"><div class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark">el<i>e</i>gy</div>
+      <div class="wordmark">co<i>wo</i>ve</div>
       <p class="tagline">${esc(msg || 'Open cowove using the link printed in your terminal by')} ${msg ? '' : '<code>cowove ui</code>.'}</p>
     </div></div>`
 }
@@ -143,7 +143,7 @@ export function renderLocked (msg) {
 function topbarHtml () {
   return `
     <header class="topbar">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>el<i>e</i>gy</span></button>
+      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>co<i>wo</i>ve</span></button>
       <nav class="tabs" id="tabs"></nav>
       <button class="btn sm" data-go="home">${I.plus}<span>New</span></button>
       <button class="btn sm ghost icon" data-shutdown title="Shut down cowove" aria-label="Shut down cowove">${I.power}</button>
@@ -186,7 +186,7 @@ function homeHtml () {
   <main class="home">
     <section class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark">el<i>e</i>gy</div>
+      <div class="wordmark">co<i>wo</i>ve</div>
       <p class="tagline">Vibe code together in real time, from anywhere, each in whatever AI tool you like.</p>
     </section>
 
