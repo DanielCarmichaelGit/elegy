@@ -10,6 +10,7 @@ import * as Y from 'yjs'
 import diff from 'fast-diff'
 import { watch } from 'chokidar'
 import { Connection } from './connection.js'
+import { loadIdentity } from './identity.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { formatBytes } from './status.js'
 import {
@@ -26,13 +27,14 @@ const AGENT_FEED_CAP = 300
 const WATCH_RECHECK_MS = 80
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true }) {
+  constructor ({ dir, server, room, secret, name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
     this.room = room
     this.secret = secret
     this.name = name
+    this.identity = identity
     this.tool = tool
     this.prefer = prefer
     this.stateDir = path.join(this.root, '.elegy')
@@ -41,7 +43,9 @@ export class Session extends EventEmitter {
     this.doc = new Y.Doc()
     this.files = this.doc.getMap('files') // path -> Y.Text
     this.blobs = this.doc.getMap('blobs') // path -> { hash, data(base64) }
-    this.claims = this.doc.getMap('claims') // pattern -> { by, pattern, note, ts }
+    // pattern -> { by, pattern, note, ts }. The relay owns claims (it checks
+    // who asks), so they live outside the shared doc; we keep the last list.
+    this.claims = new Map()
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
@@ -67,17 +71,21 @@ export class Session extends EventEmitter {
   async start ({ waitTimeoutMs = 0 } = {}) {
     fs.mkdirSync(this.stateDir, { recursive: true })
     const hadState = this.loadState()
+    if (hadState) this.loadClaims()
 
     this.conn = new Connection({
       server: this.server,
       room: this.room,
       secret: this.secret,
+      name: this.name,
+      identity: this.identity || loadIdentity(),
       doc: this.doc,
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
     this.conn.on('status', (s) => { this.log(s === 'connected' ? `connected to relay` : 'disconnected from relay, reconnecting…'); this.scheduleStatusWrite() })
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
+    this.conn.on('claims', (list) => this.setClaims(list))
     this.setupPresence()
 
     if (hadState) {
@@ -128,15 +136,6 @@ export class Session extends EventEmitter {
             )
           }
         }
-      }
-      this.scheduleStatusWrite()
-    })
-    this.claims.observe((ev, tr) => {
-      if (tr.origin === LOCAL) return
-      for (const [key, change] of ev.changes.keys) {
-        const c = this.claims.get(key)
-        if (change.action !== 'delete' && c) this.log(`🔒 ${c.by} claimed ${c.pattern}${c.note ? ` — ${c.note}` : ''}`)
-        else if (change.action === 'delete') this.log(`🔓 claim on ${key} released`)
       }
       this.scheduleStatusWrite()
     })
@@ -652,36 +651,49 @@ export class Session extends EventEmitter {
     this.scheduleStatusWrite()
   }
 
-  claim (pattern, note = '') {
-    pattern = String(pattern).trim()
+  /** Asks the relay for a claim; it refuses overlaps with anyone else's. */
+  async claim (pattern, note = '') {
+    pattern = String(pattern ?? '').trim()
     if (!pattern) throw new Error('pattern required')
-    const existing = this.claims.get(pattern)
-    if (existing && existing.by !== this.name) throw new Error(`${pattern} is already claimed by ${existing.by}`)
-    const other = this.claimsOverlapping(pattern).find((c) => c.by !== this.name)
-    if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-    this.doc.transact(() => this.claims.set(pattern, { by: this.name, pattern, note: String(note).slice(0, 500), ts: Date.now() }), LOCAL)
-    this.scheduleStatusWrite()
+    await this.conn.claimRequest({ op: 'claim', pattern, note: String(note) })
     return { ok: true }
   }
 
-  release (pattern) {
-    if (pattern === '*' || pattern === undefined) {
-      const mine = [...this.claims.values()].filter((c) => c.by === this.name)
-      this.doc.transact(() => { for (const c of mine) this.claims.delete(c.pattern) }, LOCAL)
-      this.scheduleStatusWrite()
-      return mine.length
+  /** Releases one of our claims, or all of them with '*'. Resolves to the number released. */
+  async release (pattern = '*') {
+    const r = await this.conn.claimRequest({ op: 'release', pattern: String(pattern) })
+    return r.released || 0
+  }
+
+  /** Takes the relay's claim list, logging what changed. */
+  setClaims (list) {
+    const next = new Map()
+    for (const c of Array.isArray(list) ? list : []) if (c && typeof c.pattern === 'string' && typeof c.by === 'string') next.set(c.pattern, c)
+    if (this.ready) {
+      for (const [p, c] of next) {
+        const was = this.claims.get(p)
+        if (c.by !== this.name && (!was || was.by !== c.by)) this.log(`🔒 ${c.by} claimed ${c.pattern}${c.note ? ` — ${c.note}` : ''}`)
+      }
+      for (const [p, c] of this.claims) if (!next.has(p) && c.by !== this.name) this.log(`🔓 ${c.by} released ${p}`)
     }
-    const c = this.claims.get(pattern)
-    if (!c) return 0
-    this.doc.transact(() => this.claims.delete(pattern), LOCAL)
+    this.claims = next
+    try { fs.writeFileSync(path.join(this.stateDir, 'claims.json'), JSON.stringify([...next.values()])) } catch {}
     this.scheduleStatusWrite()
-    return 1
+    this.emit('claims', [...next.values()])
+  }
+
+  /** Last known claims, so they're enforced before the relay answers (or while offline). */
+  loadClaims () {
+    try {
+      for (const c of JSON.parse(fs.readFileSync(path.join(this.stateDir, 'claims.json'), 'utf8'))) this.claims.set(c.pattern, c)
+    } catch {}
   }
 
   /**
-   * The claim that owns rel. Overlapping claims can only come from two people
-   * claiming at the same instant; every client then picks the same owner: the
-   * earliest claim (ties broken by name, then pattern).
+   * The claim that owns rel. The relay refuses overlapping claims, but a glob
+   * pair can start overlapping once a new file matches both; every client
+   * then picks the same owner: the earliest claim (ties broken by name, then
+   * pattern).
    */
   claimFor (rel) {
     let owner = null
@@ -690,16 +702,6 @@ export class Session extends EventEmitter {
       if (!owner || c.ts < owner.ts || (c.ts === owner.ts && (c.by < owner.by || (c.by === owner.by && c.pattern < owner.pattern)))) owner = c
     }
     return owner
-  }
-
-  claimsOverlapping (pattern) {
-    const m = globMatcher(pattern)
-    const files = [...this.sharedPaths()].filter((p) => m(p))
-    return [...this.claims.values()].filter((c) => {
-      if (c.pattern === pattern) return true
-      const cm = globMatcher(c.pattern)
-      return cm(pattern) || m(c.pattern) || files.some((f) => cm(f))
-    })
   }
 
   // ------------------------------------------------------------ AI feed --
@@ -790,9 +792,8 @@ export class Session extends EventEmitter {
       const editing = id === this.doc.clientID ? Object.fromEntries(this.myEdits) : (st.editing || {})
       for (const [p, ts] of Object.entries(editing)) note(p, st.name, ts)
     }
-    const claims = [...this.claims.values()].map((c) => ({ ...c, match: globMatcher(c.pattern) }))
     const claimFor = (p) => {
-      const c = claims.find((x) => x.match(p))
+      const c = this.claimFor(p)
       return c ? { by: c.by, pattern: c.pattern, note: c.note } : null
     }
     const out = []

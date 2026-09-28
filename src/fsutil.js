@@ -101,6 +101,14 @@ export function walk (root, ig) {
   return out
 }
 
+/** Whether two claim patterns can cover the same file (paths: files that exist now). */
+export function patternsOverlap (a, b, paths = []) {
+  if (a === b) return true
+  const ma = globMatcher(a)
+  const mb = globMatcher(b)
+  return ma(b) || mb(a) || paths.some((p) => ma(p) && mb(p))
+}
+
 /** Converts a simple glob (*, **, ?) or a plain path/folder into a matcher. */
 export function globMatcher (pattern) {
   let p = pattern.trim().replace(/^\.\//, '')

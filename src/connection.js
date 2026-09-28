@@ -3,11 +3,16 @@
 // reconnect by the CRDT.
 import { EventEmitter } from 'node:events'
 import WebSocket from 'ws'
+import crypto from 'node:crypto'
 import {
-  MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS,
+  MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN,
   encoding, decoding, syncProtocol, awarenessProtocol,
-  syncStep1Message, updateMessage, awarenessMessage
+  syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
+import { signChallenge } from './identity.js'
+
+const REQUEST_TIMEOUT_MS = 10000
 
 export const REMOTE = Symbol('remote')
 
@@ -17,12 +22,18 @@ export class Connection extends EventEmitter {
    * @param {string} opts.server  ws:// or wss:// base URL of the relay
    * @param {string} opts.room
    * @param {string} opts.secret
+   * @param {string} opts.name       who we are in the room
+   * @param {{ publicKey: string, privateKey: string }} opts.identity  proves the name is ours
    * @param {import('yjs').Doc} opts.doc
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    */
-  constructor ({ server, room, secret, doc, beforeRemote }) {
+  constructor ({ server, room, secret, name, identity, doc, beforeRemote }) {
     super()
-    this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?secret=${encodeURIComponent(secret || '')}`
+    const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey })
+    this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
+    this.room = room
+    this.identity = identity
+    this.requests = new Map() // id -> { resolve, reject, timer }
     this.doc = doc
     this.beforeRemote = beforeRemote || (() => {})
     this.awareness = new awarenessProtocol.Awareness(doc)
@@ -49,26 +60,19 @@ export class Connection extends EventEmitter {
     ws.binaryType = 'arraybuffer'
     this.ws = ws
 
-    ws.on('open', () => {
-      this.connected = true
-      this.backoff = 500
-      this.emit('status', 'connected')
-      this.send(syncStep1Message(this.doc))
-      if (this.awareness.getLocalState() !== null) {
-        this.send(awarenessMessage(this.awareness, [this.doc.clientID]))
-      }
-      const q = encoding.createEncoder()
-      encoding.writeVarUint(q, MSG_QUERY_AWARENESS)
-      this.send(encoding.toUint8Array(q))
-    })
+    // The relay first asks us to sign a challenge; sync starts once we have.
+    ws.on('open', () => { this.authed = false })
 
     ws.on('message', (data) => {
-      try { this.handle(new Uint8Array(data)) } catch (err) { this.emit('warn', `error handling message from relay: ${err.stack}`) }
+      try {
+        if (this.authed) this.handle(new Uint8Array(data))
+        else this.authenticate(new Uint8Array(data))
+      } catch (err) { this.emit('warn', `error handling message from relay: ${err.stack}`) }
     })
 
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
-      if (res.statusCode === 401 || res.statusCode === 400) {
+      if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))
         this.close()
       } else {
@@ -78,11 +82,17 @@ export class Connection extends EventEmitter {
 
     ws.on('error', (err) => this.emit('warn', `connection error: ${err.message}`))
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
+      if (code === CLOSE_AUTH_FAILED || code === CLOSE_NAME_TAKEN) {
+        this.emit('fatal', new Error(`Relay refused connection: ${String(reason) || 'identity check failed'}`))
+        this.close()
+      }
       const wasConnected = this.connected
       this.connected = false
       this.synced = false
+      this.authed = false
       if (this.ws === ws) this.ws = null
+      for (const [id, r] of this.requests) { clearTimeout(r.timer); r.reject(new Error('disconnected from relay')); this.requests.delete(id) }
       // Peers' presence is stale once we're disconnected.
       const others = [...this.awareness.getStates().keys()].filter((id) => id !== this.doc.clientID)
       awarenessProtocol.removeAwarenessStates(this.awareness, others, 'connection')
@@ -92,6 +102,28 @@ export class Connection extends EventEmitter {
         this.backoff = Math.min(this.backoff * 2, 10000)
       }
     })
+  }
+
+  authenticate (buf) {
+    const dec = decoding.createDecoder(buf)
+    if (decoding.readVarUint(dec) !== MSG_AUTH) {
+      this.emit('fatal', new Error('The relay runs an older elegy that cannot check identities; update it'))
+      return this.close()
+    }
+    const nonce = decoding.readVarUint8Array(dec)
+    this.ws.send(bytesMessage(MSG_AUTH, signChallenge(this.identity, this.room, nonce)))
+    // The relay handles messages in order, so we can start syncing right away.
+    this.authed = true
+    this.connected = true
+    this.backoff = 500
+    this.emit('status', 'connected')
+    this.send(syncStep1Message(this.doc))
+    if (this.awareness.getLocalState() !== null) {
+      this.send(awarenessMessage(this.awareness, [this.doc.clientID]))
+    }
+    const q = encoding.createEncoder()
+    encoding.writeVarUint(q, MSG_QUERY_AWARENESS)
+    this.send(encoding.toUint8Array(q))
   }
 
   handle (buf) {
@@ -113,11 +145,34 @@ export class Connection extends EventEmitter {
       awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(dec), REMOTE)
     } else if (type === MSG_QUERY_AWARENESS) {
       this.send(awarenessMessage(this.awareness, [...this.awareness.getStates().keys()]))
+    } else if (type === MSG_CLAIMS) {
+      const { claims, reply } = JSON.parse(decoding.readVarString(dec))
+      this.emit('claims', claims)
+      const r = reply && this.requests.get(reply.id)
+      if (r) {
+        clearTimeout(r.timer)
+        this.requests.delete(reply.id)
+        if (reply.ok) r.resolve(reply)
+        else r.reject(new Error(reply.error || 'claim refused'))
+      }
     }
   }
 
+  /** Asks the relay to claim or release; resolves with its reply. Claims need a live connection. */
+  claimRequest (req) {
+    if (!this.authed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('not connected to the relay; claims need a connection'))
+    }
+    const id = crypto.randomBytes(8).toString('hex')
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.requests.delete(id); reject(new Error('the relay did not answer')) }, REQUEST_TIMEOUT_MS)
+      this.requests.set(id, { resolve, reject, timer })
+      this.send(jsonMessage(MSG_CLAIM, { id, ...req }))
+    })
+  }
+
   send (msg) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(msg)
+    if (this.authed && this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(msg)
   }
 
   waitForSync () {

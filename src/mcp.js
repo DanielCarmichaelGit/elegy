@@ -7,6 +7,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
@@ -159,7 +160,8 @@ export async function runMcp () {
     const run = await runSession({
       dir,
       conn,
-      name: name || `${tool} agent`,
+      // Names are tied to one person's key, so each person's agent needs its own.
+      name: name || `${tool} agent (${os.userInfo().username})`,
       tool,
       kind: 'agent',
       inviteServer,
@@ -195,7 +197,7 @@ export async function runMcp () {
     inputSchema: {
       invite: z.string().describe('The invite code (or the full "elegy join <code>" command)'),
       folder: z.string().optional().describe('Where to put the project, relative to the current folder'),
-      name: z.string().optional().describe('Name to show to others (default: "<tool> agent")')
+      name: z.string().optional().describe('Name to show to others (default: "<tool> agent (<your user name>)")')
     }
   }, async ({ invite, folder, name }) => {
     try {

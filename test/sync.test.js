@@ -7,6 +7,8 @@ import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { isSafeRelPath, globMatcher } from '../src/fsutil.js'
+import { generateIdentity } from '../src/identity.js'
+import WebSocket from 'ws'
 
 let srv, server
 const sessions = []
@@ -27,8 +29,12 @@ async function waitFor (fn, ms = 5000) {
   throw new Error(`timed out; last value: ${last instanceof Error ? last.message : JSON.stringify(last)}`)
 }
 
+// One key per person, kept across reconnects like ~/.elegy/identity.json.
+const identities = new Map()
+const identityOf = (name) => { if (!identities.has(name)) identities.set(name, generateIdentity()); return identities.get(name) }
+
 async function open (dir, name, extra = {}) {
-  const s = new Session({ dir, server, room: extra.room || 'test', secret: 'pw', name, ...extra })
+  const s = new Session({ dir, server, room: extra.room || 'test', secret: 'pw', name, identity: identityOf(name), ...extra })
   await s.start({ waitTimeoutMs: 5000 })
   sessions.push(s)
   return s
@@ -111,7 +117,7 @@ test('unsafe paths from a peer are never written', async () => {
 
 test('presence, focus, claims and chat are shared', async () => {
   A.setFocus('building login page')
-  A.claim('src/auth/**', 'rewriting auth')
+  await A.claim('src/auth/**', 'rewriting auth')
   B.say('hey, I will take the CSS')
   await waitFor(() => {
     const st = B.status()
@@ -119,17 +125,18 @@ test('presence, focus, claims and chat are shared', async () => {
       st.claims.some((c) => c.pattern === 'src/auth/**' && c.by === 'alice')
   })
   await waitFor(() => A.status().chat.some((m) => m.by === 'bob'))
-  assert.throws(() => B.claim('src/auth/**'), /already claimed by alice/)
+  await assert.rejects(B.claim('src/auth/**'), /already claimed by alice/)
   assert.equal(B.claimFor('src/auth/login.ts').by, 'alice')
-  assert.throws(() => B.claim('src/auth/login.ts'), /overlaps alice's claim on src\/auth\/\*\*/)
-  assert.throws(() => B.claim('src'), /overlaps alice's claim/)
-  assert.equal(A.release('*'), 1)
+  await assert.rejects(B.claim('src/auth/login.ts'), /overlaps alice's claim on src\/auth\/\*\*/)
+  await assert.rejects(B.claim('src'), /overlaps alice's claim/)
+  assert.equal(await A.release('*'), 1)
+  await waitFor(() => B.claims.size === 0)
 })
 
 test('claims are enforced: others\' edits are undone locally and never shared', async () => {
   write(dirA, 'locked/a.txt', 'original\n')
   await waitFor(() => read(dirB, 'locked/a.txt') === 'original\n')
-  A.claim('locked/**', 'mine')
+  await A.claim('locked/**', 'mine')
   await waitFor(() => B.claimFor('locked/a.txt'))
 
   // Edit: bob's disk goes back to the shared text; his version is kept aside.
@@ -150,27 +157,27 @@ test('claims are enforced: others\' edits are undone locally and never shared', 
   assert.equal(A.files.get('locked/a.txt').toString(), 'alice edit\n')
 
   // Released: bob's edits go through again.
-  A.release('locked/**')
+  await A.release('locked/**')
   await waitFor(() => !B.claimFor('locked/a.txt'))
   write(dirB, 'locked/a.txt', 'bob again\n')
   await waitFor(() => read(dirA, 'locked/a.txt') === 'bob again\n')
 })
 
 test('a claim on a folder that does not exist yet covers files created later', async () => {
-  B.claim('brand-new', 'starting a module')
+  await B.claim('brand-new', 'starting a module')
   await waitFor(() => A.claimFor('brand-new/deep/x.js'))
   write(dirA, 'brand-new/deep/x.js', 'nope')
   await waitFor(() => read(dirA, 'brand-new/deep/x.js') === null)
   write(dirB, 'brand-new/deep/x.js', 'bob owns this')
   await waitFor(() => read(dirA, 'brand-new/deep/x.js') === 'bob owns this')
-  B.release('brand-new')
+  await B.release('brand-new')
   await waitFor(() => !A.claimFor('brand-new/deep/x.js'))
 })
 
 test('the claimer reverts changes from clients that do not enforce claims', async () => {
   write(dirA, 'guarded.txt', 'safe\n')
   await waitFor(() => read(dirB, 'guarded.txt') === 'safe\n')
-  A.claim('guarded.txt')
+  await A.claim('guarded.txt')
   await waitFor(() => B.claimFor('guarded.txt'))
   // An old or misbehaving client writes straight into the shared doc.
   B.doc.transact(() => B.files.get('guarded.txt').insert(0, 'hacked '), 'rogue')
@@ -180,23 +187,81 @@ test('the claimer reverts changes from clients that do not enforce claims', asyn
   const saved = fs.readdirSync(path.join(dirA, '.elegy', 'rejected'))
   assert.ok(saved.some((ts) => read(path.join(dirA, '.elegy', 'rejected', ts), 'guarded.txt') === 'hacked safe\n'))
   // Creating a file under someone's claim is reverted too.
-  A.claim('fort')
+  await A.claim('fort')
   await waitFor(() => B.claimFor('fort/a.txt'))
   B.doc.transact(() => B.files.set('fort/a.txt', new Y.Text('sneaky')), 'rogue')
   await waitFor(() => !B.files.has('fort/a.txt'))
   assert.equal(read(dirA, 'fort/a.txt'), null)
-  A.release('*')
+  await A.release('*')
 })
 
-test('overlapping claims made at the same moment resolve to the earliest everywhere', async () => {
-  // Simulate a race: both claims land in the doc without the overlap check.
-  A.doc.transact(() => A.claims.set('race', { by: 'alice', pattern: 'race', note: '', ts: 2000 }))
-  B.doc.transact(() => B.claims.set('race/x.js', { by: 'bob', pattern: 'race/x.js', note: '', ts: 1000 }))
+test('globs that start overlapping through a new file resolve to the earliest claim everywhere', async () => {
+  await A.claim('mix/*.js')
+  await B.claim('mix/a.*')
   await waitFor(() => A.claims.size === 2 && B.claims.size === 2)
-  assert.equal(A.claimFor('race/x.js').by, 'bob')
-  assert.equal(B.claimFor('race/x.js').by, 'bob')
-  assert.equal(A.claimFor('race/y.js').by, 'alice')
-  A.release('*'); B.release('*')
+  write(dirA, 'mix/b.css', 'x')
+  await waitFor(() => read(dirB, 'mix/b.css') === 'x')
+  assert.equal(A.claimFor('mix/a.js').by, 'alice')
+  assert.equal(B.claimFor('mix/a.js').by, 'alice')
+  assert.equal(B.claimFor('mix/a.css').by, 'bob')
+  await A.release('*'); await B.release('*')
+  await waitFor(() => A.claims.size === 0 && B.claims.size === 0)
+})
+
+test('only the claimer can release a claim', async () => {
+  await A.claim('mine-only', 'hands off')
+  await waitFor(() => B.claimFor('mine-only/x'))
+  await assert.rejects(B.release('mine-only'), /claimed by alice; only they can release it/)
+  assert.equal(await B.release('*'), 0)
+  assert.equal(A.claimFor('mine-only/x').by, 'alice')
+  await A.release('mine-only')
+})
+
+test('claims written straight into the shared doc are ignored', async () => {
+  B.doc.transact(() => B.doc.getMap('claims').set('forged', { by: 'alice', pattern: 'forged', note: '', ts: 1 }))
+  write(dirB, 'forged/x.txt', 'bob can write here')
+  await waitFor(() => read(dirA, 'forged/x.txt') === 'bob can write here')
+  assert.equal(A.claimFor('forged/x.txt'), null)
+  assert.equal(B.claimFor('forged/x.txt'), null)
+})
+
+test('nobody can connect under a name that belongs to someone else', async () => {
+  const s = new Session({ dir: tmp('m'), server, room: 'test', secret: 'pw', name: 'alice', identity: generateIdentity() })
+  await assert.rejects(s.start({ waitTimeoutMs: 3000 }), /belongs to someone else/)
+  await s.stop().catch(() => {})
+})
+
+test('a client that cannot prove its key is refused', async () => {
+  // Uses alice's public key but signs with a different private key.
+  const fake = { publicKey: identityOf('alice').publicKey, privateKey: generateIdentity().privateKey }
+  const s = new Session({ dir: tmp('m'), server, room: 'test', secret: 'pw', name: 'alice', identity: fake })
+  await assert.rejects(s.start({ waitTimeoutMs: 3000 }), /Could not verify who you are/)
+  await s.stop().catch(() => {})
+})
+
+test('clients without an identity (older elegy) are told to update', async () => {
+  const ws = new WebSocket(`${server}/test?secret=pw`)
+  ws.on('error', () => {})
+  const status = await new Promise((resolve) => {
+    ws.on('unexpected-response', (req, res) => resolve(`${res.statusCode} ${res.statusMessage}`))
+    ws.on('open', () => resolve('open'))
+  })
+  ws.terminate()
+  assert.match(status, /^400 .*newer elegy/)
+})
+
+test('presence under someone else\'s name is dropped', async () => {
+  const rogue = new Session({ dir: tmp('r'), server, room: 'test', secret: 'pw', name: 'rogue', identity: generateIdentity() })
+  await rogue.start({ waitTimeoutMs: 5000 })
+  sessions.push(rogue)
+  await waitFor(() => A.status().peers.some((p) => p.name === 'rogue'))
+  rogue.conn.awareness.setLocalStateField('name', 'alice')
+  write(dirA, 'presence-marker.txt', 'x')
+  await waitFor(() => read(rogue.root, 'presence-marker.txt') === 'x')
+  await new Promise((r) => setTimeout(r, 100))
+  assert.ok(B.status().peers.some((p) => p.name === 'rogue'), 'bob still sees the real name')
+  assert.ok(!B.status().peers.some((p) => p.name === 'alice' && p.tool === 'unknown'), 'the fake alice never reached bob')
+  await rogue.stop()
 })
 
 test('direct messages are only shown to sender and recipient', async () => {

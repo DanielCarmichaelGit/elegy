@@ -174,9 +174,14 @@ Claims are enforced in code, not just by asking agents nicely:
 - **Their side:** if a change to your claimed files still arrives (say, from a
   partner running an older elegy), your elegy reverts it in the shared session
   and keeps their version in your `.elegy/rejected/`.
+- **The relay:** claims live on the relay, not in the shared files. It checks
+  who is asking (see [Security](#security)), refuses a claim that overlaps
+  someone else's, and only lets the person who made a claim release it. So a
+  claim can't be faked, stolen or released by anyone else. Claiming needs a
+  connection to the relay; claims you already know about stay enforced offline.
 - A folder can be claimed before it exists; anything created in it later is
-  covered. A claim that overlaps someone else's is refused. If two overlapping
-  claims are made at the same instant, everyone treats the earliest as the owner.
+  covered. If two glob claims start overlapping because a new file matches
+  both, everyone treats the earliest claim as the owner.
 
 Sharing is on when you join. Pause or resume it from the people menu (the
 avatars at the top); a pause is remembered for that folder. elegy reads Claude
@@ -242,6 +247,13 @@ and the changes sync to everyone.
 
 - Each room has a secret (inside the invite code). The first client to open a
   room sets it, and everyone else must match. Treat invite codes like passwords.
+- Each person has a signing key in `~/.elegy/identity.json`, made on first use.
+  The first time a name joins a room, the relay ties that name to the key. After
+  that, only that key can use the name: the relay checks a signature on every
+  connect, and drops presence updates that use anyone else's name. Copy the file
+  to use your name from another computer. If you lose it, the relay's host can
+  free the name by removing it from `identities` in the room's `.json` file in
+  the relay's data folder.
 - Paths from peers are validated. Nothing can be written outside the project
   folder, into `.git/` (no sneaky hooks), or into files you ignore locally.
 - The relay can read project contents. Host your own relay and use `wss://`.

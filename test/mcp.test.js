@@ -63,7 +63,7 @@ test('an agent joins by invite and shows up as an agent', async () => {
   // The empty current folder became the project folder, and files arrived.
   assert.equal(fs.readFileSync(path.join(agentCwd, 'src', 'app.js'), 'utf8'), 'console.log("hi")\n')
   const peer = await waitFor(() => human.status().peers.find((p) => p.kind === 'agent'))
-  assert.equal(peer.name, 'Claude Code agent')
+  assert.match(peer.name, /^Claude Code agent \(.+\)$/)
   assert.equal(peer.tool, 'Claude Code')
   // Joining twice is refused.
   assert.equal((await call('elegy_join_session', { invite })).isError, true)
@@ -74,7 +74,7 @@ test('the agent can read a partner\'s AI feed and the file tree', async () => {
     { id: 'p', tool: 'Cursor', conv: 'c', kind: 'prompt', text: 'Refactor the auth module', ts: Date.now() },
     { id: 'a', tool: 'Cursor', conv: 'c', kind: 'action', text: 'Edited src/auth.js', ts: Date.now() }
   ])
-  human.claim('src/auth', 'refactoring')
+  await human.claim('src/auth', 'refactoring')
   const list = await waitFor(async () => { const t = text(await call('elegy_partner_feed')); return t.includes('dana') && t })
   assert.match(list, /dana/)
   const feed = await waitFor(async () => { const t = text(await call('elegy_partner_feed', { who: 'dana' })); return t.includes('Refactor') && t })

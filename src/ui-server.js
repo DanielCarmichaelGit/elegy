@@ -150,7 +150,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'POST /api/sessions/:id/say': (b, id) => get(id).say(b.text, { to: b.to || null }),
     'POST /api/sessions/:id/focus': (b, id) => { get(id).setFocus(b.text); return { ok: true } },
     'POST /api/sessions/:id/claim': (b, id) => get(id).claim(b.pattern, b.note),
-    'POST /api/sessions/:id/release': (b, id) => ({ released: get(id).release(b.pattern) }),
+    'POST /api/sessions/:id/release': async (b, id) => ({ released: await get(id).release(b.pattern) }),
     'POST /api/sessions/:id/read': (b, id) => { get(id).messages({ limit: 500 }); pushStatus(id); return { ok: true } },
     'GET /api/sessions/:id/messages': (b, id) => ({ messages: get(id).messages({ limit: 200, markRead: false }) }),
     'GET /api/sessions/:id/feed': (b, id, url) => {

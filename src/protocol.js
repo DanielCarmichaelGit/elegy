@@ -8,6 +8,14 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 export const MSG_SYNC = 0
 export const MSG_AWARENESS = 1
 export const MSG_QUERY_AWARENESS = 3
+// elegy extensions (ignored by plain y-websocket clients):
+export const MSG_AUTH = 10 // relay -> client: nonce; client -> relay: signature
+export const MSG_CLAIM = 11 // client -> relay: JSON { id, op: 'claim'|'release', pattern, note }
+export const MSG_CLAIMS = 12 // relay -> client: JSON { claims, reply?: { id, ok, error, released } }
+
+// WebSocket close codes the relay uses to refuse a client for good.
+export const CLOSE_AUTH_FAILED = 4401
+export const CLOSE_NAME_TAKEN = 4403
 
 // Largest file that can be sent in chat.
 export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
@@ -32,5 +40,19 @@ export function awarenessMessage (awareness, clients) {
   const enc = encoding.createEncoder()
   encoding.writeVarUint(enc, MSG_AWARENESS)
   encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(awareness, clients))
+  return encoding.toUint8Array(enc)
+}
+
+export function bytesMessage (type, bytes) {
+  const enc = encoding.createEncoder()
+  encoding.writeVarUint(enc, type)
+  encoding.writeVarUint8Array(enc, bytes)
+  return encoding.toUint8Array(enc)
+}
+
+export function jsonMessage (type, value) {
+  const enc = encoding.createEncoder()
+  encoding.writeVarUint(enc, type)
+  encoding.writeVarString(enc, JSON.stringify(value))
   return encoding.toUint8Array(enc)
 }
