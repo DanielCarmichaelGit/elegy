@@ -225,6 +225,16 @@ export async function pull (dir, { base } = {}) {
 }
 
 /** Stages everything and commits. */
+/**
+ * Whether this session's person hosts git: the folder is a repo and, in a
+ * session with an owner, they own it. (Without an owner, whoever started it.)
+ */
+export function hostsGit (session, { joined = false } = {}) {
+  const acc = session.access
+  const host = acc && acc.controlled ? acc.owner : !joined
+  return !!host && isRepo(session.root)
+}
+
 export async function commit (dir, message) {
   mustBeRepo(dir)
   message = String(message || '').trim()

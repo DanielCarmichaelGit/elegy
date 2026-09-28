@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { renderStatus } from './status.js'
+import * as gitops from './git.js'
 
 export async function startControl (session, extras = {}) {
   const token = crypto.randomBytes(16).toString('hex')
@@ -21,6 +22,17 @@ export async function startControl (session, extras = {}) {
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
+    'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),
+    'POST /commit-request': (b) => session.requestCommit(b.message),
+    'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
+    'POST /commit': async (b) => {
+      if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with cowove_request_commit instead.')
+      const open = session.commitStatus().open
+      const message = String(b.message || '').trim() || open.map((r) => r.message).join('; ')
+      const r = await gitops.commit(session.root, message)
+      session.resolveCommitRequests({ hash: r.hash })
+      return r
+    },
     'GET /info': () => ({ room: session.room, dir: session.root, name: session.name, kind: session.kind, invite: extras.invite || null, viewInvite: extras.viewInvite || null, access: session.access, pid: process.pid })
   }
   const server = http.createServer(async (req, res) => {

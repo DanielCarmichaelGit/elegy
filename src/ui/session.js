@@ -1,11 +1,11 @@
 // The session workspace: file tree on the left, a partner's live AI chat or a
 // shared file in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, remember, recall, toolsOf, decodeInvite } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, remember, recall, toolsOf, decodeInvite, busyPeople } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
-import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged } from './git.js'
+import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
 
 let current = null // session id being shown
 let timers = []
@@ -60,6 +60,7 @@ export function mountSession (id) {
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
       <span class="access-pill" id="access-pill" hidden></span>
+      <button class="commit-chip" id="commit-chip" hidden></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-tree" title="Files" aria-label="Show files">${I.tree}</button>
       <div class="people" id="people">
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
@@ -71,6 +72,7 @@ export function mountSession (id) {
       <div class="overflow">
         <button class="btn sm ghost icon" id="more-btn" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false">${I.more}</button>
         <div class="popover more-menu" id="more-menu" role="menu" hidden>
+          <button class="pop-item" role="menuitem" id="ask-commit">Ask for a commit…</button>
           <button class="pop-item" role="menuitem" id="leave-btn">Leave this session</button>
           <button class="pop-item" role="menuitem" data-shutdown>Shut down cowove</button>
         </div>
@@ -214,6 +216,11 @@ function autoOpenNewPeople (id) {
 // --------------------------------------------------------------- top bar --
 function bindTop () {
   $('#invite-btn').onclick = () => openInvite(current)
+  $('#ask-commit').onclick = askForCommit
+  $('#commit-chip').onclick = () => {
+    if (sum().git) $('#git-btn')?.click()
+    else toast($('#commit-chip').title)
+  }
   $('#leave-btn').onclick = async () => {
     if (!confirm('Stop syncing this folder? Your files stay where they are, and you can rejoin later.')) return
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
@@ -335,7 +342,35 @@ function renderTop () {
   $('#people-btn').setAttribute('aria-label', `${people.length} ${people.length === 1 ? 'person' : 'people'} in this session${st.connected ? '' : ', reconnecting'}`)
   if (!$('#people-menu').hidden) renderPeopleMenu()
   renderAccess()
+  renderCommitChip()
   $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
+}
+
+// ---------------------------------------------------------- commit timing --
+function renderCommitChip () {
+  const chip = $('#commit-chip')
+  if (!chip) return
+  const s = sum()
+  const st = s.status
+  const open = (st.commits || []).filter((r) => r.state === 'open')
+  const busy = busyPeople(st)
+  chip.hidden = !open.length
+  if (!open.length) return
+  chip.className = `commit-chip${busy.length ? '' : ' ready'}`
+  chip.innerHTML = busy.length
+    ? `${I.branch}<span>Commit requested · waiting on ${busy.length}</span>`
+    : `${I.branch}<span>Ready to commit</span>`
+  chip.title = `${open.map((r) => `${r.by}: ${r.message}`).join('\n')}${busy.length ? `\nStill working: ${busy.join(', ')}` : ''}`
+  gitSessionChanged()
+}
+
+async function askForCommit () {
+  const message = prompt('What should the commit be for? The host commits once everyone\'s AI is idle.')
+  if (!message || !message.trim()) return
+  try {
+    await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim() })
+    toast('Asked for a commit')
+  } catch (err) { toast(err.message) }
 }
 
 // ----------------------------------------------------------------- access --

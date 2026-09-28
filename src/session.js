@@ -52,6 +52,8 @@ export class Session extends EventEmitter {
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
+    this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
+    this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
 
     this.ig = loadIgnore(this.root)
     this.lastKnown = new Map() // path -> text content, or "bin:<sha1>"
@@ -216,6 +218,15 @@ export class Session extends EventEmitter {
       this.scheduleStatusWrite()
     })
     this.activity.observe(() => this.scheduleStatusWrite())
+    this.commitRequests.observe((ev, tr) => {
+      for (const [id, change] of ev.changes.keys) {
+        const r = this.commitRequests.get(id)
+        if (tr.origin === LOCAL || !r) continue
+        if (change.action === 'add') this.log(`📌 ${r.by} asked for a commit: ${r.message}`)
+        else if (r.state === 'done') this.log(`✅ ${r.doneBy || 'the host'} committed ${r.hash ? r.hash.slice(0, 7) : ''} (${r.message})`)
+      }
+      this.emit('status-changed')
+    })
     this.agentFeed.observe((ev) => {
       const added = []
       for (const item of ev.changes.added) for (const e of item.content.getContent()) if (e && e.id) added.push(e)
@@ -600,6 +611,64 @@ export class Session extends EventEmitter {
     }, 500)
   }
 
+  // ------------------------------------------------------- commit timing --
+
+  /** An agent says it's working or done (people's AI status comes from their chat reader). */
+  setWork (state, note = '') {
+    this.work = state === 'working' || state === 'done' ? { state, note: String(note).slice(0, 200), ts: Date.now() } : null
+    if (this.conn) this.conn.awareness.setLocalStateField('work', this.work)
+    this.scheduleStatusWrite()
+    return this.work
+  }
+
+  /** Asks the host to commit once everyone's AI is idle. */
+  requestCommit (message) {
+    message = String(message || '').trim().slice(0, 500)
+    if (!message) throw new Error('say what the commit is for')
+    if (this.access && this.access.state === 'approved' && this.access.role === 'viewer') throw new Error('viewers can’t ask for commits')
+    const r = { id: crypto.randomBytes(6).toString('hex'), by: this.name, message, ts: Date.now(), state: 'open' }
+    this.doc.transact(() => {
+      this.commitRequests.set(r.id, r)
+      // Keep the list short: drop old finished requests.
+      const done = [...this.commitRequests.values()].filter((x) => x.state === 'done').sort((a, b) => a.ts - b.ts)
+      for (const x of done.slice(0, Math.max(0, done.length - 20))) this.commitRequests.delete(x.id)
+    }, LOCAL)
+    this.log(`📌 you asked for a commit: ${message}`)
+    return r
+  }
+
+  /** Marks open requests as done by a commit. */
+  resolveCommitRequests ({ hash = '', ids = null } = {}) {
+    const open = [...this.commitRequests.values()].filter((r) => r.state === 'open' && (!ids || ids.includes(r.id)))
+    if (!open.length) return 0
+    this.doc.transact(() => {
+      for (const r of open) this.commitRequests.set(r.id, { ...r, state: 'done', doneBy: this.name, hash, doneAt: Date.now() })
+    }, LOCAL)
+    return open.length
+  }
+
+  /**
+   * Who's still working, open commit requests, and whether it's a good moment
+   * to commit. `includeMe: false` leaves out our own AI (it's the one asking).
+   */
+  commitStatus ({ includeMe = true } = {}) {
+    const st = this.status()
+    const people = [...(includeMe ? [{ ...st.me, work: this.work, isMe: true }] : []), ...st.peers]
+    const busy = []
+    for (const p of people) {
+      const a = p.agent
+      if (a && a.sharing !== false && a.status === 'working') busy.push({ name: p.name, why: `${p.isMe ? 'your' : `${p.name}'s`} ${a.tool || 'AI'} is working` })
+      else if (p.work && p.work.state === 'working') busy.push({ name: p.name, why: `${p.isMe ? 'you are' : `${p.name} is`} working${p.work.note ? `: ${p.work.note}` : ''}` })
+    }
+    const requests = [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts)
+    return {
+      open: requests.filter((r) => r.state === 'open'),
+      recent: requests.filter((r) => r.state === 'done').slice(-5),
+      busy,
+      ready: busy.length === 0
+    }
+  }
+
   setFocus (text) {
     this.focus = String(text || '').slice(0, 500)
     this.conn.awareness.setLocalStateField('focus', this.focus)
@@ -954,6 +1023,7 @@ export class Session extends EventEmitter {
         kind: s.kind || 'human',
         agent: s.agent || null,
         agents: s.agents || [],
+        work: s.work || null,
         focus: s.focus || '',
         editing: Object.entries(s.editing || {})
           .sort((a, b) => b[1] - a[1])
@@ -974,10 +1044,12 @@ export class Session extends EventEmitter {
         focus: this.focus,
         agents: [...this.agents],
         color: this.conn?.awareness.getLocalState()?.color,
-        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing, summarized: !!this.summarizer }
+        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing, summarized: !!this.summarizer },
+        work: this.work
       },
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
+      commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
       activity: this.activity.toArray().slice(-30),
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),

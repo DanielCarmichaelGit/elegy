@@ -69,7 +69,7 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -107,7 +107,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
     await session.stop().catch(() => {})
     throw err
   }
-  const control = await startControl(session, { invite, viewInvite })
+  const control = await startControl(session, { invite, viewInvite, joined })
   remember({ dir, room: conn.room, server: conn.server, name, tool })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.

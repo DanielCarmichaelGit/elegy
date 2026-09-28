@@ -1,6 +1,6 @@
 // The Git button and panel in the session top bar. Only the host sees it: git
 // lives on their computer, since sync never writes inside .git.
-import { I, state, $, esc, toast, api } from './common.js'
+import { I, state, $, esc, toast, api, busyPeople, ago } from './common.js'
 
 let sid = null // session shown
 let st = null // last status from /git
@@ -13,6 +13,7 @@ export const gitMarkup = () => `
     <button class="btn sm ghost" id="git-btn" aria-haspopup="true" aria-expanded="false" aria-controls="git-panel" title="Git">${I.branch}<span class="wide-only git-label" id="git-label">Git</span></button>
     <div class="popover git-panel" id="git-panel" role="dialog" aria-label="Git" hidden>
       <div class="git-head" id="git-head"></div>
+      <div class="git-coord" id="git-coord"></div>
       <div id="git-files"></div>
       <p class="error" id="git-error"></p>
       <div class="git-sec">
@@ -53,7 +54,8 @@ export function bindGit (id, signal) {
   $('#git-pull').onclick = () => act('pull', 'git/pull', {}, (r) => toast(r.message))
   $('#git-commit').onsubmit = (e) => {
     e.preventDefault()
-    const message = $('#git-msg').value.trim()
+    const open = (state.sessions.get(sid)?.status.commits || []).filter((r) => r.state === 'open')
+    const message = $('#git-msg').value.trim() || open.map((r) => r.message).join('; ')
     if (!message) { showError('Write a commit message.'); $('#git-msg').focus(); return }
     act('commit', 'git/commit', { message }, (r) => {
       $('#git-msg').value = ''
@@ -91,6 +93,26 @@ export function renderGitButton () {
 }
 
 /** Files changed: refresh the counts shortly, if anyone's looking. */
+export function gitSessionChanged () {
+  if (sid && $('#git-panel')?.hidden === false) paintCoord()
+}
+
+/** Commit requests and who's still working, so the host commits at a quiet moment. */
+function paintCoord () {
+  const el = $('#git-coord')
+  const s = state.sessions.get(sid)
+  if (!el || !s) return
+  const st = s.status
+  const open = (st.commits || []).filter((r) => r.state === 'open')
+  const busy = busyPeople(st)
+  const line = busy.length
+    ? `<div class="coord-line wait"><span class="pulse"></span>Waiting on ${esc(busy.join(', '))}</div>`
+    : `<div class="coord-line ok">${I.check || ''}Everyone's AI is idle${open.length ? ': ready to commit' : ''}</div>`
+  el.innerHTML = `${line}${open.length ? `<ul class="coord-reqs">${open.map((r) => `<li><b>${esc(r.by)}</b> asked for a commit <span class="hint">${esc(ago(r.ts))}</span><div>${esc(r.message)}</div></li>`).join('')}</ul>` : ''}`
+  const msg = $('#git-msg')
+  if (msg && !msg.value && open.length) msg.placeholder = open.map((r) => r.message).join('; ')
+}
+
 export function gitFilesChanged () {
   if (!sid || $('#git-panel')?.hidden !== false) return
   clearTimeout(refreshTimer)
@@ -144,6 +166,7 @@ function paint () {
   const label = $('#git-label')
   if (!label) return
   label.textContent = st?.branch || 'Git'
+  paintCoord()
   const head = $('#git-head')
   if (!st) {
     head.innerHTML = `<span class="hint">${busy === 'load' ? 'Reading git…' : ''}</span>`

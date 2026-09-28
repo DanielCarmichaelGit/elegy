@@ -118,11 +118,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   // only a session you started, on a folder that's a repo, gets git actions.
   // Git lives with the session's owner. Sessions without an owner (older
   // clients) fall back to "didn't join it from an invite".
-  const hostsGit = (r) => {
-    const acc = r.run.session.access
-    const host = acc && acc.controlled ? acc.owner : !r.joined
-    return !!host && gitops.isRepo(r.run.dir)
-  }
+  const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
   async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault, repo, branch, newBranch, base }) {
     const me = profile()
@@ -193,6 +189,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       color: me.color,
       shareByDefault: me.shareAgent,
       summarizeByDefault: me.summarize,
+      joined: mode === 'join',
       prefer: prefer === 'local' ? 'local' : 'remote',
       inviteServer,
       onLog: log,
@@ -307,7 +304,12 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
     'GET /api/sessions/:id/git': (b, id) => gitops.status(gitDir(id)),
     'POST /api/sessions/:id/git/pull': (b, id) => gitAction(id, (dir) => gitops.pull(dir, { base: b.base })),
-    'POST /api/sessions/:id/git/commit': (b, id) => gitAction(id, (dir) => gitops.commit(dir, b.message)),
+    'POST /api/sessions/:id/git/commit': (b, id) => gitAction(id, async (dir) => {
+      const r = await gitops.commit(dir, b.message)
+      get(id).resolveCommitRequests({ hash: r.hash })
+      return r
+    }),
+    'POST /api/sessions/:id/commit-request': (b, id) => get(id).requestCommit(b.message),
     'POST /api/sessions/:id/git/pr': (b, id) => gitAction(id, (dir) => gitops.pushAndOpenPr(dir, { title: b.title, body: b.body, base: b.base })),
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.

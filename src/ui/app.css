@@ -707,3 +707,17 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .tag.summary { font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--panel-2); }
 .pm-toggle { cursor: pointer; }
 .pm-toggle input { accent-color: var(--ok); }
+
+/* commit timing */
+.commit-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--panel)); color: var(--warn); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.commit-chip.ready { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); background: color-mix(in srgb, var(--ok) 10%, var(--panel)); color: var(--ok); }
+.commit-chip svg { width: 13px; height: 13px; }
+.git-coord { margin: 4px 0 8px; }
+.git-coord:empty { display: none; }
+.coord-line { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 4px; font-size: 12.5px; font-weight: 600; }
+.coord-line svg { width: 13px; height: 13px; }
+.coord-line.wait { background: color-mix(in srgb, var(--warn) 10%, var(--panel)); color: var(--warn); }
+.coord-line.ok { background: color-mix(in srgb, var(--ok) 10%, var(--panel)); color: var(--ok); }
+.coord-reqs { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.coord-reqs li { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; }
+.coord-reqs li div { color: var(--muted); }
