@@ -1,7 +1,7 @@
 // cowove app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
 import { TOKEN, I, state, $, esc, basename, toast, api, decodeInvite, remember, recall } from './common.js'
-import { renderShell } from './home.js'
+import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 
 // ---------------------------------------------------------------- boot --
@@ -21,6 +21,7 @@ async function boot () {
     if (isSession(state.view)) await loadMessages(state.view)
     connectEvents()
     render()
+    window.cowoveDesktop?.onInvite(openInviteLink)
   } catch (err) {
     renderLocked(err.message)
   }
@@ -170,8 +171,20 @@ export function bindTopbar () {
   })
 }
 
+// In the desktop app, clicking an invite link opens the join dialog with it filled in.
+async function openInviteLink (link) {
+  document.querySelectorAll('.modal-back').forEach((m) => m.remove())
+  if (state.view !== 'home') await go('home')
+  joinSessionDialog(link)
+}
+
 // -------------------------------------------------------- folder picker --
 export async function pickFolder (input) {
+  if (window.cowoveDesktop) {
+    const dir = await window.cowoveDesktop.pickFolder(input.value)
+    if (dir) { input.value = dir; input.dispatchEvent(new Event('input', { bubbles: true })) }
+    return
+  }
   const back = document.createElement('div')
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="pick-title">

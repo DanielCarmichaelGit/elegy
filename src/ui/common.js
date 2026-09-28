@@ -103,7 +103,7 @@ export async function api (method, path, body, headers = {}) {
 
 /** Same as decodeInvite in runner.js: an invite link, or an older base64 code. */
 export function decodeInvite (code) {
-  const raw = String(code || '').trim().replace(/^cowove join\s+/, '').split(/\s/)[0]
+  const raw = String(code || '').trim().replace(/^cowove join\s+/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
   const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
   if (m) {
     try { return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]) } } catch { return null }

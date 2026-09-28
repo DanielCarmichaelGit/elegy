@@ -8,7 +8,11 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "serve": "node bin/cowove.js serve"
+    "serve": "node bin/cowove.js serve",
+    "app": "electron .",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "icons": "electron desktop/make-icons.cjs"
   },
   "engines": {
     "node": ">=20"
@@ -26,5 +30,71 @@
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.33",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "main": "desktop/main.js",
+  "build": {
+    "appId": "dev.cowove.app",
+    "productName": "cowove",
+    "copyright": "MIT License",
+    "directories": {
+      "buildResources": "desktop/build",
+      "output": "dist"
+    },
+    "files": [
+      "bin/**",
+      "src/**",
+      "assets/**",
+      "desktop/main.js",
+      "desktop/preload.cjs",
+      "desktop/icons/*.png",
+      "package.json"
+    ],
+    "asar": false,
+    "protocols": [
+      {
+        "name": "cowove invite",
+        "schemes": [
+          "cowove"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "cowove-mac-${arch}.${ext}",
+      "identity": "-",
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "title": "cowove",
+      "artifactName": "cowove-mac-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "cowove-windows-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
   }
 }

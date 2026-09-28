@@ -1,0 +1,212 @@
+// cowove desktop app: the same app as `cowove ui`, in its own window. Sessions
+// keep syncing from the menu bar when the window is closed, and invite links
+// (cowove://join?invite=…) open straight into the join screen.
+import { app, BrowserWindow, Tray, Menu, shell, dialog, ipcMain } from 'electron'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { startUi } from '../src/ui-server.js'
+import { registerProcess } from '../src/procs.js'
+import { decodeInvite } from '../src/runner.js'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const CLI_SHIM = path.join(os.homedir(), '.cowove', 'bin', 'cowove')
+const CLI_LINK = '/usr/local/bin/cowove'
+
+let ui = null
+let win = null
+let tray = null
+let quitting = false
+let pendingInvite = null
+let rendererReady = false
+
+/** The invite link inside a cowove:// URL, or null. */
+function inviteFrom (url) {
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'cowove:') return null
+    const link = u.searchParams.get('invite') || ''
+    decodeInvite(link)
+    return link
+  } catch { return null }
+}
+
+function openInvite (link) {
+  if (!link) return
+  if (!win || !rendererReady) { pendingInvite = link; if (win) showWindow(); return }
+  showWindow()
+  win.webContents.send('invite', link)
+}
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  // A second launch (Windows/Linux invite links arrive this way) focuses this one.
+  app.on('second-instance', (e, argv) => {
+    showWindow()
+    openInvite(argv.map(inviteFrom).find(Boolean))
+  })
+  // macOS delivers invite links here, possibly before the app is ready.
+  app.on('open-url', (e, url) => { e.preventDefault(); openInvite(inviteFrom(url)) })
+
+  if (process.defaultApp) app.setAsDefaultProtocolClient('cowove', process.execPath, [path.resolve(process.argv[1])])
+  else app.setAsDefaultProtocolClient('cowove')
+
+  pendingInvite = process.argv.map(inviteFrom).find(Boolean) || null
+  app.whenReady().then(start).catch((err) => {
+    dialog.showErrorBox('cowove could not start', err.stack || err.message)
+    app.exit(1)
+  })
+}
+
+async function start () {
+  ui = await startUi({ port: 0, onShutdown: () => app.quit() })
+  registerProcess('app', { port: ui.port, desktop: true })
+  process.on('SIGTERM', () => app.quit()) // `cowove stop`
+  if (app.isPackaged) writeCliShim()
+
+  ipcMain.handle('ready', () => { rendererReady = true; const l = pendingInvite; pendingInvite = null; return l })
+  ipcMain.handle('pick-folder', async (e, current) => {
+    const expanded = String(current || '').replace(/^~(?=$|\/)/, os.homedir())
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Choose a folder',
+      buttonLabel: 'Use this folder',
+      defaultPath: expanded && fs.existsSync(expanded) ? expanded : os.homedir(),
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return r.canceled ? null : r.filePaths[0]
+  })
+
+  Menu.setApplicationMenu(appMenu())
+  makeTray()
+  createWindow()
+}
+
+function createWindow () {
+  win = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 880,
+    minHeight: 600,
+    title: 'cowove',
+    show: false,
+    backgroundColor: '#f4efe6',
+    webPreferences: { preload: path.join(HERE, 'preload.cjs'), contextIsolation: true, sandbox: true }
+  })
+  rendererReady = false
+  win.loadURL(ui.url)
+  win.once('ready-to-show', () => win.show())
+  win.webContents.on('did-start-navigation', (e) => { if (e.isMainFrame && !e.isSameDocument) rendererReady = false })
+
+  // Links to anywhere else open in the browser, never inside the app.
+  const origin = new URL(ui.url).origin
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url) && !url.startsWith(origin)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url.startsWith(origin)) return
+    e.preventDefault()
+    if (/^https?:/.test(url)) shell.openExternal(url)
+  })
+
+  // Closing the window keeps sessions syncing in the menu bar.
+  win.on('close', (e) => {
+    if (quitting) return
+    e.preventDefault()
+    win.hide()
+  })
+}
+
+function showWindow () {
+  if (!win || win.isDestroyed()) return createWindow()
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+function makeTray () {
+  tray = new Tray(path.join(HERE, 'icons', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray-color.png'))
+  tray.setToolTip('cowove')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open cowove', click: showWindow },
+    { type: 'separator' },
+    { label: 'Quit cowove', click: () => app.quit() }
+  ]))
+  if (process.platform !== 'darwin') tray.on('click', showWindow)
+}
+
+function appMenu () {
+  const isMac = process.platform === 'darwin'
+  return Menu.buildFromTemplate([
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' },
+            { type: 'separator' },
+            { label: 'Install the cowove Command…', click: installCli },
+            { type: 'separator' },
+            { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
+            { type: 'separator' },
+            { role: 'quit' }
+          ]
+        }]
+      : [{ label: 'File', submenu: [{ role: 'quit' }] }]),
+    { role: 'editMenu' },
+    { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
+    { role: 'windowMenu' }
+  ])
+}
+
+// ------------------------------------------------------ command line --
+// AI tools reach cowove through the `cowove` command (its MCP server). The
+// app ships that command; this keeps a small launcher for it up to date.
+function writeCliShim () {
+  const main = path.join(app.getAppPath(), 'bin', 'cowove.js')
+  const script = `#!/bin/sh\n# The cowove command, run by the cowove desktop app's copy of Node.\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${main}" "$@"\n`
+  try {
+    fs.mkdirSync(path.dirname(CLI_SHIM), { recursive: true })
+    if (!fs.existsSync(CLI_SHIM) || fs.readFileSync(CLI_SHIM, 'utf8') !== script) fs.writeFileSync(CLI_SHIM, script, { mode: 0o755 })
+  } catch {}
+}
+
+async function installCli () {
+  if (!app.isPackaged) {
+    return dialog.showMessageBox(win, { message: 'Install the command from the packaged app', detail: 'When running from source, use `npm link` in the cowove folder instead.' })
+  }
+  writeCliShim()
+  let current = null
+  try { current = fs.readlinkSync(CLI_LINK) } catch {}
+  if (current === CLI_SHIM) {
+    return dialog.showMessageBox(win, { message: 'The cowove command is installed', detail: `You can run \`cowove\` in any terminal, and AI tools can use it.` })
+  }
+  if (fs.existsSync(CLI_LINK) && current !== CLI_SHIM) {
+    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Replace', 'Cancel'], defaultId: 0, cancelId: 1, message: 'A cowove command is already installed', detail: `${CLI_LINK} already exists. Replace it with the one from this app?` })
+    if (r.response !== 0) return
+  }
+  try {
+    fs.mkdirSync(path.dirname(CLI_LINK), { recursive: true })
+    fs.rmSync(CLI_LINK, { force: true })
+    fs.symlinkSync(CLI_SHIM, CLI_LINK)
+  } catch {
+    // /usr/local/bin usually needs an administrator; macOS asks for the password.
+    const cmd = `mkdir -p /usr/local/bin && ln -sf '${CLI_SHIM}' '${CLI_LINK}'`
+    const ok = await new Promise((resolve) => execFile('osascript', ['-e', `do shell script "${cmd}" with administrator privileges`], (err) => resolve(!err)))
+    if (!ok) return
+  }
+  dialog.showMessageBox(win, { message: 'The cowove command is installed', detail: 'You can now run `cowove` in any terminal. AI tools like Claude Code and Cursor use it to see your session.' })
+}
+
+// Quit cleanly: stop every session (so edits are flushed) before exiting.
+let closed = false
+app.on('before-quit', (e) => {
+  quitting = true
+  if (closed || !ui) return
+  e.preventDefault()
+  ui.close().catch(() => {}).finally(() => { closed = true; app.quit() })
+})
+app.on('activate', showWindow)
+app.on('window-all-closed', () => {}) // stay in the menu bar
