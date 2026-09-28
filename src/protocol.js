@@ -12,10 +12,14 @@ export const MSG_QUERY_AWARENESS = 3
 export const MSG_AUTH = 10 // relay -> client: nonce; client -> relay: signature
 export const MSG_CLAIM = 11 // client -> relay: JSON { id, op: 'claim'|'release', pattern, note }
 export const MSG_CLAIMS = 12 // relay -> client: JSON { claims, reply?: { id, ok, error, released } }
+export const MSG_ACCESS = 13 // relay -> client: JSON { state: 'pending'|'approved', role, scopes, owner }
+export const MSG_ADMIN = 14 // client (owner) -> relay: JSON { id, op: 'approve'|'deny'|'set'|'remove', key, role, scopes }
+export const MSG_MEMBERS = 15 // relay -> client: JSON { members, pending?, reply?: { id, ok, error } }
 
 // WebSocket close codes the relay uses to refuse a client for good.
 export const CLOSE_AUTH_FAILED = 4401
 export const CLOSE_NAME_TAKEN = 4403
+export const CLOSE_DENIED = 4406 // the owner said no, or removed you
 
 // WebSocket close code the relay uses when a room is over its size quota.
 export const CLOSE_ROOM_FULL = 4413

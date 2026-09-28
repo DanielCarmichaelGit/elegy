@@ -251,23 +251,174 @@ function dialog (html) {
 function newSessionDialog () {
   const { form, close } = dialog(`
     <h3>New session</h3>
-    <p class="lead">Pick the folder you want to work on together. You'll get invites to send once it starts.</p>
+    <p class="lead">Pick what you want to work on together. You'll get invites to send once it starts.</p>
+    <div class="segmented src-switch" role="tablist" aria-label="Start from">
+      <button type="button" role="tab" data-src="folder" class="on" aria-selected="true">${I.folder}<span>Folder</span></button>
+      <button type="button" role="tab" data-src="github" aria-selected="false">${I.branch}<span>GitHub</span></button>
+    </div>
+    <div id="src-folder">
     <div class="field">
       <label for="n-dir">Project folder</label>
       <div class="row"><input class="input grow" id="n-dir" name="dir" placeholder="~/code/my-app" value="${esc(tildify(state.lastCreateDir || state.defaults.cwd || ''))}" required>
       <button type="button" class="btn icon" id="n-browse" title="Browse" aria-label="Browse">${I.folder}</button></div>
     </div>
+    </div>
+    <div id="src-github" hidden></div>
     <div class="note">${I.globe}<span>${relayExplainer()}</span></div>
     <p class="error" id="n-error"></p>
     <div class="actions"><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Start session</button></div>`)
+  let src = 'folder'
+  const gh = githubPicker(form.querySelector('#src-github'))
+  form.querySelectorAll('[data-src]').forEach((b) => {
+    b.onclick = () => {
+      src = b.dataset.src
+      form.querySelectorAll('[data-src]').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', String(x === b)) })
+      form.querySelector('#src-folder').hidden = src !== 'folder'
+      form.querySelector('#src-github').hidden = src !== 'github'
+      form.querySelector('#n-dir').required = src === 'folder'
+      form.querySelector('button[type=submit]').textContent = src === 'github' ? 'Clone and start' : 'Start session'
+      form.querySelector('#n-error').textContent = ''
+      if (src === 'github') gh.open()
+      else form.querySelector('#n-dir').focus()
+    }
+  })
   form.querySelector('#n-browse').onclick = () => pickFolder(form.querySelector('#n-dir'))
   form.onsubmit = async (e) => {
     e.preventDefault()
+    if (src === 'github') {
+      let body
+      try { body = gh.value() } catch (err) { form.querySelector('#n-error').textContent = err.message; return }
+      if (await submit(form, '#n-error', { mode: 'github', ...body }, 'Cloning…')) close()
+      return
+    }
     const dir = form.querySelector('#n-dir').value
     state.lastCreateDir = dir
     if (await submit(form, '#n-error', { mode: 'create', dir })) close()
   }
   form.querySelector('#n-dir').focus()
+}
+
+/** The GitHub side of the New session dialog: repo, branch, and where to clone it. */
+function githubPicker (root) {
+  let repos = null
+  let repo = null // { name, defaultBranch }
+  let branches = null // { branches, defaultBranch }
+  let loaded = false
+
+  async function open () {
+    if (loaded) return root.querySelector('#gh-search')?.focus()
+    loaded = true
+    root.innerHTML = '<p class="hint gh-wait">Checking GitHub…</p>'
+    let st
+    try { st = await api('GET', '/api/github/status') } catch (err) { st = { authenticated: false, message: err.message } }
+    if (!st.authenticated) {
+      loaded = false
+      root.innerHTML = `<div class="note gh-setup">${I.branch}<span>${st.installed === false
+        ? 'Install the GitHub CLI (<code>brew install gh</code>), then run <code>gh auth login</code> in a terminal.'
+        : 'Connect GitHub by running <code>gh auth login</code> in a terminal.'} Then switch to GitHub again.</span></div>`
+      return
+    }
+    root.innerHTML = `
+      <div class="field">
+        <label for="gh-search">Repository${st.user ? ` <span class="hint">· signed in as ${esc(st.user)}</span>` : ''}</label>
+        <input class="input" id="gh-search" placeholder="Search your repositories" spellcheck="false" autocomplete="off">
+        <div class="gh-list" id="gh-list" role="listbox" aria-label="Repositories"><p class="hint">Loading repositories…</p></div>
+      </div>
+      <div id="gh-branch" hidden>
+        <div class="field">
+          <span class="label">Branch</span>
+          <div class="choice-cards">
+            <label class="choice-card"><input type="radio" name="ghb" value="existing" checked><span><b>Use an existing branch</b></span></label>
+            <label class="choice-card"><input type="radio" name="ghb" value="new"><span><b>Create a new branch</b></span></label>
+          </div>
+          <div id="gh-existing"><select class="input" id="gh-branch-select" aria-label="Branch"></select></div>
+          <div id="gh-new" class="row" hidden>
+            <input class="input grow" id="gh-new-name" placeholder="my-feature" spellcheck="false" aria-label="New branch name">
+            <span class="hint">from</span>
+            <select class="input gh-base" id="gh-base" aria-label="Start from branch"></select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="gh-dir">Clone into</label>
+          <div class="row"><input class="input grow" id="gh-dir" spellcheck="false">
+          <button type="button" class="btn icon" id="gh-browse" title="Browse" aria-label="Browse">${I.folder}</button></div>
+          <span class="hint">Leave empty to use a new folder in ${esc(state.profile.joinDir)}.</span>
+        </div>
+      </div>`
+    const search = root.querySelector('#gh-search')
+    search.addEventListener('input', paintRepos)
+    search.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return
+      e.preventDefault() // pick the first match rather than submitting
+      root.querySelector('#gh-list [data-repo]')?.click()
+    })
+    root.querySelector('#gh-browse').onclick = () => pickFolder(root.querySelector('#gh-dir'))
+    root.querySelectorAll('[name=ghb]').forEach((r) => {
+      r.onchange = () => {
+        root.querySelector('#gh-existing').hidden = r.value !== 'existing'
+        root.querySelector('#gh-new').hidden = r.value !== 'new'
+        if (r.value === 'new') root.querySelector('#gh-new-name').focus()
+      }
+    })
+    search.focus()
+    try {
+      repos = (await api('GET', '/api/github/repos')).repos
+    } catch (err) {
+      root.querySelector('#gh-list').innerHTML = `<p class="hint warn">${esc(err.message)}</p>`
+      return
+    }
+    paintRepos()
+  }
+
+  function paintRepos () {
+    const list = root.querySelector('#gh-list')
+    if (!list || !repos) return
+    const q = root.querySelector('#gh-search').value.trim().toLowerCase()
+    const shown = repos.filter((r) => !q || r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q)).slice(0, 60)
+    list.innerHTML = shown.length
+      ? shown.map((r) => `<button type="button" class="gh-repo${repo && repo.name === r.name ? ' on' : ''}" role="option" aria-selected="${repo && repo.name === r.name}" data-repo="${esc(r.name)}">
+          <span class="grow"><b>${esc(r.name)}</b>${r.description ? `<span class="hint">${esc(r.description)}</span>` : ''}</span>
+          ${r.updatedAt ? `<span class="hint">${esc(ago(Date.parse(r.updatedAt)))}</span>` : ''}</button>`).join('')
+      : `<p class="hint">${repos.length ? 'No repositories match.' : 'You have no repositories on GitHub yet.'}</p>`
+    list.querySelectorAll('[data-repo]').forEach((b) => { b.onclick = () => pickRepo(repos.find((r) => r.name === b.dataset.repo)) })
+  }
+
+  async function pickRepo (r) {
+    repo = r
+    branches = null
+    paintRepos()
+    root.querySelector('#gh-branch').hidden = false
+    root.querySelector('#gh-dir').placeholder = `${state.profile.joinDir}/${r.name.split('/').pop()}`
+    const sel = root.querySelector('#gh-branch-select')
+    const baseSel = root.querySelector('#gh-base')
+    sel.innerHTML = baseSel.innerHTML = '<option>Loading…</option>'
+    sel.disabled = baseSel.disabled = true
+    try {
+      const b = await api('GET', `/api/github/branches?repo=${encodeURIComponent(r.name)}`)
+      if (repo !== r) return // picked another meanwhile
+      branches = b
+      const opts = b.branches.map((n) => `<option value="${esc(n)}" ${n === b.defaultBranch ? 'selected' : ''}>${esc(n)}${n === b.defaultBranch ? ' (default)' : ''}</option>`).join('')
+      sel.innerHTML = baseSel.innerHTML = opts || '<option value="">No branches</option>'
+      sel.disabled = baseSel.disabled = false
+    } catch (err) {
+      sel.innerHTML = baseSel.innerHTML = '<option value="">Couldn’t load branches</option>'
+      toast(err.message)
+    }
+  }
+
+  function value () {
+    if (!repo) throw new Error('Pick a repository.')
+    if (!branches) throw new Error('Wait for the branches to load.')
+    const dir = root.querySelector('#gh-dir').value.trim() || undefined
+    if (root.querySelector('[name=ghb]:checked').value === 'new') {
+      const newBranch = root.querySelector('#gh-new-name').value.trim()
+      if (!newBranch) throw new Error('Name your new branch.')
+      return { repo: repo.name, newBranch, base: root.querySelector('#gh-base').value || undefined, dir }
+    }
+    return { repo: repo.name, branch: root.querySelector('#gh-branch-select').value || undefined, dir }
+  }
+
+  return { open, value }
 }
 
 function joinSessionDialog () {
@@ -303,11 +454,11 @@ function joinSessionDialog () {
   inv.focus()
 }
 
-async function submit (form, errSel, body) {
+async function submit (form, errSel, body, busy = 'Connecting…') {
   const btn = form.querySelector('button[type=submit]')
   const label = btn.textContent
   btn.disabled = true
-  btn.textContent = 'Connecting…'
+  btn.textContent = busy
   form.querySelector(errSel).textContent = ''
   try {
     const sum = await api('POST', '/api/sessions', body)
@@ -371,6 +522,7 @@ function settingsHtml () {
         <span class="hint">Each session gets its own folder in here.</span>
       </div>
       ${toggle('shareAgent', p.shareAgent, 'Share my AI chat', 'Partners see your prompts, the replies and which files it touches. You can pause it inside any session.')}
+      ${toggle('summarize', p.summarize, 'Summarize my chats', 'Your prompts and your AI’s replies are shortened to a sentence or two on this computer before they’re shared. Uses your claude CLI (a few Haiku tokens each); if it isn’t available, the text is just shortened.')}
       ${toggle('preferLocal', p.preferLocal, 'Keep my files when joining a folder that has some', 'When off, their versions of the same files win.')}
       <div class="sec-actions"><span></span><button class="btn primary" type="submit">Save</button></div>
     </div>
@@ -452,7 +604,7 @@ function bindSettings () {
 
   const sess = $('#sessions-sec')
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir'))
-  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), preferLocal: !!f.get('preferLocal') }))
+  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
 
   const relay = $('#relay-sec')
   relay.querySelectorAll('[name=relayMode]').forEach((r) => {

@@ -165,6 +165,7 @@ export async function runMcp () {
       name: name || `${tool} agent (${os.userInfo().username})`,
       tool,
       kind: 'agent',
+      joined: !inviteServer && !conn.viewSecret,
       inviteServer,
       onLog: (line) => { logs.push(line); if (logs.length > 50) logs.shift() },
       onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() }
@@ -188,7 +189,11 @@ export async function runMcp () {
     const lines = [extra]
     if (info) lines.push(`Project folder: ${info.dir}`, `You appear as: ${info.name}${info.kind === 'agent' ? ' (AI agent)' : ''}`)
     if (st) lines.push(`Shared files: ${st.fileCount}`, `People online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
-    if (info && info.invite) lines.push(`Invite link (for others to join): ${info.invite}`)
+    const acc = info && info.access
+    if (acc && acc.state === 'pending') lines.push('⏳ Waiting for the session owner to let you in. Nothing syncs until they approve you; check again with cowove_session_info.')
+    else if (acc && acc.controlled) lines.push(`Your access: ${acc.owner ? 'owner' : acc.role === 'viewer' ? 'view only (your file changes are undone)' : acc.scopes && acc.scopes.length ? `may change files only in ${acc.scopes.join(', ')}` : 'may change any file'}`)
+    if (info && info.invite) lines.push(`Invite link to edit (for others to join): ${info.invite}`)
+    if (info && info.viewInvite) lines.push(`Invite link to view only: ${info.viewInvite}`)
     if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with cowove_leave_session.')
     return lines.filter(Boolean).join('\n')
   }
@@ -239,6 +244,64 @@ export async function runMcp () {
     const left = await leave()
     return { content: [{ type: 'text', text: left ? 'Left the session. The files stay where they are.' : 'You have not joined a session from here.' }] }
   })
+
+  // ------------------------------------------------------ commit timing --
+
+  const describeCommits = (c) => {
+    const lines = []
+    lines.push(c.ready ? '✅ Everyone else\'s AI is idle: a good moment to commit.' : `⏳ Still working: ${c.busy.map((b) => b.why).join('; ')}`)
+    if (c.open.length) lines.push('Open commit requests:', ...c.open.map((r) => `- ${r.by}: ${r.message}`))
+    else lines.push('No open commit requests.')
+    lines.push(c.host
+      ? 'You host git for this session: when it is ready, commit with cowove_commit (or git yourself).'
+      : 'Git lives with the session host. Ask for a commit with cowove_request_commit; the host commits when everyone is idle.')
+    return lines.join('\n')
+  }
+
+  server.registerTool('cowove_set_work', {
+    description: 'Tell everyone whether you (this agent) are working or done, so the host knows when it is safe to commit. Set "working" when you start a task and "done" when you finish.',
+    inputSchema: {
+      state: z.enum(['working', 'done']),
+      note: z.string().optional().describe('What you are working on, in a few words')
+    }
+  }, ({ state, note }) => withDaemon(async (d) => {
+    await call(d, 'POST', '/work', { state, note })
+    return state === 'working' ? 'Marked as working. Set "done" when you finish so the host can commit.' : 'Marked as done.'
+  }))
+
+  server.registerTool('cowove_request_commit', {
+    description: 'Ask the session host to commit the shared changes, e.g. because you need a commit to test or deploy. The host commits once every AI in the session is idle.',
+    inputSchema: { message: z.string().describe('What the commit should say / why you need it') }
+  }, ({ message }) => withDaemon(async (d) => {
+    await call(d, 'POST', '/commit-request', { message })
+    return `Asked for a commit.\n${describeCommits(await call(d, 'GET', '/commits'))}`
+  }))
+
+  server.registerTool('cowove_commit_status', {
+    description: 'Is it a good moment to commit? Lists open commit requests and whose AI is still working (not counting yours).',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => describeCommits(await call(d, 'GET', '/commits'))))
+
+  server.registerTool('cowove_wait_until_idle', {
+    description: 'Wait until every other AI in the session is idle (or the timeout passes), then report. Use it before committing, or when you need everyone else to finish first.',
+    inputSchema: { timeout_seconds: z.number().int().min(5).max(1800).optional().describe('How long to wait at most (default 300)') }
+  }, ({ timeout_seconds: timeout = 300 }) => withDaemon(async (d) => {
+    const until = Date.now() + timeout * 1000
+    let c = await call(d, 'GET', '/commits')
+    while (!c.ready && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 3000))
+      c = await call(d, 'GET', '/commits')
+    }
+    return `${c.ready ? '' : `Stopped waiting after ${timeout}s.\n`}${describeCommits(c)}`
+  }))
+
+  server.registerTool('cowove_commit', {
+    description: 'Host only: commit every change in the shared folder with git and close the open commit requests. Without a message, the open requests\' messages are used. Check cowove_commit_status first.',
+    inputSchema: { message: z.string().optional().describe('Commit message') }
+  }, ({ message }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/commit', { message })
+    return `Committed ${r.files} file${r.files === 1 ? '' : 's'} as ${r.hash}: ${r.subject}`
+  }))
 
   server.registerTool('cowove_session_info', {
     description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite link.',

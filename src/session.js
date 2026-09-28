@@ -32,13 +32,14 @@ const WATCH_RECHECK_MS = 80
 const RECONCILE_MS = 1000
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
     this.room = room
     this.secret = secret
     this.key = key
+    this.viewSecret = viewSecret
     this.name = name
     this.identity = identity
     this.tool = tool
@@ -56,6 +57,8 @@ export class Session extends EventEmitter {
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
+    this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
+    this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
 
     this.ig = loadIgnore(this.root)
     this.lastKnown = new Map() // path -> text content, or "bin:<sha1>"
@@ -72,7 +75,13 @@ export class Session extends EventEmitter {
     this.focus = ''
     this.kind = kind === 'agent' ? 'agent' : 'human' // an AI agent that joined by itself
     this.agentSharing = shareAgent !== false
+    // (kind, text) -> Promise<{ text, how }>; when set, prompts and replies are summarized before sharing.
+    this.summarizer = summarize
+    this.summaryQueue = Promise.resolve()
     this.agentState = null
+    this.access = null // from the relay: { state, role, scopes, owner, controlled }
+    this.members = [] // everyone approved into a controlled session
+    this.waiting = [] // people asking to join (only the owner hears about them)
   }
 
   log (msg) { this.emit('log', msg) }
@@ -87,6 +96,8 @@ export class Session extends EventEmitter {
       room: this.room,
       secret: this.secret,
       key: this.key,
+      viewSecret: this.viewSecret,
+      kind: this.kind,
       name: this.name,
       identity: this.identity || loadIdentity(),
       doc: this.doc,
@@ -96,6 +107,8 @@ export class Session extends EventEmitter {
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
     this.conn.on('claims', (list) => this.setClaims(list))
+    this.conn.on('access', (a) => this.setAccess(a))
+    this.conn.on('members', (m) => this.setMembers(m))
     this.setupPresence()
 
     if (hadState) {
@@ -106,10 +119,30 @@ export class Session extends EventEmitter {
     } else {
       this.log('waiting for relay…')
       const sync = this.conn.waitForSync()
-      if (waitTimeoutMs) {
-        await Promise.race([sync, new Promise((_, rej) => setTimeout(() => rej(new Error('timed out connecting to relay')), waitTimeoutMs))])
-      } else {
-        await sync
+      // In a session with an owner we may have to wait for them to let us in.
+      let onAccess
+      const pending = new Promise((resolve) => {
+        onAccess = (a) => { if (a.state === 'pending') resolve('pending') }
+        this.conn.on('access', onAccess)
+      })
+      let timer
+      const timeout = waitTimeoutMs ? new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timed out connecting to relay')), waitTimeoutMs) }) : null
+      try {
+        const first = await Promise.race([sync.then(() => 'synced'), pending, ...(timeout ? [timeout] : [])])
+        if (first === 'pending') {
+          // Finish joining in the background once let in.
+          this.admitted = sync.then(async () => {
+            this.reconcileFirstJoin()
+            this.goLive()
+            await this.startWatcher()
+            this.log('✅ you were let in')
+            this.emit('status-changed')
+          }).catch(() => {})
+          return this
+        }
+      } finally {
+        clearTimeout(timer)
+        this.conn.off('access', onAccess)
       }
       this.reconcileFirstJoin()
       this.goLive()
@@ -117,6 +150,48 @@ export class Session extends EventEmitter {
     await this.startWatcher()
     return this
   }
+
+  // --------------------------------------------------------------- access --
+
+  setAccess (a) {
+    const was = this.access
+    this.access = a
+    if (a.state === 'pending' && (!was || was.state !== 'pending')) this.log(`⏳ waiting for the session owner to let you in (you were invited to ${a.invitedAs === 'viewer' ? 'view' : 'edit'})`)
+    if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes))) {
+      this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}`)
+    }
+    if (a.refused) this.log(`🔒 the relay undid your change to ${a.refused.join(', ')}: ${a.why}`)
+    this.emit('access', a)
+    this.scheduleStatusWrite()
+  }
+
+  setMembers ({ members, pending }) {
+    this.members = members || []
+    if (pending) {
+      const known = new Set(this.waiting.map((p) => p.key))
+      for (const p of pending) if (!known.has(p.key)) this.log(`🙋 ${p.name}${p.kind === 'agent' ? ' (an agent)' : ''} wants to join as ${p.invitedAs === 'viewer' ? 'a viewer' : 'an editor'}`)
+      this.waiting = pending
+    }
+    this.emit('members', { members: this.members, pending: this.waiting })
+    this.emit('status-changed')
+  }
+
+  /** Why we may not change rel, or null if we may. */
+  writeRefusal (rel) {
+    const a = this.access
+    if (!a || a.state !== 'approved') return null
+    if (a.role === 'viewer') return 'you can only view this session'
+    if (a.scopes && a.scopes.length && !a.scopes.some((sc) => globMatcher(sc)(rel))) return `you may only change files in ${a.scopes.join(', ')}`
+    return null
+  }
+
+  get isOwner () { return !!(this.access && this.access.owner) }
+
+  /** Owner only: let someone in, with a role and (for agents) the folders they may change. */
+  approve (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'approve', key, role, scopes }) }
+  deny (key) { return this.conn.adminRequest({ op: 'deny', key }) }
+  setMember (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes }) }
+  removeMember (key) { return this.conn.adminRequest({ op: 'remove', key }) }
 
   goLive () {
     this.files.observeDeep((events, tr) => {
@@ -150,6 +225,15 @@ export class Session extends EventEmitter {
       this.scheduleStatusWrite()
     })
     this.activity.observe(() => this.scheduleStatusWrite())
+    this.commitRequests.observe((ev, tr) => {
+      for (const [id, change] of ev.changes.keys) {
+        const r = this.commitRequests.get(id)
+        if (tr.origin === LOCAL || !r) continue
+        if (change.action === 'add') this.log(`📌 ${r.by} asked for a commit: ${r.message}`)
+        else if (r.state === 'done') this.log(`✅ ${r.doneBy || 'the host'} committed ${r.hash ? r.hash.slice(0, 7) : ''} (${r.message})`)
+      }
+      this.emit('status-changed')
+    })
     this.agentFeed.observe((ev) => {
       const added = []
       for (const item of ev.changes.added) for (const e of item.content.getContent()) if (e && e.id) added.push(e)
@@ -298,6 +382,11 @@ export class Session extends EventEmitter {
       this.rejectClaimed(rel, disk, claim)
       return false
     }
+    const refusal = this.writeRefusal(rel)
+    if (refusal && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
+      this.rejectLocal(rel, disk, refusal)
+      return false
+    }
 
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
@@ -338,6 +427,11 @@ export class Session extends EventEmitter {
 
   /** Someone else claimed rel: keep our version aside and put the shared one back on disk. */
   rejectClaimed (rel, disk, claim) {
+    this.rejectLocal(rel, disk, `it is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}`, claim.by)
+  }
+
+  /** We may not change rel: keep our version aside and put the shared one back on disk. */
+  rejectLocal (rel, disk, reason, by = null) {
     let kept = ''
     if (disk) {
       const dest = path.join(this.stateDir, 'rejected', `${Date.now()}`, ...rel.split('/'))
@@ -357,8 +451,8 @@ export class Session extends EventEmitter {
       removeEmptyParents(this.root, path.dirname(abs))
       this.lastKnown.delete(rel)
     }
-    this.log(`🔒 ${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}, so your change was undone${kept}`)
-    this.emit('file-changed', { path: rel, by: claim.by })
+    this.log(`🔒 your change to ${rel} was undone: ${reason}${kept}`)
+    this.emit('file-changed', { path: rel, by: by || this.lastEditorOf(rel) || 'partner' })
   }
 
   recordActivity (rel, kind, detail) {
@@ -543,6 +637,64 @@ export class Session extends EventEmitter {
       }
       this.conn.awareness.setLocalStateField('editing', editing)
     }, 500)
+  }
+
+  // ------------------------------------------------------- commit timing --
+
+  /** An agent says it's working or done (people's AI status comes from their chat reader). */
+  setWork (state, note = '') {
+    this.work = state === 'working' || state === 'done' ? { state, note: String(note).slice(0, 200), ts: Date.now() } : null
+    if (this.conn) this.conn.awareness.setLocalStateField('work', this.work)
+    this.scheduleStatusWrite()
+    return this.work
+  }
+
+  /** Asks the host to commit once everyone's AI is idle. */
+  requestCommit (message) {
+    message = String(message || '').trim().slice(0, 500)
+    if (!message) throw new Error('say what the commit is for')
+    if (this.access && this.access.state === 'approved' && this.access.role === 'viewer') throw new Error('viewers can’t ask for commits')
+    const r = { id: crypto.randomBytes(6).toString('hex'), by: this.name, message, ts: Date.now(), state: 'open' }
+    this.doc.transact(() => {
+      this.commitRequests.set(r.id, r)
+      // Keep the list short: drop old finished requests.
+      const done = [...this.commitRequests.values()].filter((x) => x.state === 'done').sort((a, b) => a.ts - b.ts)
+      for (const x of done.slice(0, Math.max(0, done.length - 20))) this.commitRequests.delete(x.id)
+    }, LOCAL)
+    this.log(`📌 you asked for a commit: ${message}`)
+    return r
+  }
+
+  /** Marks open requests as done by a commit. */
+  resolveCommitRequests ({ hash = '', ids = null } = {}) {
+    const open = [...this.commitRequests.values()].filter((r) => r.state === 'open' && (!ids || ids.includes(r.id)))
+    if (!open.length) return 0
+    this.doc.transact(() => {
+      for (const r of open) this.commitRequests.set(r.id, { ...r, state: 'done', doneBy: this.name, hash, doneAt: Date.now() })
+    }, LOCAL)
+    return open.length
+  }
+
+  /**
+   * Who's still working, open commit requests, and whether it's a good moment
+   * to commit. `includeMe: false` leaves out our own AI (it's the one asking).
+   */
+  commitStatus ({ includeMe = true } = {}) {
+    const st = this.status()
+    const people = [...(includeMe ? [{ ...st.me, work: this.work, isMe: true }] : []), ...st.peers]
+    const busy = []
+    for (const p of people) {
+      const a = p.agent
+      if (a && a.sharing !== false && a.status === 'working') busy.push({ name: p.name, why: `${p.isMe ? 'your' : `${p.name}'s`} ${a.tool || 'AI'} is working` })
+      else if (p.work && p.work.state === 'working') busy.push({ name: p.name, why: `${p.isMe ? 'you are' : `${p.name} is`} working${p.work.note ? `: ${p.work.note}` : ''}` })
+    }
+    const requests = [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts)
+    return {
+      open: requests.filter((r) => r.state === 'open'),
+      recent: requests.filter((r) => r.state === 'done').slice(-5),
+      busy,
+      ready: busy.length === 0
+    }
   }
 
   setFocus (text) {
@@ -740,13 +892,30 @@ export class Session extends EventEmitter {
   /** Adds entries from this person's AI chat reader. Dedupes by id, keeps the newest 300 per person. */
   pushAgentEntries (entries) {
     if (!this.agentSharing || !entries || !entries.length) return 0
+    if (this.summarizer) {
+      // Summaries take a moment; keep batches in order.
+      const batch = entries
+      this.summaryQueue = this.summaryQueue.then(async () => {
+        const out = await Promise.all(batch.map(async (e) => {
+          if (!e || (e.kind !== 'prompt' && e.kind !== 'reply')) return e
+          const s = await this.summarizer(e.kind, e.text).catch(() => ({ text: e.text, how: 'as-is' }))
+          return s.how === 'as-is' ? e : { ...e, text: s.text, summary: s.how }
+        }))
+        if (this.agentSharing) this.shareAgentEntries(out)
+      })
+      return entries.length
+    }
+    return this.shareAgentEntries(entries)
+  }
+
+  shareAgentEntries (entries) {
     const mine = new Set()
     for (const e of this.agentFeed) if (e && e.by === this.name) mine.add(e.id)
     const fresh = []
     for (const e of entries) {
       if (!e || !e.id || mine.has(e.id)) continue
       mine.add(e.id)
-      fresh.push({ id: String(e.id), by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text: String(e.text || ''), ts: e.ts || Date.now() })
+      fresh.push({ id: String(e.id), by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text: String(e.text || ''), ts: e.ts || Date.now(), ...(e.summary ? { summary: e.summary } : {}) })
     }
     if (!fresh.length) return 0
     this.doc.transact(() => {
@@ -785,6 +954,23 @@ export class Session extends EventEmitter {
     return on
   }
 
+  /** Turns summaries of your AI chat on or off for this folder (remembered). */
+  setSummarize (fn) {
+    this.summarizer = fn || null
+    this.saveConfig({ summarize: !!fn })
+    this.publishAgentState()
+    this.scheduleStatusWrite()
+    return !!fn
+  }
+
+  saveConfig (patch) {
+    try {
+      const file = path.join(this.stateDir, 'config.json')
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
+      fs.writeFileSync(file, JSON.stringify({ ...cfg, ...patch }, null, 2), { mode: 0o600 })
+    } catch {}
+  }
+
   /** Live status from the AI chat reader ("working", "idle", "unavailable"). */
   setAgentState (state) {
     this.agentState = state ? { tool: state.tool || null, status: state.status || 'idle', ...(state.reason ? { reason: state.reason } : {}), ...(state.notes ? { notes: state.notes } : {}) } : null
@@ -795,7 +981,7 @@ export class Session extends EventEmitter {
     if (!this.conn) return
     const st = this.agentState || { tool: null, status: 'idle' }
     // While paused, partners only learn that sharing is off, not whether you're working.
-    const shared = this.agentSharing ? { ...st, sharing: true } : { tool: st.tool, status: 'idle', sharing: false }
+    const shared = this.agentSharing ? { ...st, sharing: true, ...(this.summarizer ? { summarized: true } : {}) } : { tool: st.tool, status: 'idle', sharing: false }
     this.conn.awareness.setLocalStateField('agent', shared)
   }
 
@@ -865,6 +1051,7 @@ export class Session extends EventEmitter {
         kind: s.kind || 'human',
         agent: s.agent || null,
         agents: s.agents || [],
+        work: s.work || null,
         focus: s.focus || '',
         editing: Object.entries(s.editing || {})
           .sort((a, b) => b[1] - a[1])
@@ -875,6 +1062,9 @@ export class Session extends EventEmitter {
       room: this.room,
       server: this.server,
       connected: !!(this.conn && this.conn.connected),
+      access: this.access,
+      members: this.members,
+      ...(this.isOwner ? { waiting: this.waiting } : {}),
       me: {
         name: this.name,
         tool: this.tool,
@@ -882,10 +1072,12 @@ export class Session extends EventEmitter {
         focus: this.focus,
         agents: [...this.agents],
         color: this.conn?.awareness.getLocalState()?.color,
-        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing }
+        agent: { ...(this.agentState || { status: 'idle' }), sharing: this.agentSharing, summarized: !!this.summarizer },
+        work: this.work
       },
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
+      commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
       activity: this.activity.toArray().slice(-30),
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),

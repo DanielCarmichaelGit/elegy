@@ -58,10 +58,10 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online })
       flush()
       if (e.kind === 'prompt') {
         parts.push(`<div class="f-prompt">${avatar(person, color)}<div class="f-body">
-          <div class="head"><b>${esc(who)}</b><span>${esc(clock(e.ts))}</span></div>
+          <div class="head"><b>${esc(who)}</b><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
           <div class="bubble"><div class="text">${esc(e.text)}</div></div></div></div>`)
       } else if (e.kind === 'reply') {
-        parts.push(`<div class="f-reply"><div class="head"><span class="ai-badge">${I.sparkle}${esc(e.tool || 'AI')}</span><span>${esc(clock(e.ts))}</span></div>
+        parts.push(`<div class="f-reply"><div class="head"><span class="ai-badge">${I.sparkle}${esc(e.tool || 'AI')}</span><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
           <div class="md">${markdown(e.text)}</div></div>`)
       }
     }
