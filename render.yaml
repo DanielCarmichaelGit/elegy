@@ -1,6 +1,7 @@
-# Render Blueprint for an elegy relay. See docs/hosting.md.
-# New > Blueprint, pick this repo. Render generates the relay key; copy it
-# from the service's Environment tab.
+# Render Blueprint for the elegy website + relay. See docs/hosting.md.
+# New > Blueprint, pick this repo. The site is at https://<service>.onrender.com.
+# It runs anonymously (anyone can start a session on the website). To require
+# a key for starting sessions instead, add ELEGY_RELAY_KEY in the Environment tab.
 services:
   - type: web
     name: elegy-relay
@@ -13,8 +14,6 @@ services:
         value: /data
       - key: ELEGY_TRUST_PROXY
         value: "1"
-      - key: ELEGY_RELAY_KEY
-        generateValue: true
     disk:
       name: elegy-data
       mountPath: /data

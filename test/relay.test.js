@@ -118,3 +118,18 @@ test('rooms unused for longer than the TTL are deleted', async () => {
   assert.equal(fs.existsSync(path.join(dataDir, 'fresh.json')), true)
   await srv.close()
 })
+
+test('new sessions are rate-limited per address; joining existing ones is not', async () => {
+  const { default: WebSocket } = await import('ws')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxNewRoomsPerHour: 2 })
+  const open = (room) => new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${room}?secret=s`)
+    ws.on('open', () => { ws.close(); resolve('open') })
+    ws.on('unexpected-response', (req, res) => resolve(res.statusCode))
+  })
+  assert.equal(await open('r1'), 'open')
+  assert.equal(await open('r2'), 'open')
+  assert.equal(await open('r3'), 429)
+  assert.equal(await open('r1'), 'open', 'rejoining an existing room still works')
+  await srv.close()
+})

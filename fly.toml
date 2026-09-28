@@ -1,8 +1,9 @@
-# Fly.io config for an elegy relay. See docs/hosting.md.
+# Fly.io config for the elegy website + relay. See docs/hosting.md.
 #   fly launch --copy-config --no-deploy   (pick a unique app name)
 #   fly volumes create elegy_data --size 3
-#   fly secrets set ELEGY_RELAY_KEY=$(openssl rand -base64 24)
 #   fly deploy
+# The site is at https://<app-name>.fly.dev and runs anonymously. To require a
+# key for starting sessions instead: fly secrets set ELEGY_RELAY_KEY=...
 app = "elegy-relay"
 primary_region = "iad"
 

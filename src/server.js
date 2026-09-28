@@ -41,6 +41,7 @@ export function relayConfig (opts = {}) {
     maxRoomBytes: num(opts.maxRoomBytes ?? env.ELEGY_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
     maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.ELEGY_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
     maxConnsPerIp: num(opts.maxConnsPerIp ?? env.ELEGY_MAX_CONNS_PER_IP, 50),
+    maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.ELEGY_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.ELEGY_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
     trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.ELEGY_TRUST_PROXY || '')
@@ -202,6 +203,16 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const startedAt = Date.now()
   const rooms = new Map() // loaded rooms only
   const ipConns = new Map()
+  // Sessions anyone can start (no relay key) are rate-limited per address.
+  const newRooms = new Map() // ip -> creation timestamps in the last hour
+  const canCreate = (ip) => {
+    if (!cfg.maxNewRoomsPerHour) return true
+    const cutoff = Date.now() - 60 * 60 * 1000
+    const recent = (newRooms.get(ip) || []).filter((t) => t > cutoff)
+    if (recent.length) newRooms.set(ip, recent); else newRooms.delete(ip)
+    return recent.length < cfg.maxNewRoomsPerHour
+  }
+  const noteCreated = (ip) => newRooms.set(ip, [...(newRooms.get(ip) || []), Date.now()])
 
   const getRoom = (name) => {
     let room = rooms.get(name)
@@ -334,7 +345,10 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
     const [, name, id] = m
     const room = getRoom(name)
+    const creating = !room.exists
+    if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
     const auth = room.authorize(req.headers['x-elegy-secret'] || '', req.headers['x-elegy-key'] || '')
+    if (auth === 'ok' && creating) noteCreated(clientIp(req))
     if (auth !== 'ok') {
       dropIfUnused(room)
       return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
@@ -363,7 +377,10 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const ip = clientIp(req)
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
+    const creating = !room.exists
+    if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(url.searchParams.get('secret') || '', url.searchParams.get('key') || req.headers['x-elegy-key'] || '')
+    if (auth === 'ok' && creating) noteCreated(ip)
     if (auth !== 'ok') {
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
