@@ -12,6 +12,7 @@ import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRe
 import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
+import * as gitops from './git.js'
 
 // The saved default relay, without its key.
 const savedRelay = () => {
@@ -91,7 +92,8 @@ const STATIC = {
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
-  '/home.js': ['home.js', 'text/javascript; charset=utf-8']
+  '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
+  '/git.js': ['git.js', 'text/javascript; charset=utf-8']
 }
 
 export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {}) {
@@ -107,12 +109,29 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   }
   const summary = (id) => {
     const r = runs.get(id)
-    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80) }
+    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80), git: hostsGit(r) }
   }
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
+  // Git lives only on the host's computer (sync never writes inside .git), so
+  // only a session you started, on a folder that's a repo, gets git actions.
+  // Git lives with the session's owner. Sessions without an owner (older
+  // clients) fall back to "didn't join it from an invite".
+  const hostsGit = (r) => {
+    const acc = r.run.session.access
+    const host = acc && acc.controlled ? acc.owner : !r.joined
+    return !!host && gitops.isRepo(r.run.dir)
+  }
 
-  async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault }) {
+  async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault, repo, branch, newBranch, base }) {
     const me = profile()
+    if (mode === 'github') {
+      // Clone first, then start a normal session on the clone.
+      const repoName = String(repo || '').split('/').pop()
+      dir = path.resolve(expandHome(dir || path.join(me.joinDir, repoName || 'repo')))
+      if (runs.has(idFor(dir))) throw httpError(400, 'A session is already running in that folder.')
+      await gitops.cloneRepo({ repo, dir, branch, newBranch, base })
+      mode = 'create'
+    }
     name = name || me.name
     tool = tool || me.tool
     prefer = prefer || (me.preferLocal ? 'local' : 'remote')
@@ -158,7 +177,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       }
     }
 
-    const entry = { logs: [] }
+    const entry = { logs: [], joined: mode === 'join' }
     const log = (line) => {
       entry.logs.push({ ts: Date.now(), line })
       if (entry.logs.length > 200) entry.logs.shift()
@@ -218,6 +237,25 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     return r.run.session
   }
 
+  /** The session's folder, if this app may run git in it. */
+  const gitDir = (id) => {
+    get(id)
+    const r = runs.get(id)
+    if (!hostsGit(r)) throw httpError(400, r.joined ? 'Only the person who started this session can use git here.' : 'This folder isn\'t a git repository.')
+    return r.run.dir
+  }
+  // One git action at a time per session; the reply includes the new status.
+  const gitAction = async (id, fn) => {
+    const dir = gitDir(id)
+    const r = runs.get(id)
+    if (r.gitBusy) throw httpError(409, 'Git is still busy with the last action.')
+    r.gitBusy = true
+    try {
+      const result = await fn(dir)
+      return { ...result, status: await gitops.status(dir) }
+    } finally { r.gitBusy = false }
+  }
+
   const api = {
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
@@ -256,6 +294,13 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'POST /api/relay/check': async (b) => {
       try { return await checkRelay(b.url) } catch (err) { throw httpError(400, err.message) }
     },
+    'GET /api/github/status': () => gitops.ghStatus(),
+    'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
+    'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
+    'GET /api/sessions/:id/git': (b, id) => gitops.status(gitDir(id)),
+    'POST /api/sessions/:id/git/pull': (b, id) => gitAction(id, (dir) => gitops.pull(dir, { base: b.base })),
+    'POST /api/sessions/:id/git/commit': (b, id) => gitAction(id, (dir) => gitops.commit(dir, b.message)),
+    'POST /api/sessions/:id/git/pr': (b, id) => gitAction(id, (dir) => gitops.pushAndOpenPr(dir, { title: b.title, body: b.body, base: b.base })),
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.
     'POST /api/shutdown': () => {

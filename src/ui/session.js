@@ -5,6 +5,7 @@ import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
+import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged } from './git.js'
 
 let current = null // session id being shown
 let timers = []
@@ -64,6 +65,7 @@ export function mountSession (id) {
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
+      ${gitMarkup()}
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-chat" title="Chat" aria-label="Show chat">${I.chat}<span class="badge" id="chat-badge" hidden></span></button>
       <div class="overflow">
@@ -107,6 +109,7 @@ export function mountSession (id) {
 
   bindTop()
   bindAccess()
+  bindGit(id, mounted.signal)
   bindMain()
   bindTreeEvents()
   bindChat()
@@ -129,6 +132,7 @@ export function sessionUnmount () {
   if (mounted) mounted.abort()
   mounted = null
   closeTreeMenu()
+  unbindGit()
   current = null
 }
 
@@ -178,6 +182,7 @@ export function sessionFeed (id, entries) {
 export function sessionFileChanged (id, { path }) {
   if (id !== current) return
   scheduleTree()
+  gitFilesChanged()
   const w = ws(id)
   if (w.fileTabs.includes(path)) {
     if (w.mode === 'files' && w.fileSel === path) refreshFile(path, true)
@@ -313,6 +318,7 @@ function agentLine (p) {
 function renderTop () {
   if (!current || !$('#people-btn')) return
   renderTabs()
+  renderGitButton()
   const st = sum().status
   const people = [st.me, ...st.peers]
   const shown = people.slice(0, 4)
