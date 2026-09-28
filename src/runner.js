@@ -53,7 +53,7 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -64,14 +64,14 @@ export async function runSession ({ dir, conn, name, tool, prefer = 'remote', in
   tool = tool || 'unknown'
   const invite = encodeInvite({ ...conn, server: inviteServer || conn.server })
   const previous = readConfig(dir)
-  // Sharing your AI chat is on by default; a pause is remembered for this folder.
-  const shareAgent = !(previous && previous.room === conn.room && previous.shareAgent === false)
+  // Sharing your AI chat follows your setting; a pause or resume is remembered for this folder.
+  const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
   fs.mkdirSync(path.join(dir, '.cowove'), { recursive: true })
   fs.writeFileSync(path.join(dir, '.cowove', 'config.json'),
     JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent }, null, 2), { mode: 0o600 })
   ensureGitExclude(dir)
 
-  const session = new Session({ dir, ...conn, name, tool, prefer, kind, shareAgent })
+  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent })
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
@@ -137,6 +137,14 @@ export function recentSessions () {
   } catch {
     return []
   }
+}
+
+/** Drops a folder from the recent list (its files and settings stay). */
+export function forgetRecent (dir) {
+  try {
+    const list = JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => r.dir !== dir)
+    fs.writeFileSync(recentFile(), JSON.stringify(list, null, 2))
+  } catch {}
 }
 
 function remember (entry) {

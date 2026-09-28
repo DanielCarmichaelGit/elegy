@@ -8,7 +8,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { runSession, decodeInvite, newConn, readConfig, recentSessions } from './runner.js'
+import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent } from './runner.js'
 import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
@@ -17,6 +17,59 @@ import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from '.
 const savedRelay = () => {
   const s = getSettings()
   return s.relay ? { url: s.relay, hasKey: !!s.relayKey } : null
+}
+
+const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
+const COLOR_RE = /^#[0-9a-f]{6}$/i
+
+/** Your profile and preferences, from ~/.cowove/settings.json with sensible defaults. Never includes the relay key. */
+function profile () {
+  const s = getSettings()
+  return {
+    name: s.name || os.userInfo().username,
+    tool: s.tool || detectTool(),
+    color: s.color || null,
+    joinDir: s.joinDir || '~/cowove',
+    shareAgent: s.shareAgent !== false,
+    preferLocal: !!s.preferLocal,
+    relayMode: s.relayMode === 'local' || !s.relay ? 'local' : 'hosted',
+    publicUrl: s.publicUrl || '',
+    relay: savedRelay()
+  }
+}
+
+/** Checks and saves profile/preference changes. Returns the new profile. */
+function updateProfile (b) {
+  const patch = {}
+  if ('name' in b) {
+    const name = String(b.name || '').trim()
+    if (!name) throw httpError(400, 'Your name can\'t be empty.')
+    if (name.length > 64) throw httpError(400, 'Keep your name under 64 characters.')
+    patch.name = name
+  }
+  if ('tool' in b) {
+    if (!TOOL_NAMES.includes(b.tool)) throw httpError(400, 'Pick an AI tool from the list.')
+    patch.tool = b.tool
+  }
+  if ('color' in b) {
+    if (b.color && !COLOR_RE.test(b.color)) throw httpError(400, 'That color isn\'t valid.')
+    patch.color = b.color || undefined
+  }
+  if ('joinDir' in b) patch.joinDir = String(b.joinDir || '').trim() || undefined
+  if ('shareAgent' in b) patch.shareAgent = b.shareAgent ? undefined : false
+  if ('preferLocal' in b) patch.preferLocal = b.preferLocal ? true : undefined
+  if ('relayMode' in b) patch.relayMode = b.relayMode === 'local' ? 'local' : undefined
+  if ('publicUrl' in b) patch.publicUrl = String(b.publicUrl || '').trim() || undefined
+  if ('relay' in b) {
+    const prev = getSettings()
+    if (!b.relay) { patch.relay = undefined; patch.relayKey = undefined } else {
+      patch.relay = normalizeRelay(b.relay)
+      if (patch.relay !== prev.relay) patch.relayKey = undefined
+    }
+  }
+  if (b.relayKey) patch.relayKey = String(b.relayKey)
+  saveSettings(patch) // undefined values clear a setting
+  return profile()
 }
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui')
@@ -37,7 +90,8 @@ const STATIC = {
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
-  '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8']
+  '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
+  '/home.js': ['home.js', 'text/javascript; charset=utf-8']
 }
 
 export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {}) {
@@ -58,6 +112,14 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
 
   async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault }) {
+    const me = profile()
+    name = name || me.name
+    tool = tool || me.tool
+    prefer = prefer || (me.preferLocal ? 'local' : 'remote')
+    if (mode === 'join' && !dir) {
+      const inv = decodeInvite(invite || '')
+      dir = path.join(expandHome(me.joinDir), inv.room)
+    }
     if (!dir) throw new Error('Choose a project folder.')
     dir = path.resolve(expandHome(dir))
     const id = idFor(dir)
@@ -76,18 +138,22 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       tool = tool || saved.tool
       if (saved.server.startsWith(`ws://127.0.0.1:${relayPort}`)) await ensureRelay()
     } else {
+      // An explicit relay address wins; otherwise use what Settings says.
+      if (hostRelay === undefined) hostRelay = !server && me.relayMode === 'local'
       if (hostRelay) {
+        publicUrl = publicUrl ?? me.publicUrl
         await ensureRelay()
         conn = newConn(`ws://127.0.0.1:${relay.port}`)
         inviteServer = (publicUrl || '').trim() || `ws://${lanAddress()}:${relay.port}`
         if (!/^wss?:\/\//.test(inviteServer)) inviteServer = inviteServer.replace(/^http/, 'ws')
       } else {
-        if (!server) throw new Error('Enter the relay address, or host one on this computer.')
+        server = server || me.relay?.url
+        if (!server) throw new Error('Set up a relay in Settings, or host one on this computer.')
         const url = normalizeRelay(server)
         conn = newConn(url, relayKey || keyFor(url))
         if (saveDefault) {
           const prev = getSettings()
-          saveSettings({ relay: url, relayKey: relayKey || (prev.relay === url ? prev.relayKey : undefined) })
+          saveSettings({ relay: url, relayKey: relayKey || (prev.relay === url ? prev.relayKey : undefined), relayMode: undefined })
         }
       }
     }
@@ -103,6 +169,8 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       conn,
       name,
       tool,
+      color: me.color,
+      shareByDefault: me.shareAgent,
       prefer: prefer === 'local' ? 'local' : 'remote',
       inviteServer,
       onLog: log,
@@ -153,7 +221,8 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
       recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))),
-      defaults: { name: os.userInfo().username, tool: detectTool(), home: os.homedir(), cwd: process.cwd(), relay: savedRelay() },
+      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES },
+      profile: profile(),
       relay: relay ? { port: relay.port, lan: `ws://${lanAddress()}:${relay.port}` } : null,
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
@@ -176,6 +245,9 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       return f
     },
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
+    'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))) } },
+    'GET /api/settings': () => profile(),
+    'POST /api/settings': (b) => updateProfile(b),
     'POST /api/relay/check': async (b) => {
       try { return await checkRelay(b.url) } catch (err) { throw httpError(400, err.message) }
     },

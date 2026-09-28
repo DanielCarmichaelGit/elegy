@@ -27,7 +27,7 @@ const AGENT_FEED_CAP = 300
 const WATCH_RECHECK_MS = 80
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
+  constructor ({ dir, server, room, secret, key = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, identity = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -37,6 +37,7 @@ export class Session extends EventEmitter {
     this.name = name
     this.identity = identity
     this.tool = tool
+    this.color = color
     this.prefer = prefer
     this.stateDir = path.join(this.root, '.cowove')
     this.stateFile = path.join(this.stateDir, 'state.bin')
@@ -486,7 +487,7 @@ export class Session extends EventEmitter {
   // ----------------------------------------------------- presence & social --
 
   setupPresence () {
-    const color = COLORS[Math.abs(hashCode(this.name)) % COLORS.length]
+    const color = this.color || COLORS[Math.abs(hashCode(this.name)) % COLORS.length]
     this.conn.awareness.setLocalState({
       name: this.name, tool: this.tool, color, focus: '', editing: {}, agents: [], kind: this.kind,
       agent: { tool: null, status: 'idle', sharing: this.agentSharing }

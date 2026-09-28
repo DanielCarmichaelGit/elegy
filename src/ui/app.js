@@ -1,6 +1,7 @@
 // cowove app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
-import { TOKEN, I, TOOLS, state, $, esc, basename, ago, toast, api, decodeInvite, remember, recall } from './common.js'
+import { TOKEN, I, state, $, esc, basename, toast, api, decodeInvite, remember, recall } from './common.js'
+import { renderShell } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 
 // ---------------------------------------------------------------- boot --
@@ -10,13 +11,14 @@ async function boot () {
     const s = await api('GET', '/api/state')
     state.recent = s.recent
     state.defaults = s.defaults
+    state.profile = s.profile
     state.relay = s.relay
     state.maxFileBytes = s.maxFileBytes
     for (const sum of s.sessions) state.sessions.set(sum.id, sum)
     state.loaded = true
     const last = recall('view')
-    state.view = state.sessions.has(last) ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
-    if (state.view !== 'home') await loadMessages(state.view)
+    state.view = state.sessions.has(last) || last === 'settings' ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
+    if (isSession(state.view)) await loadMessages(state.view)
     connectEvents()
     render()
   } catch (err) {
@@ -71,10 +73,12 @@ function connectEvents () {
   })
 }
 
+const isSession = (view) => view !== 'home' && view !== 'settings'
+
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     document.title = 'cowove'
-    if (state.view !== 'home') markRead(state.view)
+    if (isSession(state.view)) markRead(state.view)
   }
 })
 
@@ -91,7 +95,11 @@ export async function markRead (id) {
 }
 
 async function refreshRecent () {
-  try { state.recent = (await api('GET', '/api/state')).recent } catch {}
+  try {
+    const s = await api('GET', '/api/state')
+    state.recent = s.recent
+    state.profile = s.profile
+  } catch {}
 }
 
 export async function go (view) {
@@ -99,9 +107,10 @@ export async function go (view) {
   state.pending = []
   state.to = ''
   remember('view', view)
-  if (view !== 'home' && !state.messages.has(view)) await loadMessages(view)
+  if (view === 'home') await refreshRecent()
+  if (isSession(view) && !state.messages.has(view)) await loadMessages(view)
   render()
-  if (view !== 'home') markRead(view)
+  if (isSession(view)) markRead(view)
 }
 
 // --------------------------------------------------------------- render --
@@ -119,12 +128,9 @@ export async function shutdown () {
 document.addEventListener('click', (e) => { if (e.target.closest('[data-shutdown]')) shutdown() })
 
 export function render () {
-  const app = $('#app')
   sessionUnmount()
-  if (state.view === 'home') {
-    app.innerHTML = state.sessions.size ? `<div class="shell">${topbarHtml()}<div style="overflow:auto;flex:1">${homeHtml()}</div></div>` : homeHtml()
-    bindHome()
-    bindTopbar()
+  if (!isSession(state.view)) {
+    renderShell(state.view)
   } else {
     mountSession(state.view)
     bindTopbar()
@@ -138,16 +144,6 @@ export function renderLocked (msg) {
       <div class="wordmark">co<i>wo</i>ve</div>
       <p class="tagline">${esc(msg || 'Open cowove using the link printed in your terminal by')} ${msg ? '' : '<code>cowove ui</code>.'}</p>
     </div></div>`
-}
-
-function topbarHtml () {
-  return `
-    <header class="topbar">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>co<i>wo</i>ve</span></button>
-      <nav class="tabs" id="tabs"></nav>
-      <button class="btn sm" data-go="home">${I.plus}<span>New</span></button>
-      <button class="btn sm ghost icon" data-shutdown title="Shut down cowove" aria-label="Shut down cowove">${I.power}</button>
-    </header>`
 }
 
 export function renderTabs () {
@@ -174,269 +170,8 @@ export function bindTopbar () {
   })
 }
 
-// ----------------------------------------------------------------- home --
-function toolOptions (selected) {
-  return TOOLS.map((t) => `<option ${t === selected ? 'selected' : ''}>${t}</option>`).join('')
-}
-
-// Who you are and what you code with rarely change, so they're a single
-// line on the home screen instead of fields on every form.
-const me = () => ({
-  name: recall('name', state.defaults.name || ''),
-  tool: recall('tool', state.defaults.tool || 'Claude Code')
-})
-
-const tildify = (p) => state.defaults.home && p.startsWith(state.defaults.home) ? `~${p.slice(state.defaults.home.length)}` : p
-
-const hostOf = (url) => { try { return new URL(url.replace(/^ws/, 'http')).host } catch { return url } }
-
-function relaySummary () {
-  const saved = state.defaults.relay
-  const mode = recall('relayMode', saved ? 'remote' : 'host')
-  const server = saved ? saved.url : recall('server')
-  if (mode === 'remote' && server) return `Relay: ${esc(hostOf(server))} (works from anywhere)`
-  if (recall('publicUrl')) return `Relay: this computer, via ${esc(recall('publicUrl'))}`
-  return 'Relay: this computer (same network)'
-}
-
-function homeHtml () {
-  const { name, tool } = me()
-  const saved = state.defaults.relay // your hosted relay, from `cowove relay set` or this form
-  const relayMode = recall('relayMode', saved ? 'remote' : 'host')
-  const running = [...state.sessions.values()]
-  const recent = state.recent.slice(0, 3)
-  return `
-  <main class="home">
-    <section class="hero${running.length || recent.length ? ' small' : ''}">
-      <img src="/logo.svg" alt="">
-      <div class="wordmark">co<i>wo</i>ve</div>
-      <p class="tagline">Code together in real time, each in your own AI tool.</p>
-    </section>
-
-    ${running.length || recent.length ? `
-    <section class="resume">
-      <h3 class="section-title">Pick up where you left off</h3>
-      <div class="list">
-        ${running.map((s) => `
-        <button class="card list-item" data-go="${s.id}">
-          <div class="folder-ico live">${I.folder}</div>
-          <div class="meta"><div class="name">${esc(basename(s.dir))}</div><div class="sub">Running · ${s.status.peers.length ? `${s.status.peers.length} other${s.status.peers.length === 1 ? '' : 's'} here` : 'just you so far'}</div></div>
-          <span class="go">Open</span>
-        </button>`).join('')}
-        ${recent.map((r) => `
-        <button class="card list-item" data-rejoin="${esc(r.dir)}">
-          <div class="folder-ico">${I.folder}</div>
-          <div class="meta"><div class="name">${esc(basename(r.dir))}</div><div class="sub">${esc(tildify(r.dir))} · ${esc(ago(r.lastUsed))}</div></div>
-          <span class="go">Rejoin</span>
-        </button>`).join('')}
-      </div>
-    </section>` : ''}
-
-    <section class="choices">
-      <form class="card choice" id="create-form" autocomplete="off">
-        <h2>Start a session</h2>
-        <p>Pick a project folder. You'll get an invite to send.</p>
-        <div class="field">
-          <label for="c-dir">Project folder</label>
-          <div class="row"><input class="input grow" id="c-dir" name="dir" placeholder="~/code/my-app" value="${esc(tildify(recall('createDir', state.defaults.cwd || '')))}" required>
-          <button type="button" class="btn icon" data-browse="c-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
-        </div>
-        <button class="btn primary full" type="submit">Start session</button>
-        <p class="error" id="create-error"></p>
-        <details class="more">
-          <summary><span id="relay-summary">${relaySummary()}</span> · <u>change</u></summary>
-          <div class="segmented" role="tablist">
-            <button type="button" data-relay="remote" class="${relayMode === 'remote' ? 'on' : ''}">Hosted relay</button>
-            <button type="button" data-relay="host" class="${relayMode === 'host' ? 'on' : ''}">This computer</button>
-          </div>
-          <div id="relay-host" ${relayMode === 'host' ? '' : 'hidden'}>
-            <div class="field">
-              <label for="c-public">Public address <span class="hint">(only if your partner is elsewhere)</span></label>
-              <input class="input" id="c-public" name="publicUrl" placeholder="wss://your-tunnel.trycloudflare.com" value="${esc(recall('publicUrl'))}">
-              <span class="hint">Run <code>cloudflared tunnel --url http://localhost:4321</code> and paste the https address it prints.</span>
-            </div>
-          </div>
-          <div id="relay-remote" ${relayMode === 'remote' ? '' : 'hidden'}>
-            <div class="field">
-              <label for="c-server">Relay address</label>
-              <input class="input" id="c-server" name="server" placeholder="wss://relay.example.com" value="${esc(saved ? saved.url : recall('server'))}" autocomplete="off" spellcheck="false">
-              <span class="hint" id="relay-check">${saved ? 'Your default relay' : 'Anyone you invite connects here too. See docs/hosting.md to run your own.'}</span>
-            </div>
-            <div class="field">
-              <label for="c-key">Relay key <span class="hint">(only if your relay needs one)</span></label>
-              <input class="input" id="c-key" name="relayKey" type="password" autocomplete="off" placeholder="${saved && saved.hasKey ? 'Saved' : 'Not needed for most relays'}">
-            </div>
-            <label class="check"><input type="checkbox" name="saveDefault" ${saved ? '' : 'checked'}> Make this my default relay</label>
-          </div>
-        </details>
-      </form>
-
-      <form class="card choice" id="join-form" autocomplete="off">
-        <h2>Join a session</h2>
-        <p>Paste the invite your partner sent you.</p>
-        <div class="field">
-          <label for="j-invite">Invite</label>
-          <textarea class="input mono" id="j-invite" name="invite" rows="2" placeholder="cowove join eyJz…" required></textarea>
-          <span class="hint" id="invite-hint" hidden></span>
-        </div>
-        <button class="btn primary full" type="submit">Join session</button>
-        <p class="error" id="join-error"></p>
-        <details class="more" id="join-more">
-          <summary>Files go to <span id="j-dir-summary">a new folder in ~/cowove</span> · <u>change</u></summary>
-          <div class="field">
-            <label for="j-dir">Put the project in</label>
-            <div class="row"><input class="input grow" id="j-dir" name="dir" placeholder="~/cowove/their-app">
-            <button type="button" class="btn icon" data-browse="j-dir" title="Browse" aria-label="Browse">${I.folder}</button></div>
-            <span class="hint">An empty folder is best. It fills with their files.</span>
-          </div>
-          <label class="check"><input type="checkbox" name="preferLocal"> Keep my versions of files already in this folder</label>
-        </details>
-      </form>
-    </section>
-
-    <div class="identity" id="identity">
-      <span>You'll show up as <b>${esc(name)}</b>, coding with <b>${esc(tool)}</b>.</span>
-      <button type="button" class="linkish" id="edit-identity">Change</button>
-      <form class="identity-edit" id="identity-form" hidden>
-        <input class="input" name="name" value="${esc(name)}" aria-label="Your name" required>
-        <select class="input" name="tool" aria-label="AI tool">${toolOptions(tool)}</select>
-        <button class="btn sm primary" type="submit">Save</button>
-      </form>
-    </div>
-
-    ${running.length ? '' : `<p class="footer-note"><button class="btn sm ghost" data-shutdown>${I.power}<span>Shut down cowove</span></button></p>`}
-  </main>`
-}
-
-function bindHome () {
-  const create = $('#create-form')
-  const join = $('#join-form')
-  if (!create) return
-
-  let relayMode = recall('relayMode', state.defaults.relay ? 'remote' : 'host')
-  const updateRelay = () => { $('#relay-summary').innerHTML = relaySummary() }
-  create.querySelectorAll('[data-relay]').forEach((b) => {
-    b.onclick = () => {
-      relayMode = b.dataset.relay
-      remember('relayMode', relayMode)
-      create.querySelectorAll('[data-relay]').forEach((x) => x.classList.toggle('on', x === b))
-      $('#relay-host').hidden = relayMode !== 'host'
-      $('#relay-remote').hidden = relayMode !== 'remote'
-      updateRelay()
-    }
-  })
-  $('#c-public').onchange = (e) => { remember('publicUrl', e.target.value.trim()); updateRelay() }
-  const serverInput = $('#c-server')
-  const checkRelay = async () => {
-    const url = serverInput.value.trim()
-    const hint = $('#relay-check')
-    if (!url) return
-    hint.className = 'hint'
-    hint.textContent = 'Checking…'
-    try {
-      const r = await api('POST', '/api/relay/check', { url })
-      hint.className = 'hint ok'
-      hint.textContent = `✓ Online · ${r.latencyMs} ms${r.requiresKey ? ' · needs a relay key to start sessions' : ''}`
-    } catch (err) {
-      hint.className = 'hint warn'
-      hint.textContent = err.message
-    }
-  }
-  serverInput.onchange = () => { remember('server', serverInput.value.trim()); updateRelay(); checkRelay() }
-  document.querySelectorAll('[data-browse]').forEach((b) => {
-    b.onclick = async () => {
-      const input = $(`#${b.dataset.browse}`)
-      const before = input.value
-      await pickFolder(input)
-      if (b.dataset.browse === 'j-dir' && input.value !== before) { joinDirTouched = true; syncJoinDir() }
-    }
-  })
-
-  let joinDirTouched = false
-  const syncJoinDir = () => { $('#j-dir-summary').textContent = $('#j-dir').value || 'a new folder in ~/cowove' }
-  $('#j-dir').addEventListener('input', () => { joinDirTouched = true; syncJoinDir() })
-  $('#j-invite').addEventListener('input', (e) => {
-    const inv = e.target.value.trim()
-    const hint = $('#invite-hint')
-    const d = inv && decodeInvite(inv)
-    hint.hidden = !inv || !!d
-    hint.className = 'hint warn'
-    hint.textContent = 'That doesn’t look like a cowove invite. Copy the whole thing they sent.'
-    if (d && !joinDirTouched) { $('#j-dir').value = `~/cowove/${d.room}`; syncJoinDir() }
-  })
-
-  const idForm = $('#identity-form')
-  $('#edit-identity').onclick = () => { idForm.hidden = !idForm.hidden; if (!idForm.hidden) idForm.name.focus() }
-  idForm.onsubmit = (e) => {
-    e.preventDefault()
-    remember('name', idForm.name.value.trim())
-    remember('tool', idForm.tool.value)
-    render()
-  }
-
-  create.onsubmit = async (e) => {
-    e.preventDefault()
-    const f = new FormData(create)
-    const who = me()
-    remember('createDir', f.get('dir'))
-    const server = (f.get('server') || '').trim()
-    const saveDefault = relayMode === 'remote' && !!f.get('saveDefault') && !!server
-    if (saveDefault) state.defaults.relay = { url: server, hasKey: !!f.get('relayKey') || !!state.defaults.relay?.hasKey }
-    await submit(create, '#create-error', {
-      mode: 'create', dir: f.get('dir'), name: who.name, tool: who.tool,
-      hostRelay: relayMode === 'host', publicUrl: recall('publicUrl'), server,
-      relayKey: f.get('relayKey') || undefined, saveDefault
-    })
-  }
-  join.onsubmit = async (e) => {
-    e.preventDefault()
-    const f = new FormData(join)
-    const d = decodeInvite(f.get('invite') || '')
-    if (!d) { $('#join-error').textContent = 'Paste the invite your partner sent you.'; return }
-    const dir = (f.get('dir') || '').trim() || `~/cowove/${d.room}`
-    const who = me()
-    await submit(join, '#join-error', {
-      mode: 'join', invite: f.get('invite'), dir, name: who.name, tool: who.tool,
-      prefer: f.get('preferLocal') ? 'local' : 'remote'
-    })
-  }
-  document.querySelectorAll('[data-rejoin]').forEach((b) => {
-    b.onclick = async () => {
-      const label = b.querySelector('.go')
-      b.disabled = true
-      label.textContent = 'Connecting…'
-      try {
-        const sum = await api('POST', '/api/sessions', { mode: 'rejoin', dir: b.dataset.rejoin })
-        state.sessions.set(sum.id, sum)
-        await go(sum.id)
-      } catch (err) {
-        toast(err.message)
-        b.disabled = false
-        label.textContent = 'Rejoin'
-      }
-    }
-  })
-}
-
-async function submit (form, errSel, body) {
-  const btn = form.querySelector('button[type=submit]')
-  const label = btn.textContent
-  btn.disabled = true
-  btn.textContent = 'Connecting…'
-  $(errSel).textContent = ''
-  try {
-    const sum = await api('POST', '/api/sessions', body)
-    state.sessions.set(sum.id, sum)
-    await go(sum.id)
-  } catch (err) {
-    $(errSel).textContent = err.message
-    btn.disabled = false
-    btn.textContent = label
-  }
-}
-
 // -------------------------------------------------------- folder picker --
-async function pickFolder (input) {
+export async function pickFolder (input) {
   const back = document.createElement('div')
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="pick-title">
