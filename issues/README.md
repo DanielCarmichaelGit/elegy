@@ -11,7 +11,7 @@ the commit, so the history stays in one place.
 | [002](002-cloud-sessions-dont-share.md) | Cloud sessions (Claude Code / Cursor cloud) share nothing | Diagnosed; fix needs a public relay (deploy) |
 | [003](003-claude-code-not-offered.md) | "Open in Claude Code" missing when Claude Code is installed | Open; detection only finds the desktop app |
 | [004](004-open-in-cursor-wrong-folder.md) | "Open in Cursor" opens Cursor but not the session folder | **Fixed** (748a583): opens a classic Cursor window on the folder |
-| [005](005-website-needs-signed-identities.md) | The website and relay-hosted AI tools can't join since identities became signed | Open |
+| [005](005-website-needs-signed-identities.md) | The website and relay-hosted AI tools can't join since identities became signed | Won't fix: browser version shelved; relay-hosted AI moves to 002 |
 
 Feature ideas (not bugs) go in [unlocks.md](unlocks.md).
 

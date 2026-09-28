@@ -1,6 +1,6 @@
 # 005: The website and the relay-hosted AI tools can't join sessions since identities became signed
 
-**Status:** Open · **Reported:** 2026-09-28 · **Seen on:** `npm test` after merging the website branch into main
+**Status:** Won't fix (the browser version of the app was shelved on 2026-09-28; the relay-hosted AI part moves to the agents work in [002](002-cloud-sessions-dont-share.md)) · **Reported:** 2026-09-28 · **Seen on:** `npm test` after merging the website branch into main
 
 ## What happens
 
