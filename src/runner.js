@@ -9,6 +9,7 @@ import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { keyFor } from './settings.js'
+import { createSummarizer } from './summarize.js'
 
 /**
  * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
@@ -21,7 +22,7 @@ export function encodeInvite (c) {
 
 /** Reads an invite link (or an older base64 invite code), with or without "cowove join" in front. */
 export function decodeInvite (code) {
-  const raw = String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, '').split(/\s/)[0]
+  const raw = String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
   const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
   if (m) {
     try {
@@ -36,12 +37,14 @@ export function decodeInvite (code) {
   return { server: j.s, room: j.r, secret: j.k || '' }
 }
 
+/** A new room: `secret` invites people to edit, `viewSecret` to only watch. */
 export function newConn (server, key = keyFor(server)) {
   return {
     server,
     ...(key ? { key } : {}),
     room: `room-${crypto.randomBytes(4).toString('hex')}`,
-    secret: crypto.randomBytes(18).toString('base64url')
+    secret: crypto.randomBytes(18).toString('base64url'),
+    viewSecret: crypto.randomBytes(18).toString('base64url')
   }
 }
 
@@ -66,7 +69,7 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -76,15 +79,20 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
   const invite = encodeInvite({ ...conn, server: inviteServer || conn.server })
+  // Only the person who made the room has the view-only secret.
+  const viewInvite = conn.viewSecret ? encodeInvite({ ...conn, secret: conn.viewSecret, server: inviteServer || conn.server }) : null
   const previous = readConfig(dir)
   // Sharing your AI chat follows your setting; a pause or resume is remembered for this folder.
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
+  const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
   fs.mkdirSync(path.join(dir, '.cowove'), { recursive: true })
   fs.writeFileSync(path.join(dir, '.cowove', 'config.json'),
-    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent }, null, 2), { mode: 0o600 })
+    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize }, null, 2), { mode: 0o600 })
   ensureGitExclude(dir)
 
   const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent })
+  const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
+  if (summarize) session.summarizer = summarizer()
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
@@ -99,7 +107,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
     await session.stop().catch(() => {})
     throw err
   }
-  const control = await startControl(session, { invite })
+  const control = await startControl(session, { invite, viewInvite, joined })
   remember({ dir, room: conn.room, server: conn.server, name, tool })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.
@@ -117,6 +125,8 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   return {
     session,
     invite,
+    viewInvite,
+    summarizer,
     dir,
     stop: async () => {
       if (stopped) return

@@ -4,6 +4,12 @@
 // room's claims, so only the person who made a claim can release it. Safe to
 // run on the public internet: rooms need their secret, creating rooms can
 // require a relay key, and rooms have size quotas.
+//
+// Access: a room created with a view-only secret has an owner (the first
+// person to sign in) who approves everyone else and gives them a role:
+// editors change files, viewers only watch and chat, and agents can be
+// limited to some folders. The relay enforces it by undoing file changes a
+// member isn't allowed to make, before anyone else sees them.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -14,16 +20,19 @@ import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL,
+  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
-import { patternsOverlap } from './fsutil.js'
+import { patternsOverlap, globMatcher } from './fsutil.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
 const MAX_PATTERN = 500
+const MAX_SCOPES = 20
+const ROLES = ['editor', 'viewer']
 const MB = 1024 * 1024
 const DAY = 24 * 60 * 60 * 1000
 const LOGO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'logo.svg')
@@ -70,11 +79,22 @@ class Room {
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, pattern, note, ts }
+    this.meta.members = this.meta.members || {} // public key -> { name, kind, role, scopes, since }
+    this.access = new Map() // ws -> { key, name, kind, role, scopes, owner } for people in the room
+    this.pending = new Map() // ws -> { key, name, kind, invitedAs, since } waiting for the owner
+    this.files = this.doc.getMap('files')
+    this.blobs = this.doc.getMap('blobs')
+    // Undoes file changes from people who may not make them (viewers, and
+    // agents outside their folders). Only their connections are tracked.
+    this.guard = new Y.UndoManager([this.files, this.blobs], { trackedOrigins: new Set(), captureTimeout: 0 })
+    this.undoing = null
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
 
-    this.doc.on('update', (update, origin) => {
+    this.doc.on('update', (update, origin, doc, tr) => {
+      if (origin === this.guard && this.undoing) { this.undoing.push(update); return } // sent merged, below
+      if (origin && origin !== this.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr)) return
       const msg = updateMessage(update)
       for (const ws of this.conns.keys()) if (ws !== origin) send(ws, msg)
       this.bytes += update.length
@@ -98,19 +118,177 @@ class Room {
 
   get exists () { return !!this.meta.secretHash }
 
+  /** Rooms made by newer clients have an owner who approves people. Older rooms let everyone edit. */
+  get controlled () { return !!this.meta.viewSecretHash }
+
   /**
-   * First client to open a room sets its secret; later clients must match.
-   * Returns 'ok', 'bad-secret' or 'need-key' (creating rooms needs the relay key).
+   * First client to open a room sets its secrets; later clients must match one.
+   * Returns 'editor' or 'viewer' (what the secret invites you as), 'bad-secret'
+   * or 'need-key' (creating rooms needs the relay key).
    */
-  authorize (secret, key) {
+  authorize (secret, key, viewSecret = '') {
     if (!this.meta.secretHash) {
       if (this.cfg.relayKey && !sameSecret(hash(key || ''), hash(this.cfg.relayKey))) return 'need-key'
       this.meta.secretHash = hash(secret || '').toString('hex')
+      if (viewSecret) this.meta.viewSecretHash = hash(viewSecret).toString('hex')
       this.meta.createdAt = Date.now()
       this.touch()
-      return 'ok'
+      return 'editor'
     }
-    return sameSecret(hash(secret || ''), Buffer.from(this.meta.secretHash, 'hex')) ? 'ok' : 'bad-secret'
+    if (sameSecret(hash(secret || ''), Buffer.from(this.meta.secretHash, 'hex'))) return 'editor'
+    if (this.controlled && sameSecret(hash(secret || ''), Buffer.from(this.meta.viewSecretHash, 'hex'))) return 'viewer'
+    return 'bad-secret'
+  }
+
+  /** Where someone stands when they sign in: let in now (with a role), or wait for the owner. */
+  accessFor (key, name, kind, invitedAs) {
+    if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false }
+    if (!this.meta.owner) { this.meta.owner = key; this.saveMeta() } // the room's creator signs in first
+    if (this.meta.owner === key) return { state: 'approved', role: 'editor', scopes: [], owner: true }
+    const m = this.meta.members[key]
+    if (m) {
+      if (m.name !== name || m.kind !== kind) { m.name = name; m.kind = kind; this.saveMeta() }
+      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false }
+    }
+    return { state: 'pending', invitedAs }
+  }
+
+  /** May this connection change this file? */
+  mayWrite (a, rel) {
+    if (!a || a.role === 'viewer') return false
+    return !a.scopes || !a.scopes.length || a.scopes.some((s) => globMatcher(s)(rel))
+  }
+
+  /**
+   * A restricted member (viewer, or agent limited to folders) changed the doc.
+   * Returns true to pass it on, or false after scheduling an undo because it
+   * touched files they may not change. The undo runs once the guard has
+   * recorded the change, whichever order Yjs fires its events in.
+   */
+  checkChange (ws, update, tr) {
+    const a = this.access.get(ws)
+    const touched = new Set()
+    for (const [type, events] of tr.changedParentTypes) {
+      if (type !== this.files && type !== this.blobs) continue
+      for (const e of events) {
+        if (e.target === type) for (const k of e.changes.keys.keys()) touched.add(k)
+        else {
+          // A change inside a file's text: walk up to the entry in files.
+          let t = e.target
+          while (t && t._item && t._item.parent !== type) t = t._item.parent
+          if (t && t._item && t._item.parentSub) touched.add(t._item.parentSub)
+        }
+      }
+    }
+    const refused = [...touched].filter((rel) => !this.mayWrite(a, rel))
+    if (!refused.length) { queueMicrotask(() => this.guard.clear()); return true }
+    this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
+    queueMicrotask(() => {
+      // Send the change and its undo as one update: nobody sees the change,
+      // and nobody is left missing part of this person's history.
+      this.undoing = []
+      try { this.guard.undo() } finally {
+        const merged = Y.mergeUpdates([update, ...this.undoing])
+        this.undoing = null
+        const msg = updateMessage(merged)
+        for (const other of this.conns.keys()) send(other, msg)
+      }
+      this.guard.clear()
+      const why = a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
+      send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refused: refused.slice(0, 20), why }))
+    })
+    return false
+  }
+
+  accessMessage (a) {
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], owner: !!a.owner, controlled: this.controlled }
+  }
+
+  /** Tracks restricted connections so their file changes are checked. */
+  setAccess (ws, a) {
+    this.access.set(ws, a)
+    const restricted = a.role === 'viewer' || (a.scopes && a.scopes.length)
+    if (restricted) this.guard.trackedOrigins.add(ws)
+    else this.guard.trackedOrigins.delete(ws)
+  }
+
+  memberList () {
+    const online = new Map()
+    for (const a of this.access.values()) online.set(a.key, true)
+    const list = []
+    if (this.meta.owner) {
+      const ownerName = Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
+      list.push({ key: this.meta.owner, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.meta.owner) })
+    }
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, role: m.role, scopes: m.scopes || [], online: online.has(key) })
+    return list
+  }
+
+  pendingList () {
+    return [...this.pending.values()].map((p) => ({ key: p.key, name: p.name, kind: p.kind, invitedAs: p.invitedAs, since: p.since }))
+  }
+
+  /** Sends everyone the member list; only the owner sees who's waiting. */
+  broadcastMembers (replyTo = null, reply = null) {
+    if (!this.controlled) return
+    const members = this.memberList()
+    const pending = this.pendingList()
+    for (const [ws, a] of this.access) {
+      const msg = { members, ...(a.owner ? { pending } : {}), ...(ws === replyTo && reply ? { reply } : {}) }
+      send(ws, jsonMessage(MSG_MEMBERS, msg))
+    }
+  }
+
+  /** Owner-only changes to who's in the room. Returns the reply fields. */
+  adminRequest (ws, req) {
+    const me = this.access.get(ws)
+    if (!me || !me.owner) throw new Error('only the session owner can do that')
+    const key = String(req.key || '')
+    const role = ROLES.includes(req.role) ? req.role : null
+    const scopes = Array.isArray(req.scopes)
+      ? req.scopes.map((s) => String(s).trim().replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean).slice(0, MAX_SCOPES)
+      : null
+    if (scopes && scopes.some((s) => s.length > MAX_PATTERN || s.split('/').includes('..'))) throw new Error('bad folder')
+    if (key === this.meta.owner) throw new Error('the owner always has full access')
+    const waiting = [...this.pending].find(([, p]) => p.key === key)
+    if (req.op === 'approve') {
+      if (!waiting) throw new Error('nobody with that key is waiting')
+      const [pws, p] = waiting
+      this.pending.delete(pws)
+      this.meta.members[key] = { name: p.name, kind: p.kind, role: role || p.invitedAs, scopes: scopes || [], since: Date.now() }
+      this.saveMeta()
+      this.log(`[${this.name}] ${p.name} approved as ${this.meta.members[key].role}`)
+      this.enter(pws, { key, name: p.name, kind: p.kind, role: this.meta.members[key].role, scopes: this.meta.members[key].scopes, owner: false })
+      return { ok: true }
+    }
+    if (req.op === 'deny') {
+      if (!waiting) throw new Error('nobody with that key is waiting')
+      this.pending.delete(waiting[0])
+      waiting[0].close(CLOSE_DENIED, 'The session owner did not let you in')
+      return { ok: true }
+    }
+    const m = this.meta.members[key]
+    if (!m) throw new Error('no such member')
+    if (req.op === 'set') {
+      if (role) m.role = role
+      if (scopes) m.scopes = scopes
+      this.saveMeta()
+      for (const [cws, a] of this.access) {
+        if (a.key !== key) continue
+        a.role = m.role
+        a.scopes = m.scopes
+        this.setAccess(cws, a)
+        send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+      }
+      return { ok: true }
+    }
+    if (req.op === 'remove') {
+      delete this.meta.members[key]
+      this.saveMeta()
+      for (const [cws, a] of this.access) if (a.key === key) cws.close(CLOSE_DENIED, 'The session owner removed you')
+      return { ok: true }
+    }
+    throw new Error('unknown request')
   }
 
   touch () {
@@ -202,16 +380,19 @@ class Room {
    * Challenges the client to prove it holds the key for its name, then lets
    * it into the room. Nothing else is accepted until then.
    */
-  admit (ws, name, publicKey, key, onJoin) {
+  admit (ws, name, publicKey, key, { kind = 'human', invitedAs = 'editor' } = {}, onJoin) {
     clearTimeout(this.unloadTimer)
     const nonce = crypto.randomBytes(32)
     let joined = false
+    let waiting = false
     ws.on('message', (data) => {
       const buf = new Uint8Array(data)
-      if (joined) {
+      if (joined || this.access.has(ws)) {
+        joined = true
         try { this.handle(ws, buf) } catch (err) { this.log(`[${this.name}] bad message: ${err.message}`) }
         return
       }
+      if (waiting) return // nothing counts until the owner lets them in
       try {
         const dec = decoding.createDecoder(buf)
         if (decoding.readVarUint(dec) !== MSG_AUTH) throw new Error('not signed in')
@@ -223,12 +404,33 @@ class Room {
       // Re-check: someone else may have taken the name while we waited.
       if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
       this.bindName(name, publicKey)
+      const acc = this.accessFor(publicKey, name, kind, invitedAs)
+      if (acc.state === 'pending') {
+        waiting = true
+        this.pending.set(ws, { key: publicKey, name, kind, invitedAs, since: Date.now() })
+        this.log(`[${this.name}] ${name} is waiting to be let in`)
+        send(ws, jsonMessage(MSG_ACCESS, { state: 'pending', invitedAs, controlled: true }))
+        this.broadcastMembers()
+        onJoin()
+        return
+      }
       joined = true
-      this.join(ws, name)
+      this.enter(ws, { key: publicKey, name, kind, role: acc.role, scopes: acc.scopes, owner: acc.owner })
       onJoin()
     })
-    ws.on('close', () => { if (joined) this.leave(ws) })
+    ws.on('close', () => {
+      if (this.pending.delete(ws)) this.broadcastMembers()
+      if (this.access.has(ws) || this.conns.has(ws)) this.leave(ws)
+    })
     send(ws, bytesMessage(MSG_AUTH, nonce))
+  }
+
+  /** Lets a signed-in (and, if needed, approved) person into the room. */
+  enter (ws, a) {
+    this.setAccess(ws, a)
+    send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    this.join(ws, a.name)
+    this.broadcastMembers()
   }
 
   join (ws, name) {
@@ -245,6 +447,10 @@ class Room {
     const ids = this.conns.get(ws)
     this.conns.delete(ws)
     this.names.delete(ws)
+    if (this.access.delete(ws)) {
+      this.guard.trackedOrigins.delete(ws)
+      this.broadcastMembers()
+    }
     if (ids && ids.size) awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null)
     if (this.conns.size === 0) {
       this.save()
@@ -289,12 +495,24 @@ class Room {
       for (const other of this.conns.keys()) {
         send(other, jsonMessage(MSG_CLAIMS, other === ws ? { claims, reply } : { claims }))
       }
+    } else if (type === MSG_ADMIN) {
+      let req = {}
+      let reply
+      try {
+        req = JSON.parse(decoding.readVarString(dec))
+        reply = { id: req.id, ...this.adminRequest(ws, req) }
+      } catch (err) {
+        reply = { id: req.id, ok: false, error: err.message }
+      }
+      if (reply.ok) this.broadcastMembers(ws, reply)
+      else send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), ...(this.access.get(ws)?.owner ? { pending: this.pendingList() } : {}), reply }))
     }
   }
 
   destroy () {
     clearTimeout(this.unloadTimer)
     this.save()
+    this.guard.destroy()
     this.awareness.destroy()
     this.doc.destroy()
   }
@@ -380,7 +598,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const [, name, id] = m
     const room = getRoom(name)
     const auth = room.authorize(req.headers['x-cowove-secret'] || '', req.headers['x-cowove-key'] || '')
-    if (auth !== 'ok') {
+    if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
     }
@@ -408,12 +626,14 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const person = (url.searchParams.get('name') || '').trim()
     const publicKey = url.searchParams.get('key') || ''
     const relayKey = url.searchParams.get('relayKey') || req.headers['x-cowove-key'] || ''
+    const viewSecret = url.searchParams.get('viewSecret') || ''
+    const kind = url.searchParams.get('kind') === 'agent' ? 'agent' : 'human'
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
     const ip = clientIp(req)
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
-    const auth = room.authorize(secret, relayKey)
-    if (auth !== 'ok') {
+    const auth = room.authorize(secret, relayKey, viewSecret)
+    if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
     }
@@ -430,7 +650,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (n) ipConns.set(ip, n)
         else ipConns.delete(ip)
       })
-      room.admit(ws, person, publicKey, key, () => {
+      room.admit(ws, person, publicKey, key, { kind, invitedAs: auth }, () => {
         log(`[${name}] ${person} connected (${room.conns.size} online)`)
         ws.on('close', () => log(`[${name}] ${person} left (${room.conns.size} online)`))
         if (room.full) log(`[${name}] ${person} joined while over quota (read-only)`)
@@ -539,32 +759,42 @@ img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.
 .ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
 p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
 
-/** Where an invite link lands in a browser: says how to open it in cowove. */
+const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/elegy/releases/latest/download'
+
+/** Where an invite link lands in a browser: opens the cowove app, or offers to download it. */
 function joinPage (room) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>Join on cowove</title><link rel="icon" href="/logo.svg">
 <style>${PAGE_STYLE}
-ol{text-align:left;color:var(--muted);margin:20px 0 0;padding-left:20px}li{margin:8px 0}li b{color:var(--text)}
-.box{display:flex;gap:8px;align-items:center;background:var(--code);border-radius:10px;padding:8px 8px 8px 12px;margin-top:18px;text-align:left}
-.box code{flex:1;min-width:0;overflow-wrap:anywhere;font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
-button{border:0;border-radius:8px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:600;padding:8px 14px;cursor:pointer}
+.btn{display:block;width:100%;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:650;padding:12px 16px;margin-top:22px;cursor:pointer;text-decoration:none;font-size:16px}
+.btn.alt{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:10px;font-size:15px}
+.dl{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px}.dl a{font-weight:600}
+.small{font-size:13px}
+details{margin-top:18px;text-align:left;color:var(--muted);font-size:13px}summary{cursor:pointer;text-align:center}
+code.block{display:block;background:var(--code);border-radius:8px;padding:8px 10px;margin-top:8px;overflow-wrap:anywhere;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
 </style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>You're invited to code together</h1>
-<p>Someone invited you to the cowove session <b>${room}</b>.</p>
-<div class="box"><code id="link"></code><button id="copy">Copy</button></div>
-<ol>
-<li>Open cowove (run <code>cowove ui</code>), choose <b>Join a session</b> and paste this link.</li>
-<li>Or in a terminal, in the folder you want the project in: <code id="cmd">cowove join &lt;this link&gt;</code></li>
-</ol>
-<p>New to cowove? <a href="https://github.com/DanielCarmichaelGit/elegy#quick-start">Install it</a> (takes a minute), then come back to this page.</p>
+<p>Join the cowove session <b>${room}</b>.</p>
+<a class="btn" id="open" href="#">Open in cowove</a>
+<p id="missing" hidden>This link is missing its secret. Ask for the full invite link.</p>
+<div id="get">
+<p>Don't have cowove yet? Download it, open it, then click <b>Open in cowove</b> again.</p>
+<div class="dl" id="dl">
+<a href="${DOWNLOADS}/cowove-mac-arm64.dmg">Mac (Apple silicon)</a> ·
+<a href="${DOWNLOADS}/cowove-mac-x64.dmg">Mac (Intel)</a> ·
+<a href="${DOWNLOADS}/cowove-windows-x64.exe">Windows</a>
+</div>
+<p class="small">On a Mac, the first time you open it macOS may say it can't check cowove. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>.</p>
+</div>
+<details><summary>Use the terminal instead</summary>
+In the folder where you want the project, run:<code class="block" id="cmd"></code>
+<button class="btn alt" id="copy">Copy invite link</button></details>
 </div><script>
 const link = location.href
-document.getElementById('link').textContent = link
-document.getElementById('cmd').textContent = 'cowove join ' + link
-if (!location.hash) document.getElementById('link').textContent = link + '  (this link is missing its secret; ask for the full link)'
+document.getElementById('open').href = 'cowove://join?invite=' + encodeURIComponent(link)
+document.getElementById('cmd').textContent = 'cowove join "' + link + '"'
+if (!location.hash) { document.getElementById('missing').hidden = false; document.getElementById('open').hidden = true }
 document.getElementById('copy').onclick = async (e) => {
-  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch {
-    const r = document.createRange(); r.selectNodeContents(document.getElementById('link')); getSelection().removeAllRanges(); getSelection().addRange(r)
-  }
+  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch { prompt('Copy this link:', link) }
 }
 </script></body></html>`
 }

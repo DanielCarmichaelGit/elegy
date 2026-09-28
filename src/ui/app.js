@@ -1,7 +1,7 @@
 // cowove app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
 import { TOKEN, I, state, $, esc, basename, toast, api, decodeInvite, remember, recall } from './common.js'
-import { renderShell } from './home.js'
+import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 
 // ---------------------------------------------------------------- boot --
@@ -21,6 +21,7 @@ async function boot () {
     if (isSession(state.view)) await loadMessages(state.view)
     connectEvents()
     render()
+    window.cowoveDesktop?.onInvite(openInviteLink)
   } catch (err) {
     renderLocked(err.message)
   }
@@ -170,8 +171,20 @@ export function bindTopbar () {
   })
 }
 
+// In the desktop app, clicking an invite link opens the join dialog with it filled in.
+async function openInviteLink (link) {
+  document.querySelectorAll('.modal-back').forEach((m) => m.remove())
+  if (state.view !== 'home') await go('home')
+  joinSessionDialog(link)
+}
+
 // -------------------------------------------------------- folder picker --
 export async function pickFolder (input) {
+  if (window.cowoveDesktop) {
+    const dir = await window.cowoveDesktop.pickFolder(input.value)
+    if (dir) { input.value = dir; input.dispatchEvent(new Event('input', { bubbles: true })) }
+    return
+  }
   const back = document.createElement('div')
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="pick-title">
@@ -227,14 +240,14 @@ export function openInvite (id) {
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
     <h3 id="inv-title">Invite someone</h3>
-    <p class="lead">Send them this link. They paste it into <b>Join a session</b> in cowove, or run the command in a terminal. Opening it in a browser explains what to do.</p>
-    <div class="label" style="margin-bottom:6px">Invite link</div>
+    <p class="lead">Send them a link. They paste it into <b>Join a session</b> in cowove, or run <code>cowove join &lt;link&gt;</code>. Opening it in a browser explains what to do.</p>
+    <div class="label" style="margin-bottom:6px">${s.viewInvite ? 'Can edit' : 'Invite link'}</div>
     <div class="codebox"><code id="inv-code">${esc(s.invite)}</code><button class="btn icon" data-copy="inv-code" title="Copy" aria-label="Copy invite link">${I.copy}</button></div>
-    <div class="label" style="margin-bottom:6px">Or in a terminal</div>
-    <div class="codebox"><code id="inv-cmd">cowove join ${esc(s.invite)}</code><button class="btn icon" data-copy="inv-cmd" title="Copy" aria-label="Copy command">${I.copy}</button></div>
+    ${s.viewInvite ? `<div class="label" style="margin-bottom:6px">View only</div>
+    <div class="codebox"><code id="inv-view">${esc(s.viewInvite)}</code><button class="btn icon" data-copy="inv-view" title="Copy" aria-label="Copy view-only link">${I.copy}</button></div>` : ''}
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
     ${local ? '<p class="hint warn">This is a local-network address. If your partner is somewhere else, run <code>cloudflared tunnel --url http://localhost:4321</code> and start a new session with the tunnel address as the public address (or use a hosted relay).</p>' : ''}
-    <p class="hint">Anyone with this link can edit the project. Only share it with people you trust.</p>
+    <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later from the people menu.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`
   document.body.appendChild(back)

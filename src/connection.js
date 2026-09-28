@@ -6,7 +6,8 @@ import WebSocket from 'ws'
 import crypto from 'node:crypto'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL,
+  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -24,14 +25,18 @@ export class Connection extends EventEmitter {
    * @param {string} opts.secret
    * @param {string} opts.name       who we are in the room
    * @param {{ publicKey: string, privateKey: string }} opts.identity  proves the name is ours
+   * @param {string} [opts.viewSecret]  when creating a room: the secret for view-only invites
+   * @param {'human'|'agent'} [opts.kind]
    * @param {import('yjs').Doc} opts.doc
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    */
-  constructor ({ server, room, secret, key, name, identity, doc, beforeRemote }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote }) {
     super()
     // `key` (the relay key) is only needed to create a room on a relay that requires one.
-    const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey })
+    const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey, kind })
     if (key) q.set('relayKey', key)
+    if (viewSecret) q.set('viewSecret', viewSecret)
+    this.access = null // what the relay says we may do: { state, role, scopes, owner, controlled }
     this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
     this.room = room
     this.identity = identity
@@ -90,7 +95,10 @@ export class Connection extends EventEmitter {
     ws.on('error', (err) => this.emit('warn', `connection error: ${err.message}`))
 
     ws.on('close', (code, reason) => {
-      if (code === CLOSE_AUTH_FAILED || code === CLOSE_NAME_TAKEN) {
+      if (code === CLOSE_DENIED) {
+        this.emit('fatal', Object.assign(new Error(String(reason) || 'The session owner did not let you in'), { denied: true }))
+        this.close()
+      } else if (code === CLOSE_AUTH_FAILED || code === CLOSE_NAME_TAKEN) {
         this.emit('fatal', new Error(`Relay refused connection: ${String(reason) || 'identity check failed'}`))
         this.close()
       } else if (code === CLOSE_ROOM_FULL) {
@@ -123,10 +131,15 @@ export class Connection extends EventEmitter {
     const nonce = decoding.readVarUint8Array(dec)
     this.ws.send(bytesMessage(MSG_AUTH, signChallenge(this.identity, this.room, nonce)))
     // The relay handles messages in order, so we can start syncing right away.
+    // (If we have to wait for the owner, it ignores this and we start again once let in.)
     this.authed = true
     this.connected = true
     this.backoff = 500
     this.emit('status', 'connected')
+    this.startSync()
+  }
+
+  startSync () {
     this.send(syncStep1Message(this.doc))
     if (this.awareness.getLocalState() !== null) {
       this.send(awarenessMessage(this.awareness, [this.doc.clientID]))
@@ -155,31 +168,48 @@ export class Connection extends EventEmitter {
       awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(dec), REMOTE)
     } else if (type === MSG_QUERY_AWARENESS) {
       this.send(awarenessMessage(this.awareness, [...this.awareness.getStates().keys()]))
+    } else if (type === MSG_ACCESS) {
+      const was = this.access
+      this.access = JSON.parse(decoding.readVarString(dec))
+      if (was && was.state === 'pending' && this.access.state === 'approved') this.startSync()
+      this.emit('access', this.access)
+    } else if (type === MSG_MEMBERS) {
+      const msg = JSON.parse(decoding.readVarString(dec))
+      this.emit('members', msg)
+      this.settle(msg.reply, 'request refused')
     } else if (type === MSG_CLAIMS) {
       const { claims, reply } = JSON.parse(decoding.readVarString(dec))
       this.emit('claims', claims)
-      const r = reply && this.requests.get(reply.id)
-      if (r) {
-        clearTimeout(r.timer)
-        this.requests.delete(reply.id)
-        if (reply.ok) r.resolve(reply)
-        else r.reject(new Error(reply.error || 'claim refused'))
-      }
+      this.settle(reply, 'claim refused')
     }
   }
 
-  /** Asks the relay to claim or release; resolves with its reply. Claims need a live connection. */
-  claimRequest (req) {
+  settle (reply, fallback) {
+    const r = reply && this.requests.get(reply.id)
+    if (!r) return
+    clearTimeout(r.timer)
+    this.requests.delete(reply.id)
+    if (reply.ok) r.resolve(reply)
+    else r.reject(new Error(reply.error || fallback))
+  }
+
+  request (type, req, what) {
     if (!this.authed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error('not connected to the relay; claims need a connection'))
+      return Promise.reject(new Error(`not connected to the relay; ${what} need a connection`))
     }
     const id = crypto.randomBytes(8).toString('hex')
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.requests.delete(id); reject(new Error('the relay did not answer')) }, REQUEST_TIMEOUT_MS)
       this.requests.set(id, { resolve, reject, timer })
-      this.send(jsonMessage(MSG_CLAIM, { id, ...req }))
+      this.send(jsonMessage(type, { id, ...req }))
     })
   }
+
+  /** Asks the relay to claim or release; resolves with its reply. Claims need a live connection. */
+  claimRequest (req) { return this.request(MSG_CLAIM, req, 'claims') }
+
+  /** Owner only: approve, deny, change or remove someone. */
+  adminRequest (req) { return this.request(MSG_ADMIN, req, 'changes to who is in the session') }
 
   send (msg) {
     if (this.authed && this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(msg)
