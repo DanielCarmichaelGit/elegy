@@ -911,20 +911,36 @@ export class Session extends EventEmitter {
   }
 
   shareAgentEntries (entries) {
-    const mine = new Set()
-    for (const e of this.agentFeed) if (e && e.by === this.name) mine.add(e.id)
+    const indexById = new Map()
+    this.agentFeed.forEach((e, i) => { if (e && e.by === this.name && e.id) indexById.set(e.id, i) })
     const fresh = []
+    const replacements = []
     for (const e of entries) {
-      if (!e || !e.id || mine.has(e.id)) continue
-      mine.add(e.id)
-      fresh.push({ id: String(e.id), by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text: String(e.text || ''), ts: e.ts || Date.now(), ...(e.summary ? { summary: e.summary } : {}) })
+      if (!e || !e.id) continue
+      const id = String(e.id)
+      const text = String(e.text || '')
+      const existing = indexById.get(id)
+      if (existing != null) {
+        const cur = this.agentFeed.get(existing)
+        // A later read can clean text that was already shared (same id). Leave summaries alone.
+        if (cur && !cur.summary && cur.text !== text) replacements.push({ index: existing, entry: { ...cur, text } })
+        continue
+      }
+      indexById.set(id, -1)
+      fresh.push({ id, by: this.name, tool: e.tool || null, conv: e.conv || null, kind: e.kind, text, ts: e.ts || Date.now(), ...(e.summary ? { summary: e.summary } : {}) })
     }
-    if (!fresh.length) return 0
+    if (!fresh.length && !replacements.length) return 0
     this.doc.transact(() => {
-      this.agentFeed.push(fresh)
-      this.trimAgentFeed()
+      for (const r of replacements.sort((a, b) => b.index - a.index)) {
+        this.agentFeed.delete(r.index, 1)
+        this.agentFeed.insert(r.index, [r.entry])
+      }
+      if (fresh.length) {
+        this.agentFeed.push(fresh)
+        this.trimAgentFeed()
+      }
     }, LOCAL)
-    return fresh.length
+    return fresh.length + replacements.length
   }
 
   trimAgentFeed (cap = AGENT_FEED_CAP) {
