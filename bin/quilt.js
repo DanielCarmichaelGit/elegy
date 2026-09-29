@@ -110,17 +110,24 @@ async function apiCmd () {
     console.log('in-memory mode: use "Authorization: Bearer local" as the signed-in user')
   } else {
     for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'AGENT_KEY_SECRET', 'QUILT_SITE_URL']) if (!env[k]) fail(`${k} is not set`)
+    // It encrypts every agent's private key, so it must be a real random key.
+    const secret = env.AGENT_KEY_SECRET.trim()
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(secret) || Buffer.from(secret, 'base64').length < 32) {
+      fail('AGENT_KEY_SECRET must be at least 32 random bytes, base64-encoded; make one with: openssl rand -base64 32')
+    }
     const { createSupabaseStore } = await import('../src/api/supabase-store.js')
     const { createUserVerifier } = await import('../src/api/auth.js')
     store = createSupabaseStore({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY })
     verifyUser = createUserVerifier({ supabaseUrl: env.SUPABASE_URL })
   }
+  // In memory anyone may use "Bearer local", so only listen on this machine unless asked.
+  const host = values.host || (values.memory ? '127.0.0.1' : '0.0.0.0')
   const api = await startApi({
-    port: Number(values.port || env.PORT || 8787), host: values.host || '0.0.0.0', store, verifyUser,
+    port: Number(values.port || env.PORT || 8787), host, store, verifyUser,
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000', agentKeySecret: env.AGENT_KEY_SECRET || 'dev-only-secret',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
   })
-  console.log(`quilt accounts API listening on :${api.port}`)
+  console.log(`quilt accounts API listening on ${api.url}`)
   const shutdown = async () => { await api.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
 }
