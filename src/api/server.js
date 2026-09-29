@@ -44,10 +44,11 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (link.status === 'consumed' || (link.status === 'pending' && link.expiresAt < now())) throw new HttpError(410, 'expired')
       if (link.status === 'denied') throw new HttpError(403, 'denied')
       if (link.status === 'pending') return [202, { status: 'pending' }]
-      // Approved: mint the device token now, so it only ever exists in this response.
+      // Approved: claim the link before minting, so two polls racing on the same
+      // link can't both win a token — only the caller that flips it gets one.
+      if (!await store.claimLink(link.id, 'approved', 'consumed')) throw new HttpError(410, 'expired')
       const token = newToken('qd_')
       await store.setDeviceToken(link.deviceId, hashToken(token))
-      await store.updateLink(link.id, { status: 'consumed' })
       return { status: 'approved', token, profile: await store.profile(link.userId) }
     }],
 

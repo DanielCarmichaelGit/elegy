@@ -18,6 +18,14 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async linkByDeviceCode (h) { const l = [...links.values()].find((x) => x.deviceCodeHash === h); return l ? { ...l } : null },
     async linkByUserCode (c) { const l = [...links.values()].find((x) => x.userCode === c); return l ? { ...l } : null },
     async updateLink (id, patch) { const l = links.get(id); Object.assign(l, patch); return { ...l } },
+    // Check-and-set: only flips status if it's still fromStatus, so two concurrent
+    // callers can't both win the same link (e.g. handing out a device token twice).
+    async claimLink (id, fromStatus, toStatus) {
+      const l = links.get(id)
+      if (!l || l.status !== fromStatus) return false
+      l.status = toStatus
+      return true
+    },
     async upsertDevice ({ userId, name, platform, publicKey }) {
       let d = [...devices.values()].find((x) => x.publicKey === publicKey)
       if (d) Object.assign(d, { userId, name, platform, revokedAt: null })

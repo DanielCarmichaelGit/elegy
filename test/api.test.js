@@ -50,6 +50,36 @@ test('linking a computer: start, see it on the website, approve, then the app ge
   assert.equal((await call('POST', '/v1/device/poll', { deviceCode: start.body.deviceCode })).status, 410, 'the token is handed out once')
 })
 
+test('two polls racing on the same approved link: only one wins a token', async () => {
+  // Wrap the store so linkByDeviceCode awaits a tick, giving both concurrent
+  // polls time to read 'approved' before either claims it, like a real DB round-trip.
+  const slow = { ...store, linkByDeviceCode: async (h) => { const l = await store.linkByDeviceCode(h); await new Promise((r) => setImmediate(r)); return l } }
+  const raceApi = await startApi({ store: slow, verifyUser, siteUrl: SITE, agentKeySecret: 'test-secret' })
+  try {
+    const raceCall = async (method, path, body, token) => {
+      const res = await fetch(raceApi.url + path, {
+        method,
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), origin: SITE },
+        body: body ? JSON.stringify(body) : undefined
+      })
+      return { status: res.status, body: await res.json().catch(() => null) }
+    }
+    const { publicKey } = generateIdentity()
+    const start = await raceCall('POST', '/v1/device/start', { publicKey, deviceName: 'Race', platform: 'linux' })
+    await raceCall('POST', '/v1/device/approve', { userCode: start.body.userCode, approve: true }, 'user:u1')
+    const [a, b] = await Promise.all([
+      raceCall('POST', '/v1/device/poll', { deviceCode: start.body.deviceCode }),
+      raceCall('POST', '/v1/device/poll', { deviceCode: start.body.deviceCode })
+    ])
+    const statuses = [a.status, b.status].sort()
+    assert.deepEqual(statuses, [200, 410])
+    const winner = a.status === 200 ? a : b
+    assert.match(winner.body.token, /^qd_/)
+  } finally {
+    await raceApi.close()
+  }
+})
+
 test('a denied or expired link never yields a token', async () => {
   const { publicKey } = generateIdentity()
   const a = await call('POST', '/v1/device/start', { publicKey, deviceName: 'X', platform: 'linux' })

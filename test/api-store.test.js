@@ -26,6 +26,15 @@ test('links are found by device code and by user code', async () => {
   assert.equal((await s.linkByUserCode('AAAA-BBBB')).status, 'approved')
 })
 
+test('claimLink only changes status once', async () => {
+  const s = createMemoryStore()
+  const l = await s.createLink({ deviceCodeHash: 'dh2', userCode: 'CCCC-DDDD', publicKey: 'pk', deviceName: 'Mac', platform: 'darwin', expiresAt: Date.now() + 1000 })
+  await s.updateLink(l.id, { status: 'approved' })
+  assert.equal(await s.claimLink(l.id, 'approved', 'consumed'), true)
+  assert.equal((await s.linkByDeviceCode('dh2')).status, 'consumed')
+  assert.equal(await s.claimLink(l.id, 'approved', 'consumed'), false)
+})
+
 test('profiles, and agents only their owner can list or revoke', async () => {
   const s = createMemoryStore()
   s.addUser('u1', { name: 'Dana' }); s.addUser('u2', { name: 'Eli' })
