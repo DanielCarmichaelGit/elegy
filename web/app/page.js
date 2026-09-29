@@ -13,7 +13,8 @@ const STEPS = [
 ]
 const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'VS Code', 'Zed']
 
-export default async function Home () {
+export default async function Home ({ searchParams }) {
+  const q = await searchParams
   const ua = (await headers()).get('user-agent') || ''
   const main = downloadFor(ua)
   const others = Object.values(DOWNLOADS).filter((d) => d !== main)
@@ -22,6 +23,7 @@ export default async function Home () {
     <>
       <Header signedIn={!!user} />
       <main className='wrap page'>
+        {q.deleted && <p className='notice'>Your Quilt account was deleted.</p>}
         <section className='stack' style={{ alignItems: 'center', textAlign: 'center', padding: '56px 0 40px' }}>
           <Mark sew className='hero-mark' />
           <h1 style={{ maxWidth: 760 }}>Build one project together, live — everyone in their own AI.</h1>

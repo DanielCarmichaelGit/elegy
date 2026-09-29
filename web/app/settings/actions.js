@@ -23,8 +23,10 @@ export async function saveProfile (formData) {
 export async function signOutEverywhere () {
   const user = await requireUser('/settings')
   const supabase = await createClient()
-  await supabase.from('devices').update({ revoked_at: new Date().toISOString() }).eq('user_id', user.id).is('revoked_at', null)
-  await supabase.auth.signOut({ scope: 'global' })
+  const { error: devicesError } = await supabase.from('devices').update({ revoked_at: new Date().toISOString() }).eq('user_id', user.id).is('revoked_at', null)
+  if (devicesError) redirect('/settings?error=signout')
+  const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' })
+  if (signOutError) redirect('/settings?error=signout')
   redirect('/')
 }
 

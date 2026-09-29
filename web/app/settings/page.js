@@ -5,7 +5,7 @@ import { TOOLS } from '@/lib/tools.js'
 import { saveProfile, signOutEverywhere, deleteAccount } from './actions.js'
 
 export const metadata = { title: 'Settings' }
-const ERRORS = { profile: 'Check your name, colour and tool.', confirm: 'Type delete to confirm.', delete: 'Couldn’t delete your account. Try again.' }
+const ERRORS = { profile: 'Check your name, colour and tool.', confirm: 'Type delete to confirm.', delete: 'Couldn’t delete your account. Try again.', signout: 'Couldn’t sign out your computers. Try again.' }
 
 export default async function Settings ({ searchParams }) {
   const q = await searchParams
@@ -37,7 +37,7 @@ export default async function Settings ({ searchParams }) {
           <form action={signOutEverywhere}><button className='btn'>Sign out everywhere</button></form>
           <form action={deleteAccount} className='stack'>
             <p className='muted'>Deleting your account removes your profile, unlinks your computers and deletes your agents. Your project files aren’t touched.</p>
-            <div className='row'><input className='input' name='confirm' placeholder='Type delete' /><button className='btn danger'>Delete account</button></div>
+            <div className='row'><input className='input' name='confirm' placeholder='Type delete' aria-label='Type delete to confirm' /><button className='btn danger'>Delete account</button></div>
           </form>
         </section>
       </main>
