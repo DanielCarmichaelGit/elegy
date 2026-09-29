@@ -28,7 +28,7 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .field label { font-size: 13px; font-weight: 500; color: var(--muted); }
 .input { height: 42px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--panel); font: inherit; color: var(--text); }
 .input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color: var(--accent); }
-.pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+.pill { display: inline-block; align-self: flex-start; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
 .notice { padding: 12px 14px; border-radius: 8px; background: var(--panel-2); }
 .notice.bad { color: var(--bad); }
 .site-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
