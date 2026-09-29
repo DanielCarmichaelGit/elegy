@@ -89,8 +89,12 @@ grant select (id, user_id, name, platform, public_key, created_at, last_seen_at,
 grant update (name, revoked_at) on public.devices to authenticated;
 grant select (id, owner_id, name, key_prefix, public_key, created_at, last_used_at, revoked_at) on public.agents to authenticated;
 grant update (revoked_at) on public.agents to authenticated;
-revoke all on public.profiles from anon;
-grant select, update (name, color, tool, updated_at) on public.profiles to authenticated;
+revoke all on public.profiles from anon, authenticated;
+grant select (id, name, color, tool, created_at, updated_at) on public.profiles to authenticated;
+grant update (name, color, tool) on public.profiles to authenticated;
+
+-- The API is trusted with everything; don't depend on project default privileges.
+grant all on public.profiles, public.devices, public.device_links, public.agents, public.agent_rooms to service_role;
 
 -- A profile for every new account, named from the sign-in provider or the email.
 create function public.handle_new_user () returns trigger
@@ -101,3 +105,26 @@ begin
   return new;
 end $$;
 create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_new_user();
+
+-- Keep updated_at current ourselves; clients don't have write access to it.
+create function public.touch_updated_at () returns trigger
+language plpgsql security invoker set search_path = '' as $$
+begin
+  new.updated_at = now();
+  return new;
+end $$;
+create trigger profiles_touch_updated_at before update on public.profiles for each row execute function public.touch_updated_at();
+
+-- Revocation is one-way for clients: once revoked_at is set, an authenticated
+-- client can't clear it. The API's service role relinks with an un-revoke, so
+-- it must be exempt.
+create function public.prevent_client_unrevoke () returns trigger
+language plpgsql security invoker set search_path = '' as $$
+begin
+  if old.revoked_at is not null and new.revoked_at is null and auth.role() = 'authenticated' then
+    raise exception 'cannot un-revoke';
+  end if;
+  return new;
+end $$;
+create trigger devices_prevent_client_unrevoke before update on public.devices for each row execute function public.prevent_client_unrevoke();
+create trigger agents_prevent_client_unrevoke before update on public.agents for each row execute function public.prevent_client_unrevoke();
