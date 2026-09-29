@@ -97,3 +97,53 @@ test('bad requests are refused', async () => {
   assert.equal((await call('POST', '/v1/device/poll', { deviceCode: 'nope' })).status, 404)
   assert.equal((await call('GET', '/v1/device/link/AAAA-AAAA', null, 'user:u1')).status, 404)
 })
+
+async function linkedDevice (userId) {
+  const { publicKey } = generateIdentity()
+  const s = await call('POST', '/v1/device/start', { publicKey, deviceName: 'Mac', platform: 'darwin' })
+  await call('POST', '/v1/device/approve', { userCode: s.body.userCode, approve: true }, `user:${userId}`)
+  return (await call('POST', '/v1/device/poll', { deviceCode: s.body.deviceCode })).body.token
+}
+
+test('the app reads and edits its profile with its device token, and signing out revokes it', async () => {
+  const token = await linkedDevice('u2')
+  assert.equal((await call('GET', '/v1/me', null, token)).body.profile.name, 'Eli')
+  const put = await call('PUT', '/v1/me/profile', { name: 'Eli M', color: '#2F5D62', tool: 'Cursor', extra: 'ignored' }, token)
+  assert.deepEqual([put.body.profile.name, put.body.profile.color, put.body.profile.tool], ['Eli M', '#2F5D62', 'Cursor'])
+  assert.equal((await call('PUT', '/v1/me/profile', { color: 'red' }, token)).status, 400)
+  assert.equal((await call('POST', '/v1/me/signout', {}, token)).status, 200)
+  assert.equal((await call('GET', '/v1/me', null, token)).status, 401)
+})
+
+test('agents: created by their owner with a key shown once, listed without secrets, revoked', async () => {
+  const made = await call('POST', '/v1/agents', { name: 'Larry' }, 'user:u1')
+  assert.equal(made.status, 200)
+  assert.match(made.body.key, /^qa_/)
+  assert.equal(made.body.agent.name, 'Larry')
+  assert.equal(made.body.agent.keyPrefix, made.body.key.slice(0, 8))
+  const list = await call('GET', '/v1/agents', null, 'user:u1')
+  assert.equal(list.body.agents.length, 1)
+  assert.equal(JSON.stringify(list.body).includes(made.body.key), false)
+  assert.equal((await call('DELETE', `/v1/agents/${made.body.agent.id}`, null, 'user:u2')).status, 404)
+  assert.equal((await call('DELETE', `/v1/agents/${made.body.agent.id}`, null, 'user:u1')).status, 200)
+  assert.equal((await call('POST', '/v1/agents', { name: '' }, 'user:u1')).status, 400)
+  assert.equal((await call('POST', '/v1/agents', { name: 'x' })).status, 401)
+})
+
+test('browsers: only the website origin gets CORS headers', async () => {
+  const ok = await fetch(api.url + '/v1/agents', { method: 'OPTIONS', headers: { origin: SITE } })
+  assert.equal(ok.headers.get('access-control-allow-origin'), SITE)
+  const other = await fetch(api.url + '/v1/agents', { method: 'OPTIONS', headers: { origin: 'https://evil.test' } })
+  assert.equal(other.headers.get('access-control-allow-origin'), null)
+})
+
+test('starting links is rate-limited per address', async () => {
+  const limited = await startApi({ store: createMemoryStore(), verifyUser, siteUrl: SITE, agentKeySecret: 's', startLimit: 2 })
+  try {
+    const { publicKey } = generateIdentity()
+    const go = () => fetch(limited.url + '/v1/device/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ publicKey, deviceName: 'X' }) })
+    assert.equal((await go()).status, 200)
+    assert.equal((await go()).status, 200)
+    assert.equal((await go()).status, 429)
+  } finally { await limited.close() }
+})

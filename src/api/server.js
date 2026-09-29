@@ -4,6 +4,7 @@
 import http from 'node:http'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
 import { parsePublicKey } from '../identity.js'
+import { newAgentIdentity } from './agent-keys.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 const POLL_INTERVAL_S = 3
@@ -11,7 +12,7 @@ const MAX_BODY = 16 * 1024
 
 class HttpError extends Error { constructor (status, message) { super(message); this.status = status } }
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, now = Date.now, log = () => {} }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, now = Date.now, log = () => {}, startLimit = 10, trustProxy = false }) {
   const site = String(siteUrl || '').replace(/\/+$/, '')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
@@ -21,10 +22,36 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return u
   }
 
+  async function device (req) {
+    const d = await store.deviceByToken(hashToken(bearer(req)))
+    if (!d) throw new HttpError(401, 'this computer is signed out')
+    await store.touchDevice(d.id)
+    return d
+  }
+
+  // A few link requests per minute per address is plenty for a person.
+  const starts = new Map()
+  function limitStarts (req) {
+    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress
+    const recent = (starts.get(ip) || []).filter((t) => now() - t < 60_000)
+    if (recent.length >= startLimit) throw new HttpError(429, 'too many sign-in attempts; try again in a minute')
+    starts.set(ip, [...recent, now()])
+  }
+
+  const COLOR = /^#[0-9a-fA-F]{6}$/
+  function cleanProfile (b) {
+    const out = {}
+    if (b.name !== undefined) { const n = String(b.name).trim().slice(0, 60); if (!n) throw new HttpError(400, 'name is empty'); out.name = n }
+    if (b.color !== undefined) { if (b.color !== null && !COLOR.test(b.color)) throw new HttpError(400, 'color must be #RRGGBB'); out.color = b.color }
+    if (b.tool !== undefined) out.tool = b.tool === null ? null : String(b.tool).slice(0, 40)
+    return out
+  }
+
   const routes = [
     ['GET', /^\/healthz$/, async () => ({ ok: true })],
 
     ['POST', /^\/v1\/device\/start$/, async (req, body) => {
+      limitStarts(req)
       const { publicKey, deviceName, platform } = body
       if (!parsePublicKey(publicKey)) throw new HttpError(400, 'publicKey must be an Ed25519 key (spki, base64url)')
       const deviceCode = newToken('dc_')
@@ -65,6 +92,42 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       const device = await store.upsertDevice({ userId: u.userId, name: link.deviceName, platform: link.platform, publicKey: link.publicKey })
       await store.updateLink(link.id, { status: 'approved', userId: u.userId, deviceId: device.id })
       return { status: 'approved', device: { id: device.id, name: device.name } }
+    }],
+
+    ['GET', /^\/v1\/me$/, async (req) => {
+      const d = await device(req)
+      return { profile: await store.profile(d.userId), device: { id: d.id, name: d.name } }
+    }],
+
+    ['PUT', /^\/v1\/me\/profile$/, async (req, body) => {
+      const d = await device(req)
+      return { profile: await store.updateProfile(d.userId, cleanProfile(body)) }
+    }],
+
+    ['POST', /^\/v1\/me\/signout$/, async (req) => {
+      const d = await device(req)
+      await store.revokeDevice(d.id)
+      return { ok: true }
+    }],
+
+    ['POST', /^\/v1\/agents$/, async (req, body) => {
+      const u = await user(req)
+      const name = String(body.name || '').trim().slice(0, 40)
+      if (!name) throw new HttpError(400, 'give the agent a name')
+      const key = newToken('qa_')
+      const agent = await store.createAgent({ ownerId: u.userId, name, keyPrefix: key.slice(0, 8), keyHash: hashToken(key), ...newAgentIdentity(agentKeySecret) })
+      return { agent, key }
+    }],
+
+    ['GET', /^\/v1\/agents$/, async (req) => {
+      const u = await user(req)
+      return { agents: await store.listAgents(u.userId) }
+    }],
+
+    ['DELETE', /^\/v1\/agents\/([^/]+)$/, async (req, body, [id]) => {
+      const u = await user(req)
+      if (!await store.revokeAgent(u.userId, id)) throw new HttpError(404, 'no such agent')
+      return { ok: true }
     }]
   ]
 
