@@ -7,3 +7,7 @@
 
 [build.environment]
   NODE_VERSION = "22"
+
+# Netlify adds this runtime itself on its build servers; declaring it lets CLI deploys build the same way
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
