@@ -29,5 +29,5 @@ after(() => server?.kill())
 const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
-  for (const path of ['/pricing']) assert.equal((await get(path)).status, 200, path)
+  for (const path of ['/', '/pricing']) assert.equal((await get(path)).status, 200, path)
 })

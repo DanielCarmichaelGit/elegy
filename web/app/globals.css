@@ -61,3 +61,4 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .booting .qm-sym { width: 56px; height: 56px; }
 .qm-inline { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; margin-right: 8px; }
 .btn .qm-inline { margin-right: 6px; }
+.hero-mark .qm-word { height: 88px; width: auto; }
