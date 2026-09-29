@@ -1,4 +1,5 @@
 import Header from '@/components/Header.js'
+import SubmitButtons from '@/components/SubmitButtons.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { decide } from './actions.js'
@@ -16,7 +17,8 @@ export default async function LinkPage ({ searchParams }) {
   else {
     const r = code ? await apiCall(user, 'GET', `/v1/device/link/${encodeURIComponent(code)}`) : { ok: false, status: 404 }
     if (!r.ok) {
-      body = <><h2>That code didn't work</h2><p className='muted'>{r.status === 410 ? 'It expired or was already used.' : 'Check the code in the Quilt app, or start signing in again there.'}</p>{q.done === 'failed' && <p className='notice bad'>Something went wrong. Try again.</p>}</>
+      const errorMsg = r.status === 410 ? 'It expired or was already used.' : (r.status === 0 || r.status >= 500) ? 'Quilt is having trouble right now. Try again in a minute.' : 'Check the code in the Quilt app, or start signing in again there.'
+      body = <><h2>That code didn't work</h2><p className='muted'>{errorMsg}</p>{q.done === 'failed' && <p className='notice bad'>Something went wrong. Try again.</p>}</>
     } else {
       const d = r.data
       body = (
@@ -24,11 +26,12 @@ export default async function LinkPage ({ searchParams }) {
           <h2>Link this computer to your account?</h2>
           <p><b>{d.deviceName}</b> {PLATFORMS[d.platform] ? <span className='pill'>{PLATFORMS[d.platform]}</span> : null}</p>
           <p className='muted'>Check the Quilt app shows this code: <code style={{ fontSize: 16 }}>{d.userCode}</code></p>
+          <p className='muted'>Only approve if you just started signing in to Quilt on your own computer.</p>
           <p className='muted'>Signed in as {user.email}</p>
           <form action={decide} className='row'>
             <input type='hidden' name='code' value={d.userCode} />
-            <button className='btn primary' name='decision' value='approve'>Approve</button>
-            <button className='btn ghost' name='decision' value='deny'>Deny</button>
+            {q.done === 'failed' && <p className='notice bad'>That didn't go through. Try again.</p>}
+            <SubmitButtons />
           </form>
         </>
       )

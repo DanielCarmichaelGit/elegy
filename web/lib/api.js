@@ -1,3 +1,5 @@
+import 'server-only'
+
 // Calls the Quilt accounts API as the signed-in person (server-side only: the API
 // address and the person's token never need to reach the browser for this).
 export async function apiCall (user, method, path, body) {
