@@ -2,7 +2,8 @@
 [build]
   base = "web"
   command = "npm run build"
-  publish = ".next"
+  # Resolved from the repo root, not from base
+  publish = "web/.next"
 
 [build.environment]
   NODE_VERSION = "22"
