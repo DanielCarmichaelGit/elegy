@@ -12,9 +12,11 @@ test('isValidEmail accepts plausible emails and rejects the rest', () => {
   assert.equal(isValidEmail(null), false)
 })
 
-test('isValidPassword requires at least 8 characters', () => {
+test('isValidPassword requires between 8 and 72 characters', () => {
   assert.equal(isValidPassword('short1'), false)
   assert.equal(isValidPassword('longenough'), true)
   assert.equal(isValidPassword(''), false)
   assert.equal(isValidPassword(undefined), false)
+  assert.equal(isValidPassword('a'.repeat(72)), true)
+  assert.equal(isValidPassword('a'.repeat(73)), false)
 })

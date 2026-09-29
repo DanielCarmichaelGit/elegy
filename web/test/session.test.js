@@ -11,4 +11,10 @@ test('safeNext keeps same-site paths and rejects anything that could leave the s
   assert.equal(safeNext('https://x'), '/dashboard')
   assert.equal(safeNext('javascript:alert(1)'), '/dashboard')
   assert.equal(safeNext(undefined), '/dashboard')
+  // Normalisation can turn these into a pathname starting with // (or /\),
+  // which browsers/new URL treat as a protocol-relative https://evil.com/ URL.
+  assert.equal(safeNext('/.//evil.com'), '/dashboard')
+  assert.equal(safeNext('/..//evil.com'), '/dashboard')
+  assert.equal(safeNext('/a/..//evil.com'), '/dashboard')
+  assert.equal(safeNext('/./\\evil.com'), '/dashboard')
 })

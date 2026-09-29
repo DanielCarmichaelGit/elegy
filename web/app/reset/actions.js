@@ -10,6 +10,6 @@ export async function updatePassword (formData) {
   if (password !== confirm) redirect('/reset?error=match')
   const supabase = await createClient()
   const { error } = await supabase.auth.updateUser({ password })
-  if (error) redirect('/reset?error=generic')
+  if (error) redirect(`/reset?error=${error.code === 'same_password' ? 'same_password' : error.code === 'weak_password' ? 'weak_password' : 'generic'}`)
   redirect('/dashboard?password=1')
 }

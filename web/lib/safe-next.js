@@ -9,7 +9,11 @@ export function safeNext (n) {
   if (typeof n !== 'string') return '/dashboard'
   try {
     const u = new URL(n, BASE)
-    return u.origin === BASE ? u.pathname + u.search : '/dashboard'
+    if (u.origin !== BASE) return '/dashboard'
+    // A pathname starting with // (or /\, which browsers treat the same as //)
+    // is a protocol-relative URL: new URL('//evil.com', anything) resolves off-site.
+    if (u.pathname.startsWith('//') || u.pathname.startsWith('/\\')) return '/dashboard'
+    return u.pathname + u.search
   } catch {
     return '/dashboard'
   }
