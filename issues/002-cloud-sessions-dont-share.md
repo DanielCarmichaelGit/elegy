@@ -44,7 +44,7 @@ appear in the feed, and it can coordinate through Quilt's tools.
     is in. A cloud session with no tab open needs a way to pick the session:
     an `quilt_join` tool taking an invite link, or a token bound to one session.
 - **B. Run Quilt in the container.** A SessionStart hook that installs Quilt
-  (`npm i -g github:DanielCarmichaelGit/elegy`) and runs
+  (`npm i -g github:DanielCarmichaelGit/heyquilt`) and runs
   `quilt join "$QUILT_INVITE"` in the background, with the invite as an
   environment secret. The full chat reader works, and the container's files
   sync too. Heavier, and it needs network access to the relay and to GitHub/npm.
