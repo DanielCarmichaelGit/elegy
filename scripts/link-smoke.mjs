@@ -18,8 +18,11 @@ for (let i = 0; i < 200; i++) {
   if (p.s !== 200) { console.error('poll ended', p.s, p.b); process.exit(1) }
   console.log('ok   token received')
   const me = await call('GET', '/v1/me', null, p.b.token)
-  console.log(me.s === 200 ? `ok   signed in as ${me.b.profile.name}` : `FAIL me ${me.s}`)
-  console.log((await call('POST', '/v1/me/signout', {}, p.b.token)).s === 200 ? 'ok   signed out (the test computer is unlinked)' : 'FAIL signout')
-  process.exit(me.s === 200 ? 0 : 1)
+  const meOk = me.s === 200
+  console.log(meOk ? `ok   signed in as ${me.b?.profile?.name}` : `FAIL me ${me.s}`)
+  const signoutOk = (await call('POST', '/v1/me/signout', {}, p.b.token)).s === 200
+  console.log(signoutOk ? 'ok   signed out (the test computer is unlinked)' : 'FAIL signout')
+  // Either failure means the smoke test found a real problem: exit non-zero
+  process.exit(meOk && signoutOk ? 0 : 1)
 }
 console.error('timed out'); process.exit(1)

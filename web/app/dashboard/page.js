@@ -1,13 +1,16 @@
+import { headers } from 'next/headers'
 import Header from '@/components/Header.js'
 import NewAgent from '@/components/NewAgent.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
+import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
 import { unlinkComputer, revokeAgent } from './actions.js'
 
 export const metadata = { title: 'Dashboard' }
 const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
-const when = (t) => (t ? new Date(t).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' }) : 'never')
+// Renders on the server (UTC on Netlify), so pin the zone and label it rather than showing an unlabelled local time
+const when = (t) => (t ? new Date(t).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC', timeZoneName: 'short' }) : 'never')
 
 export default async function Dashboard () {
   const user = await requireUser('/dashboard')
@@ -16,6 +19,8 @@ export default async function Dashboard () {
   const { data: computers } = await supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false })
   const agentsRes = await apiCall(user, 'GET', '/v1/agents')
   const agents = (agentsRes.data?.agents || []).filter((a) => !a.revokedAt)
+  const ua = (await headers()).get('user-agent') || ''
+  const download = downloadFor(ua) || DOWNLOADS.macArm
   return (
     <>
       <Header signedIn />
@@ -28,7 +33,10 @@ export default async function Dashboard () {
           </div>
         </div>
         <section className='card stack'>
-          <h2>Your computers</h2>
+          <div className='row' style={{ justifyContent: 'space-between' }}>
+            <h2>Your computers</h2>
+            <a className='btn ghost' href={download.href}>{download.label}</a>
+          </div>
           {computers?.length
             ? computers.map((c) => (
               <div key={c.id} className='row' style={{ justifyContent: 'space-between' }}>
@@ -39,7 +47,7 @@ export default async function Dashboard () {
         </section>
         <section className='card stack'>
           <h2>Your agents</h2>
-          <p className='muted'>Agents join sessions as their own members, with an agent badge.</p>
+          <p className='muted'>Coming soon: agents will be able to join sessions as their own members, with an agent badge.</p>
           {!agentsRes.ok && <p className='notice bad'>Couldn’t load your agents right now.</p>}
           {agents.map((a) => (
             <div key={a.id} className='row' style={{ justifyContent: 'space-between' }}>

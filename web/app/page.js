@@ -47,8 +47,8 @@ export default async function Home ({ searchParams }) {
           <div className='row' style={{ justifyContent: 'center' }}>{TOOLS.map((t) => <span key={t} className='pill'>{t}</span>)}</div>
         </section>
         <section className='card stack' style={{ marginTop: 56 }}>
-          <h2>Agents can join too</h2>
-          <p className='muted'>Create an agent in your dashboard and give it an invite link. It joins the session as its own member — with an agent badge — reads and edits files, and chats with everyone.</p>
+          <h2>Agents will be able to join too</h2>
+          <p className='muted'>Coming soon: create an agent in your dashboard and give it an invite link. It will be able to join sessions as its own member — with an agent badge — reading and editing files, and chatting with everyone.</p>
           <div><Link className='btn' href='/signin'>Get started</Link></div>
         </section>
       </main>

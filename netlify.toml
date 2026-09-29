@@ -1,0 +1,8 @@
+# base is web because the repo root package.json belongs to the Electron app, not the website
+[build]
+  base = "web"
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
