@@ -15,6 +15,3 @@ export async function requireUser (nextPath) {
   if (!u) redirect(`/signin?next=${encodeURIComponent(nextPath)}`)
   return u
 }
-
-/** Only same-site paths are allowed as a place to return to after sign-in. */
-export const safeNext = (n) => (typeof n === 'string' && n.startsWith('/') && !n.startsWith('//') ? n : '/dashboard')

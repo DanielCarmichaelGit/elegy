@@ -24,7 +24,9 @@ export async function proxy (request) {
     to.pathname = '/signin'
     to.search = ''
     to.searchParams.set('next', path + request.nextUrl.search)
-    return NextResponse.redirect(to)
+    const redirectResponse = NextResponse.redirect(to)
+    for (const cookie of response.cookies.getAll()) redirectResponse.cookies.set(cookie)
+    return redirectResponse
   }
   return response
 }

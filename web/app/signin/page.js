@@ -1,10 +1,10 @@
 import Header from '@/components/Header.js'
 import { emailLink, provider } from './actions.js'
-import { safeNext } from '@/lib/session.js'
+import { safeNext } from '@/lib/safe-next.js'
 
 export const metadata = { title: 'Sign in' }
 const LABELS = { google: 'Continue with Google', github: 'Continue with GitHub' }
-const ERRORS = { email: 'That email doesn’t look right.', send: 'We couldn’t send the link. Try again in a minute.', provider: 'That sign-in option isn’t available.', link: 'That sign-in link expired or was already used. Send a new one.' }
+const ERRORS = { email: 'That email doesn’t look right.', send: 'We couldn’t send the link. Try again in a minute.', provider: 'That sign-in option isn’t available.', link: 'That sign-in link expired, was already used, or was opened in a different browser. Send a new one from this browser.' }
 
 export default async function SignIn ({ searchParams }) {
   const q = await searchParams
@@ -17,7 +17,7 @@ export default async function SignIn ({ searchParams }) {
         <div className='card stack'>
           <h2>Sign in to Quilt</h2>
           {q.sent
-            ? <p className='notice'>Check your email for a sign-in link.</p>
+            ? <p className='notice'>Check your email for a sign-in link. Open it on this device, in this browser.</p>
             : (
               <>
                 {providers.map((p) => (

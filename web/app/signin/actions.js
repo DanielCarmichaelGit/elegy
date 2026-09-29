@@ -2,11 +2,14 @@
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server.js'
-import { safeNext } from '@/lib/session.js'
+import { safeNext } from '@/lib/safe-next.js'
 
 async function origin () {
+  if (process.env.QUILT_SITE_URL) return process.env.QUILT_SITE_URL
+  if (process.env.NODE_ENV === 'production') throw new Error('QUILT_SITE_URL must be set in production — the request Host header is attacker-controlled.')
+  // Local dev only: no fixed site URL yet, so fall back to whatever host served the request.
   const h = await headers()
-  return process.env.QUILT_SITE_URL || `${h.get('x-forwarded-proto') || 'https'}://${h.get('host')}`
+  return `${h.get('x-forwarded-proto') || 'https'}://${h.get('host')}`
 }
 
 export async function emailLink (formData) {

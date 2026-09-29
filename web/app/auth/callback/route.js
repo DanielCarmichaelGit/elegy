@@ -1,7 +1,7 @@
 // Where email links and Google/GitHub send people back: trade the code for a session.
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server.js'
-import { safeNext } from '@/lib/session.js'
+import { safeNext } from '@/lib/safe-next.js'
 
 export async function GET (request) {
   const url = new URL(request.url)
