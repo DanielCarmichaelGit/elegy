@@ -1,0 +1,63 @@
+:root {
+  --bg: #f4efe6; --panel: #fffdf8; --panel-2: #f1ebe0; --text: #211d18; --muted: #6b6356;
+  --border: #e2d9c9; --border-strong: #cfc3ae; --accent: #b9432b; --ok: #3d7a4c; --bad: #b3372e;
+  --qm-a: #C4472F; --qm-b: #8F2F22; --qm-c: #2F5D62; --qm-g: #EADFCD;
+  --sans: var(--font-poppins), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.015em; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(32px, 5vw, 52px); } h2 { font-size: 26px; } h3 { font-size: 18px; }
+p { margin: 0; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+.wrap { width: min(1080px, 100% - 32px); margin: 0 auto; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--panel); color: var(--text); font: inherit; font-weight: 500; text-decoration: none; cursor: pointer; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--text); color: var(--bg); border-color: transparent; }
+.btn.primary:hover { background: #3a332b; }
+.btn.ghost { background: transparent; border-color: transparent; }
+.btn.danger { color: var(--bad); }
+.btn:disabled { opacity: .55; cursor: default; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 13px; font-weight: 500; color: var(--muted); }
+.input { height: 42px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--panel); font: inherit; color: var(--text); }
+.input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color: var(--accent); }
+.pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+.notice { padding: 12px 14px; border-radius: 8px; background: var(--panel-2); }
+.notice.bad { color: var(--bad); }
+.site-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+.site-header nav { display: flex; gap: 6px; align-items: center; }
+.site-header .brand .qm-word { height: 30px; width: auto; }
+.site-footer { border-top: 1px solid var(--border); margin-top: 80px; padding: 28px 0; color: var(--muted); font-size: 13px; }
+.page { padding: 32px 0 64px; }
+/* ---- The Quilt mark (mark.js): fabrics, sewing in once, and the loading animation ---- */
+.qm { display: block; overflow: visible; }
+.qm-a { fill: var(--qm-a); } .qm-b { fill: var(--qm-b); } .qm-c { fill: var(--qm-c); } .qm-g { fill: var(--qm-g); }
+.qm-w { fill: var(--text); }
+.qm-p { transform-box: fill-box; transform-origin: center; }
+/* Sewn in once: each patch drops into place round the Q, then the tail, then "uilt" appears. */
+.qm-sew .qm-p { opacity: 0; transform: scale(.35) rotate(-10deg); animation: qm-sew .42s cubic-bezier(.2, .9, .3, 1.25) forwards; animation-delay: calc(var(--o) * 34ms + 80ms); }
+.qm-sew .qm-w { opacity: 0; animation: qm-fade .45s ease-out .78s forwards; }
+@keyframes qm-sew { to { opacity: 1; transform: none; } }
+@keyframes qm-fade { to { opacity: 1; } }
+/* Loading: the Q pieces itself together patch by patch, holds, then unpicks in the same order. */
+.qm-loop .qm-p { opacity: 0; animation: qm-loop 2.6s ease-in-out infinite; animation-delay: calc(var(--o) * 48ms); }
+@keyframes qm-loop { 0% { opacity: 0; transform: scale(.35); } 12%, 58% { opacity: 1; transform: none; } 74%, 100% { opacity: 0; transform: scale(.55); } }
+@media (prefers-reduced-motion: reduce) {
+  .qm-sew .qm-p, .qm-sew .qm-w { animation: none; opacity: 1; transform: none; }
+  .qm-loop .qm-p { animation: qm-fade-pulse 1.6s ease-in-out infinite; opacity: 1; transform: none; }
+  @keyframes qm-fade-pulse { 50% { opacity: .45; } }
+}
+.brand .qm-word { height: 26px; width: auto; }
+.side .brand .qm-word { height: 30px; }
+.wordmark .qm-word { height: 72px; width: auto; margin: 0 auto; }
+.booting { min-height: 100vh; display: grid; place-items: center; }
+.booting .qm-sym { width: 56px; height: 56px; }
+.qm-inline { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; margin-right: 8px; }
+.btn .qm-inline { margin-right: 6px; }
