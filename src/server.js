@@ -844,7 +844,7 @@ img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.
 .ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
 p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
 
-const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/elegy/releases/latest/download'
+const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download'
 
 /** Where an invite link lands in a browser: opens the Quilt app, or offers to download it. */
 function joinPage (room) {

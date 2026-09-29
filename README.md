@@ -47,9 +47,9 @@ within milliseconds. Your agents can also see what the other agents are doing.
 
 ### Download the app
 
-Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/quilt-mac-arm64.dmg),
-[Mac (Intel)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/quilt-mac-x64.dmg) or
-[Windows](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/quilt-windows-x64.exe), and open it.
+Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-arm64.dmg),
+[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg) or
+[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe), and open it.
 Everything happens in the app: start a session, send the invite link, and
 partners click it to join. Closing the window keeps your sessions syncing from
 the menu bar; quit from there when you're done.

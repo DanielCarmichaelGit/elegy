@@ -53,7 +53,7 @@ Until the npm package exists, a Claude Code cloud environment can join like
 this:
 
 1. Allow the relay host in the environment's network settings.
-2. Setup script: `npm i -g github:DanielCarmichaelGit/elegy`.
+2. Setup script: `npm i -g github:DanielCarmichaelGit/heyquilt`.
 3. Keep `.mcp.json` registering `quilt mcp`, and ask the agent to call
    `quilt_join_session` with the invite (or start `quilt join <invite>` in the
    background from a SessionStart hook).
