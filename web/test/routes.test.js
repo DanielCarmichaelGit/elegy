@@ -31,3 +31,18 @@ const get = (path) => fetch(base + path, { redirect: 'manual' })
 test('public pages render', async () => {
   for (const path of ['/', '/pricing']) assert.equal((await get(path)).status, 200, path)
 })
+
+test('private pages send signed-out people to sign in, and come back after', async () => {
+  for (const path of ['/dashboard', '/settings', '/link?code=AAAA-BBBB']) {
+    const res = await get(path)
+    assert.equal(res.status, 307, path)
+    const to = new URL(res.headers.get('location'), base)
+    assert.equal(to.pathname, '/signin')
+    assert.equal(to.searchParams.get('next'), path)
+  }
+})
+
+test('the sign-in page renders with the email form', async () => {
+  const html = await (await get('/signin')).text()
+  assert.match(html, /type="email"/)
+})

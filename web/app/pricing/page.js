@@ -1,5 +1,6 @@
 import Header from '@/components/Header.js'
 import Footer from '@/components/Footer.js'
+import { currentUser } from '@/lib/session.js'
 
 export const metadata = { title: 'Pricing' }
 
@@ -9,10 +10,11 @@ const PLANS = [
   { name: 'Team', what: 'Per seat, with control over who reaches your sessions.' }
 ]
 
-export default function Pricing () {
+export default async function Pricing () {
+  const user = await currentUser()
   return (
     <>
-      <Header />
+      <Header signedIn={!!user} />
       <main className='wrap page stack'>
         <h1>Pricing is coming soon</h1>
         <p className='muted'>Quilt is free while we build it. These are the plans we're planning.</p>

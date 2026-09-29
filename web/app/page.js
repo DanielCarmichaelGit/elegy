@@ -4,6 +4,7 @@ import Header from '@/components/Header.js'
 import Footer from '@/components/Footer.js'
 import Mark from '@/components/Mark.js'
 import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
+import { currentUser } from '@/lib/session.js'
 
 const STEPS = [
   ['Start a session', 'Pick a project folder in the Quilt app.'],
@@ -16,9 +17,10 @@ export default async function Home () {
   const ua = (await headers()).get('user-agent') || ''
   const main = downloadFor(ua)
   const others = Object.values(DOWNLOADS).filter((d) => d !== main)
+  const user = await currentUser()
   return (
     <>
-      <Header />
+      <Header signedIn={!!user} />
       <main className='wrap page'>
         <section className='stack' style={{ alignItems: 'center', textAlign: 'center', padding: '56px 0 40px' }}>
           <Mark sew className='hero-mark' />
