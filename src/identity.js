@@ -1,4 +1,4 @@
-// Per-person identity: an Ed25519 key pair kept in ~/.cowove/identity.json.
+// Per-person identity: an Ed25519 key pair kept in ~/.quilt/identity.json.
 // The relay ties each name in a room to the first key that used it, and
 // checks a signature on every connect, so nobody can act under someone
 // else's name (for example to fake or release their claims).
@@ -6,10 +6,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { quiltHome } from './legacy.js'
 
 const AUTH_CONTEXT = 'cowove-auth-v1'
 
-export const identityFile = () => path.join(os.homedir(), '.cowove', 'identity.json')
+export const identityFile = () => path.join(quiltHome(), 'identity.json')
 
 export function generateIdentity () {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')

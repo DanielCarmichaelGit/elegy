@@ -13,10 +13,10 @@ seconds.
 ## What we know
 - Claude Code → Cursor works, so the relay, sessions and the feed UI work.
   The problem is on the Cursor user's machine: reading Cursor's chat history.
-- cowove reads Cursor's history from its SQLite files
+- Quilt reads Cursor's history from its SQLite files
   (`~/Library/Application Support/Cursor/User/...` on macOS). This only works
-  when cowove runs on the **same machine** as Cursor, via `cowove join` or
-  `cowove ui` (the terminal/local app), **not** the website.
+  when Quilt runs on the **same machine** as Cursor, via `quilt join` or
+  `quilt ui` (the terminal/local app), **not** the website.
 - Commit `4f60322` (2026-09-27) fixed two bugs that matched the first report
   (the reader stopped for good on "database is locked"; it missed most of
   each reply). That fix is only on branch `claude/cursor-deployment-chat-gul7ad`,
@@ -28,12 +28,12 @@ seconds.
   dev environment). The reader is tested against recreated Cursor databases.
 
 ## Likely causes, most likely first
-1. **Running old code.** The partner's cowove doesn't include `4f60322`.
+1. **Running old code.** The partner's Quilt doesn't include `4f60322`.
 2. **Node.js older than 22.13.** The Cursor reader needs `node:sqlite`.
    Without it the feed reports "unavailable" and shares nothing from Cursor.
 3. **Folder mismatch.** Cursor has the project open at a different path
-   (parent folder, symlink, other drive or case) than the folder cowove syncs,
-   so cowove finds no Cursor workspace for it.
+   (parent folder, symlink, other drive or case) than the folder Quilt syncs,
+   so Quilt finds no Cursor workspace for it.
 4. **Cursor changed its storage layout** in a version we haven't seen
    (e.g. chat text moved out of `text`). The reader then sees messages but
    finds no text to share.
@@ -44,7 +44,7 @@ seconds.
    `git fetch && git checkout claude/cursor-deployment-chat-gul7ad && npm install`.
 2. In the synced project folder, run:
    ```
-   cowove doctor --watch 30
+   quilt doctor --watch 30
    ```
    and send a message in Cursor while it runs. It prints counts and lengths
    only, never chat text, so the output is safe to paste into this issue.
@@ -59,4 +59,4 @@ seconds.
 
 ## Log
 - 2026-09-27: first report; fixed lock and polling bugs (`4f60322`).
-- 2026-09-28: still seen. Added `cowove doctor` to diagnose on the Cursor machine.
+- 2026-09-28: still seen. Added `quilt doctor` to diagnose on the Cursor machine.

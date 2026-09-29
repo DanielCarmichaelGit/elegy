@@ -38,7 +38,7 @@ they doing?" in a line or two.
   one request. Use prompt caching for the fixed instructions.
 - Turn boundaries: a `prompt` entry starts a turn; the turn ends at the next
   `prompt` or when the partner's agent state goes `idle`.
-- Config: `cowove summaries on --key <ANTHROPIC_API_KEY>` or the `ANTHROPIC_API_KEY`
+- Config: `quilt summaries on --key <ANTHROPIC_API_KEY>` or the `ANTHROPIC_API_KEY`
   environment variable; off by default. The UI shows a toggle when a key is set.
 - Fallback without a key: a cheap heuristic summary (first sentence of the
   prompt + counts of edited files and commands), so the UI can ship the
@@ -46,6 +46,6 @@ they doing?" in a line or two.
 
 ## Open questions
 
-- Should agents get summaries via MCP too (`cowove_partner_feed` with
+- Should agents get summaries via MCP too (`quilt_partner_feed` with
   `summary: true`)? Probably yes; it saves them tokens.
 - Per-person opt-out of being summarized?

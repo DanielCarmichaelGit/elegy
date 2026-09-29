@@ -9,12 +9,12 @@ export const MAX_BINARY_BYTES = 8 * 1024 * 1024
 // stay on each person's machine; Claude Code worktrees are whole private
 // copies of the project.
 export const ALWAYS_IGNORED = [
-  '.git', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db', '.claude/worktrees',
+  '.git', '.quilt', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db', '.claude/worktrees',
   '.env', '.env.*', '!.env.example',
   '*.swp', '*.swo', '*~', '.#*'
 ]
 
-/** An ignore matcher from the built-ins plus the text of .gitignore / .cowoveignore files. */
+/** An ignore matcher from the built-ins plus the text of .gitignore / .quiltignore files. */
 export function makeIgnore (texts = []) {
   const ig = ignore().add(ALWAYS_IGNORED)
   for (const t of texts) if (t) ig.add(t)
@@ -46,7 +46,7 @@ export function isSafeRelPath (rel) {
     if (part === '' || part === '.' || part === '..') return false
   }
   const first = parts[0].toLowerCase()
-  if (first === '.git' || first === '.cowove') return false
+  if (first === '.git' || first === '.quilt' || first === '.cowove') return false
   return true
 }
 

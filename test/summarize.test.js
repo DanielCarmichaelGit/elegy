@@ -39,7 +39,7 @@ test('summaries come from the CLI, short text is left alone, failures fall back 
 test('a session shares summaries instead of the words, in order', async () => {
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {} })
   const server = `ws://127.0.0.1:${srv.port}`
-  const mk = (name) => new Session({ dir: fs.mkdtempSync(path.join(os.tmpdir(), `cowove-sum-${name}-`)), server, room: 'sum', secret: 's', name, identity: generateIdentity() })
+  const mk = (name) => new Session({ dir: fs.mkdtempSync(path.join(os.tmpdir(), `quilt-sum-${name}-`)), server, room: 'sum', secret: 's', name, identity: generateIdentity() })
   const a = mk('ann')
   const b = mk('ben')
   await a.start({ waitTimeoutMs: 5000 })

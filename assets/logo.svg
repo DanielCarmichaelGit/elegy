@@ -1,22 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="cowove">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Quilt">
   <defs>
-    <linearGradient id="cowove-bg" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="quilt-bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#221d3a"/>
       <stop offset="1" stop-color="#110f1e"/>
     </linearGradient>
-    <linearGradient id="cowove-a" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="quilt-a" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffa26b"/>
       <stop offset="1" stop-color="#ff5c7a"/>
     </linearGradient>
-    <linearGradient id="cowove-b" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="quilt-b" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#8f7dff"/>
       <stop offset="1" stop-color="#4f8dff"/>
     </linearGradient>
-    <clipPath id="cowove-clip"><circle cx="48" cy="64" r="32"/></clipPath>
+    <clipPath id="quilt-clip"><circle cx="48" cy="64" r="32"/></clipPath>
   </defs>
-  <rect width="128" height="128" rx="30" fill="url(#cowove-bg)"/>
-  <circle cx="48" cy="64" r="32" fill="url(#cowove-a)"/>
-  <circle cx="80" cy="64" r="32" fill="url(#cowove-b)"/>
-  <circle cx="80" cy="64" r="32" fill="#fff4ea" clip-path="url(#cowove-clip)"/>
+  <rect width="128" height="128" rx="30" fill="url(#quilt-bg)"/>
+  <circle cx="48" cy="64" r="32" fill="url(#quilt-a)"/>
+  <circle cx="80" cy="64" r="32" fill="url(#quilt-b)"/>
+  <circle cx="80" cy="64" r="32" fill="#fff4ea" clip-path="url(#quilt-clip)"/>
   <rect x="61.75" y="49" width="4.5" height="30" rx="2.25" fill="#221d3a"/>
 </svg>

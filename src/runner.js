@@ -1,5 +1,5 @@
-// Starting and stopping a session for a folder. Shared by `cowove join` and
-// `cowove ui` so both behave identically (config, STATUS.md, control API).
+// Starting and stopping a session for a folder. Shared by `quilt join` and
+// `quilt ui` so both behave identically (config, STATUS.md, control API).
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -10,6 +10,7 @@ import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { keyFor } from './settings.js'
 import { createSummarizer } from './summarize.js'
+import { quiltHome, migrateDir } from './legacy.js'
 
 /**
  * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
@@ -20,9 +21,9 @@ export function encodeInvite (c) {
   return `${base}/join/${encodeURIComponent(c.room)}#${encodeURIComponent(c.secret || '')}`
 }
 
-/** Reads an invite link (or an older base64 invite code), with or without "cowove join" in front. */
+/** Reads an invite link (or an older base64 invite code), with or without "quilt join" in front. */
 export function decodeInvite (code) {
-  const raw = String(code).trim().replace(/^cowove join\s+/, '').replace(/^cowove:/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
+  const raw = String(code).trim().replace(/^quilt join\s+/, '').replace(/^quilt:/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
   const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
   if (m) {
     try {
@@ -49,13 +50,13 @@ export function newConn (server, key = keyFor(server)) {
 }
 
 export function readConfig (dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, '.cowove', 'config.json'), 'utf8')) } catch { return null }
+  try { return JSON.parse(fs.readFileSync(path.join(migrateDir(dir), 'config.json'), 'utf8')) } catch { return null }
 }
 
 /** True if another process is already syncing this exact folder. */
 export function runningElsewhere (dir) {
   try {
-    const info = JSON.parse(fs.readFileSync(path.join(dir, '.cowove', 'daemon.json'), 'utf8'))
+    const info = JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'daemon.json'), 'utf8'))
     if (info.pid === process.pid) return false
     process.kill(info.pid, 0)
     return true
@@ -74,7 +75,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder`)
-  if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another cowove process.')
+  if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another quilt process.')
 
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
@@ -85,8 +86,8 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   // Sharing your AI chat follows your setting; a pause or resume is remembered for this folder.
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
   const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
-  fs.mkdirSync(path.join(dir, '.cowove'), { recursive: true })
-  fs.writeFileSync(path.join(dir, '.cowove', 'config.json'),
+  fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.quilt', 'config.json'),
     JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize }, null, 2), { mode: 0o600 })
   ensureGitExclude(dir)
 
@@ -96,7 +97,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
-  const statusFile = path.join(dir, '.cowove', 'STATUS.md')
+  const statusFile = path.join(dir, '.quilt', 'STATUS.md')
   session.on('status-changed', () => {
     try { fs.writeFileSync(statusFile, renderStatus(session.status())) } catch {}
   })
@@ -138,25 +139,25 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   }
 }
 
-/** Keep .cowove/ out of git without editing the (synced) .gitignore. */
+/** Keep .quilt/ out of git without editing the (synced) .gitignore. */
 function ensureGitExclude (dir) {
   const exclude = path.join(dir, '.git', 'info', 'exclude')
   try {
     if (!fs.existsSync(path.join(dir, '.git'))) return
     const text = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
-    if (!text.split('\n').includes('.cowove/')) {
+    if (!text.split('\n').includes('.quilt/')) {
       fs.mkdirSync(path.dirname(exclude), { recursive: true })
-      fs.appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}.cowove/\n`)
+      fs.appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}.quilt/\n`)
     }
   } catch {}
 }
 
 // Recently used folders, for the UI's "rejoin" list.
-const recentFile = () => path.join(os.homedir(), '.cowove', 'recent.json')
+const recentFile = () => path.join(quiltHome(), 'recent.json')
 
 export function recentSessions () {
   try {
-    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => fs.existsSync(path.join(r.dir, '.cowove', 'config.json')))
+    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => fs.existsSync(path.join(r.dir, '.quilt', 'config.json')))
   } catch {
     return []
   }

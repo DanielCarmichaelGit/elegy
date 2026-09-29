@@ -1,21 +1,21 @@
-# Render Blueprint for a cowove relay. See docs/hosting.md.
+# Render Blueprint for a quilt relay. See docs/hosting.md.
 # New > Blueprint, pick this repo. Render generates the relay key; copy it
 # from the service's Environment tab.
 services:
   - type: web
-    name: cowove-relay
+    name: quilt-relay
     runtime: docker
     plan: starter # persistent disks need a paid instance
     numInstances: 1 # rooms live in memory: exactly one instance
     healthCheckPath: /healthz
     envVars:
-      - key: COWOVE_DATA
+      - key: QUILT_DATA
         value: /data
-      - key: COWOVE_TRUST_PROXY
+      - key: QUILT_TRUST_PROXY
         value: "1"
-      - key: COWOVE_RELAY_KEY
+      - key: QUILT_RELAY_KEY
         generateValue: true
     disk:
-      name: cowove-data
+      name: quilt-data
       mountPath: /data
       sizeGB: 5

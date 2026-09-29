@@ -1,14 +1,15 @@
 {
-  "name": "cowove",
+  "name": "quilt",
   "version": "0.1.0",
   "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
   "type": "module",
   "bin": {
-    "cowove": "bin/cowove.js"
+    "quilt": "bin/quilt.js",
+    "cowove": "bin/quilt.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "serve": "node bin/cowove.js serve",
+    "serve": "node bin/quilt.js serve",
     "app": "electron .",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
@@ -42,8 +43,8 @@
   ],
   "main": "desktop/main.js",
   "build": {
-    "appId": "dev.cowove.app",
-    "productName": "cowove",
+    "appId": "dev.quilt.app",
+    "productName": "Quilt",
     "copyright": "MIT License",
     "directories": {
       "buildResources": "desktop/build",
@@ -61,9 +62,9 @@
     "asar": false,
     "protocols": [
       {
-        "name": "cowove invite",
+        "name": "quilt invite",
         "schemes": [
-          "cowove"
+          "quilt"
         ]
       }
     ],
@@ -78,13 +79,13 @@
           ]
         }
       ],
-      "artifactName": "cowove-mac-${arch}.${ext}",
+      "artifactName": "quilt-mac-${arch}.${ext}",
       "identity": "-",
       "hardenedRuntime": false
     },
     "dmg": {
-      "title": "cowove",
-      "artifactName": "cowove-mac-${arch}.${ext}"
+      "title": "Quilt",
+      "artifactName": "quilt-mac-${arch}.${ext}"
     },
     "win": {
       "target": [
@@ -95,7 +96,7 @@
           ]
         }
       ],
-      "artifactName": "cowove-windows-${arch}.${ext}"
+      "artifactName": "quilt-windows-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": true,

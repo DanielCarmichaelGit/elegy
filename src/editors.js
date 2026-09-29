@@ -90,7 +90,7 @@ export function claudeCli ({ platform = process.platform, home = os.homedir(), e
 
 /** How a new Claude Code session named after the folder is made, without a model call. */
 export function claudeSessionCommand (cli, dir, id) {
-  return [cli, ['-p', `/rename ${path.basename(dir)} (cowove)`, '--session-id', id], { cwd: dir }]
+  return [cli, ['-p', `/rename ${path.basename(dir)} (quilt)`, '--session-id', id], { cwd: dir }]
 }
 
 async function openInClaude (dir, opts) {

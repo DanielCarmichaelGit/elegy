@@ -80,7 +80,7 @@ export class Connection extends EventEmitter {
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
       if (res.statusCode === 403 && /relay key/i.test(reason)) {
-        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `cowove relay set <url> --key <key>`.'))
+        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `quilt relay set <url> --key <key>`.'))
         this.close()
       } else if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))
@@ -125,7 +125,7 @@ export class Connection extends EventEmitter {
   authenticate (buf) {
     const dec = decoding.createDecoder(buf)
     if (decoding.readVarUint(dec) !== MSG_AUTH) {
-      this.emit('fatal', new Error('The relay runs an older cowove that cannot check identities; update it'))
+      this.emit('fatal', new Error('The relay runs an older quilt that cannot check identities; update it'))
       return this.close()
     }
     const nonce = decoding.readVarUint8Array(dec)

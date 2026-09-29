@@ -1,13 +1,13 @@
-// Shared state and helpers for the cowove app (native ES modules, no build step).
+// Shared state and helpers for the Quilt app (native ES modules, no build step).
 
 // ---------------------------------------------------------------- token --
 const params = new URLSearchParams(location.search)
 if (params.get('t')) {
-  try { sessionStorage.setItem('cowove-token', params.get('t')) } catch {}
+  try { sessionStorage.setItem('quilt-token', params.get('t')) } catch {}
   history.replaceState(null, '', '/')
 }
 export let TOKEN = params.get('t')
-try { TOKEN = TOKEN || sessionStorage.getItem('cowove-token') } catch {}
+try { TOKEN = TOKEN || sessionStorage.getItem('quilt-token') } catch {}
 
 // ---------------------------------------------------------------- icons --
 export const I = {
@@ -94,7 +94,7 @@ export function toast (msg) {
 export async function api (method, path, body, headers = {}) {
   const res = await fetch(path, {
     method,
-    headers: { 'x-cowove-token': TOKEN || '', ...(body && !(body instanceof Blob) ? { 'content-type': 'application/json' } : {}), ...headers },
+    headers: { 'x-quilt-token': TOKEN || '', ...(body && !(body instanceof Blob) ? { 'content-type': 'application/json' } : {}), ...headers },
     body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined
   })
   const data = await res.json().catch(() => ({}))
@@ -104,7 +104,7 @@ export async function api (method, path, body, headers = {}) {
 
 /** Same as decodeInvite in runner.js: an invite link, or an older base64 code. */
 export function decodeInvite (code) {
-  const raw = String(code || '').trim().replace(/^cowove join\s+/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
+  const raw = String(code || '').trim().replace(/^quilt join\s+/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
   const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
   if (m) {
     try { return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]) } } catch { return null }
@@ -115,8 +115,8 @@ export function decodeInvite (code) {
   } catch { return null }
 }
 
-export function remember (key, value) { try { localStorage.setItem(`cowove-${key}`, value) } catch {} }
-export function recall (key, fallback = '') { try { return localStorage.getItem(`cowove-${key}`) ?? fallback } catch { return fallback } }
+export function remember (key, value) { try { localStorage.setItem(`quilt-${key}`, value) } catch {} }
+export function recall (key, fallback = '') { try { return localStorage.getItem(`quilt-${key}`) ?? fallback } catch { return fallback } }
 
 /** Whose AI is still working, from a session status (for commit timing). */
 export function busyPeople (st, { includeMe = true } = {}) {

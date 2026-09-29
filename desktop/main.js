@@ -1,6 +1,6 @@
-// cowove desktop app: the same app as `cowove ui`, in its own window. Sessions
+// Quilt desktop app: the same app as `quilt ui`, in its own window. Sessions
 // keep syncing from the menu bar when the window is closed, and invite links
-// (cowove://join?invite=…) open straight into the join screen.
+// (quilt://join?invite=…) open straight into the join screen.
 import { app, BrowserWindow, Tray, Menu, shell, dialog, ipcMain } from 'electron'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
@@ -10,10 +10,13 @@ import { fileURLToPath } from 'node:url'
 import { startUi } from '../src/ui-server.js'
 import { registerProcess } from '../src/procs.js'
 import { decodeInvite } from '../src/runner.js'
+import { quiltHome, adoptLegacyEnv } from '../src/legacy.js'
+
+adoptLegacyEnv()
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLI_SHIM = path.join(os.homedir(), '.cowove', 'bin', 'cowove')
-const CLI_LINK = '/usr/local/bin/cowove'
+const CLI_SHIM = path.join(quiltHome(), 'bin', 'quilt')
+const CLI_LINK = '/usr/local/bin/quilt'
 
 let ui = null
 let win = null
@@ -22,11 +25,11 @@ let quitting = false
 let pendingInvite = null
 let rendererReady = false
 
-/** The invite link inside a cowove:// URL, or null. */
+/** The invite link inside a quilt:// URL, or null. */
 function inviteFrom (url) {
   try {
     const u = new URL(url)
-    if (u.protocol !== 'cowove:') return null
+    if (u.protocol !== 'quilt:') return null
     const link = u.searchParams.get('invite') || ''
     decodeInvite(link)
     return link
@@ -51,12 +54,12 @@ if (!app.requestSingleInstanceLock()) {
   // macOS delivers invite links here, possibly before the app is ready.
   app.on('open-url', (e, url) => { e.preventDefault(); openInvite(inviteFrom(url)) })
 
-  if (process.defaultApp) app.setAsDefaultProtocolClient('cowove', process.execPath, [path.resolve(process.argv[1])])
-  else app.setAsDefaultProtocolClient('cowove')
+  if (process.defaultApp) app.setAsDefaultProtocolClient('quilt', process.execPath, [path.resolve(process.argv[1])])
+  else app.setAsDefaultProtocolClient('quilt')
 
   pendingInvite = process.argv.map(inviteFrom).find(Boolean) || null
   app.whenReady().then(start).catch((err) => {
-    dialog.showErrorBox('cowove could not start', err.stack || err.message)
+    dialog.showErrorBox('quilt could not start', err.stack || err.message)
     app.exit(1)
   })
 }
@@ -64,7 +67,7 @@ if (!app.requestSingleInstanceLock()) {
 async function start () {
   ui = await startUi({ port: 0, onShutdown: () => app.quit() })
   registerProcess('app', { port: ui.port, desktop: true })
-  process.on('SIGTERM', () => app.quit()) // `cowove stop`
+  process.on('SIGTERM', () => app.quit()) // `quilt stop`
   if (app.isPackaged) writeCliShim()
 
   ipcMain.handle('ready', () => { rendererReady = true; const l = pendingInvite; pendingInvite = null; return l })
@@ -90,7 +93,7 @@ function createWindow () {
     height: 840,
     minWidth: 880,
     minHeight: 600,
-    title: 'cowove',
+    title: 'quilt',
     show: false,
     backgroundColor: '#f4efe6',
     webPreferences: { preload: path.join(HERE, 'preload.cjs'), contextIsolation: true, sandbox: true }
@@ -129,11 +132,11 @@ function showWindow () {
 
 function makeTray () {
   tray = new Tray(path.join(HERE, 'icons', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray-color.png'))
-  tray.setToolTip('cowove')
+  tray.setToolTip('quilt')
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open cowove', click: showWindow },
+    { label: 'Open Quilt', click: showWindow },
     { type: 'separator' },
-    { label: 'Quit cowove', click: () => app.quit() }
+    { label: 'Quit Quilt', click: () => app.quit() }
   ]))
   if (process.platform !== 'darwin') tray.on('click', showWindow)
 }
@@ -147,7 +150,7 @@ function appMenu () {
           submenu: [
             { role: 'about' },
             { type: 'separator' },
-            { label: 'Install the cowove Command…', click: installCli },
+            { label: 'Install the Quilt Command…', click: installCli },
             { type: 'separator' },
             { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
             { type: 'separator' },
@@ -162,11 +165,11 @@ function appMenu () {
 }
 
 // ------------------------------------------------------ command line --
-// AI tools reach cowove through the `cowove` command (its MCP server). The
+// AI tools reach Quilt through the `quilt` command (its MCP server). The
 // app ships that command; this keeps a small launcher for it up to date.
 function writeCliShim () {
-  const main = path.join(app.getAppPath(), 'bin', 'cowove.js')
-  const script = `#!/bin/sh\n# The cowove command, run by the cowove desktop app's copy of Node.\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${main}" "$@"\n`
+  const main = path.join(app.getAppPath(), 'bin', 'quilt.js')
+  const script = `#!/bin/sh\n# The Quilt command, run by the Quilt desktop app's copy of Node.\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${main}" "$@"\n`
   try {
     fs.mkdirSync(path.dirname(CLI_SHIM), { recursive: true })
     if (!fs.existsSync(CLI_SHIM) || fs.readFileSync(CLI_SHIM, 'utf8') !== script) fs.writeFileSync(CLI_SHIM, script, { mode: 0o755 })
@@ -175,16 +178,16 @@ function writeCliShim () {
 
 async function installCli () {
   if (!app.isPackaged) {
-    return dialog.showMessageBox(win, { message: 'Install the command from the packaged app', detail: 'When running from source, use `npm link` in the cowove folder instead.' })
+    return dialog.showMessageBox(win, { message: 'Install the command from the packaged app', detail: 'When running from source, use `npm link` in the Quilt folder instead.' })
   }
   writeCliShim()
   let current = null
   try { current = fs.readlinkSync(CLI_LINK) } catch {}
   if (current === CLI_SHIM) {
-    return dialog.showMessageBox(win, { message: 'The cowove command is installed', detail: `You can run \`cowove\` in any terminal, and AI tools can use it.` })
+    return dialog.showMessageBox(win, { message: 'The Quilt command is installed', detail: `You can run \`quilt\` in any terminal, and AI tools can use it.` })
   }
   if (fs.existsSync(CLI_LINK) && current !== CLI_SHIM) {
-    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Replace', 'Cancel'], defaultId: 0, cancelId: 1, message: 'A cowove command is already installed', detail: `${CLI_LINK} already exists. Replace it with the one from this app?` })
+    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Replace', 'Cancel'], defaultId: 0, cancelId: 1, message: 'A Quilt command is already installed', detail: `${CLI_LINK} already exists. Replace it with the one from this app?` })
     if (r.response !== 0) return
   }
   try {
@@ -197,7 +200,7 @@ async function installCli () {
     const ok = await new Promise((resolve) => execFile('osascript', ['-e', `do shell script "${cmd}" with administrator privileges`], (err) => resolve(!err)))
     if (!ok) return
   }
-  dialog.showMessageBox(win, { message: 'The cowove command is installed', detail: 'You can now run `cowove` in any terminal. AI tools like Claude Code and Cursor use it to see your session.' })
+  dialog.showMessageBox(win, { message: 'The Quilt command is installed', detail: 'You can now run `quilt` in any terminal. AI tools like Claude Code and Cursor use it to see your session.' })
 }
 
 // Quit cleanly: stop every session (so edits are flushed) before exiting.

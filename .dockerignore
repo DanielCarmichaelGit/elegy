@@ -3,8 +3,8 @@ node_modules
 .github
 test
 docs
-cowove-data
-.cowove
+quilt-data
+.quilt
 *.md
 dist
 .claude

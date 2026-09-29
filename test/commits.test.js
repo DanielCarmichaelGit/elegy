@@ -11,7 +11,7 @@ import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
 import { startControl, call } from '../src/control.js'
 
-const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-cm-${n}-`))
+const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-cm-${n}-`))
 async function waitFor (fn, ms = 5000) {
   const start = Date.now()
   while (Date.now() - start < ms) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 25)) }

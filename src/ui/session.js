@@ -56,7 +56,7 @@ export function mountSession (id) {
   $('#app').innerHTML = `
   <div class="ws" id="ws">
     <header class="ws-top">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>co<i>wo</i>ve</span></button>
+      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>Quilt</span></button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
       <span class="access-pill" id="access-pill" hidden></span>
@@ -75,7 +75,7 @@ export function mountSession (id) {
         <div class="popover more-menu" id="more-menu" role="menu" hidden>
           <button class="pop-item" role="menuitem" id="ask-commit">Ask for a commit…</button>
           <button class="pop-item" role="menuitem" id="leave-btn">Leave this session</button>
-          <button class="pop-item" role="menuitem" data-shutdown>Shut down cowove</button>
+          <button class="pop-item" role="menuitem" data-shutdown>Shut down Quilt</button>
         </div>
       </div>
     </header>
@@ -647,7 +647,7 @@ function renderMain () {
         el.innerHTML = `<div class="main-empty invite-empty">
           <div class="ill">${I.link}</div>
           <h3>Invite someone to code with you</h3>
-          <p class="hint">Send a link. They paste it into <b>Join a session</b> in cowove${viewInvite ? ', and you approve them before they get in' : ''}.</p>
+          <p class="hint">Send a link. They paste it into <b>Join a session</b> in quilt${viewInvite ? ', and you approve them before they get in' : ''}.</p>
           ${viewInvite ? `
           <div class="invite-pair">
             <div><div class="label">Can edit</div><div class="codebox"><code>${esc(invite)}</code></div><button class="btn primary" data-copy-invite="edit">${I.copy}<span>Copy edit link</span></button></div>

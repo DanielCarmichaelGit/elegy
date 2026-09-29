@@ -13,7 +13,7 @@ session on the synced folder.
 
 ## What we know
 - The list of apps comes from `installedEditors()` in `src/editors.js`,
-  run by the local cowove server (`src/ui-server.js`, `defaults.editors`).
+  run by the local Quilt server (`src/ui-server.js`, `defaults.editors`).
   The UI only shows apps in that list.
 - Claude Code is detected **only** by the Claude desktop app:
   `/Applications/Claude.app` or `~/Applications/Claude.app` on macOS, or

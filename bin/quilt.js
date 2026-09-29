@@ -3,31 +3,34 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
+import { adoptLegacyEnv } from '../src/legacy.js'
 
-const HELP = `cowove: real-time pair vibe coding with any AI tool
+adoptLegacyEnv()
+
+const HELP = `quilt: real-time pair vibe coding with any AI tool
 
 Usage:
-  cowove ui                                            Open the app in your browser (start, join, chat)
-  cowove serve [--port 4321] [--data ./cowove-data]   Run a relay server (see docs/hosting.md)
-  cowove relay set <url> [--key <key>]                 Use a hosted relay by default
-  cowove relay [check [url] | clear]                   Show, test, or forget the default relay
-  cowove join [--server <ws(s)://relay>]               Start a new session in this folder
-  cowove join <invite-link>                            Join a partner's session in this folder
-  cowove join                                          Rejoin this folder's last session
-  cowove setup                                         Connect Claude Code / Cursor / others via MCP
-  cowove status                                        Show collaborators, claims, activity, chat
-  cowove chat                                          Live chat (messages, DMs, files) in this terminal
-  cowove say [@name] <message>                         Message everyone, or one person with @name
-  cowove send <file> [@name] [message]                 Send a file (not added to the project)
-  cowove messages [--all] [--with name]                Show unread (or all) messages
-  cowove get <message-id> [dest]                       Download a shared file again
-  cowove focus <what you're doing>                     Tell collaborators what you're working on
-  cowove claim <path|glob> [reason]                    Mark files as yours for now
-  cowove release <path|glob|*>                         Release a claim
-  cowove invite                                        Print this session's invite code
-  cowove stop                                          Shut down everything cowove is running (relay, app, syncs)
-  cowove doctor [folder] [--watch 30]                  Check what cowove can see of your Claude Code / Cursor chats
-  cowove mcp                                           Run the MCP server (used by AI tools)
+  quilt ui                                            Open the app in your browser (start, join, chat)
+  quilt serve [--port 4321] [--data ./quilt-data]   Run a relay server (see docs/hosting.md)
+  quilt relay set <url> [--key <key>]                 Use a hosted relay by default
+  quilt relay [check [url] | clear]                   Show, test, or forget the default relay
+  quilt join [--server <ws(s)://relay>]               Start a new session in this folder
+  quilt join <invite-link>                            Join a partner's session in this folder
+  quilt join                                          Rejoin this folder's last session
+  quilt setup                                         Connect Claude Code / Cursor / others via MCP
+  quilt status                                        Show collaborators, claims, activity, chat
+  quilt chat                                          Live chat (messages, DMs, files) in this terminal
+  quilt say [@name] <message>                         Message everyone, or one person with @name
+  quilt send <file> [@name] [message]                 Send a file (not added to the project)
+  quilt messages [--all] [--with name]                Show unread (or all) messages
+  quilt get <message-id> [dest]                       Download a shared file again
+  quilt focus <what you're doing>                     Tell collaborators what you're working on
+  quilt claim <path|glob> [reason]                    Mark files as yours for now
+  quilt release <path|glob|*>                         Release a claim
+  quilt invite                                        Print this session's invite code
+  quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
+  quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
+  quilt mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
   --name <you>        Your display name (default: OS username)
@@ -79,13 +82,13 @@ async function serve () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, data: { type: 'string' }, key: { type: 'string' } } })
   const { startServer } = await import('../src/server.js')
   const port = Number(values.port || process.env.PORT || 4321)
-  const dataDir = path.resolve(values.data || process.env.COWOVE_DATA || './cowove-data')
+  const dataDir = path.resolve(values.data || process.env.QUILT_DATA || './quilt-data')
   const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir, ...(values.key ? { relayKey: values.key } : {}) })
   const c = srv.config
-  console.log(`cowove relay listening on :${srv.port} (data: ${dataDir})`)
-  console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set COWOVE_RELAY_KEY to restrict)'}`)
+  console.log(`quilt relay listening on :${srv.port} (data: ${dataDir})`)
+  console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set QUILT_RELAY_KEY to restrict)'}`)
   console.log(`  limits: ${Math.round(c.maxRoomBytes / 1048576)} MB per session, ${Math.round(c.maxRoomFileBytes / 1048576)} MB of shared files, ${c.maxConnsPerIp} connections per address, idle sessions removed after ${c.roomTtlDays} days`)
-  console.log(`start a session with:  cowove join --server ws://<this-host>:${srv.port}`)
+  console.log(`start a session with:  quilt join --server ws://<this-host>:${srv.port}`)
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('relay', { port: srv.port, dataDir })
   const shutdown = async () => { await srv.close(); process.exit(0) }
@@ -110,23 +113,23 @@ async function join () {
   let conn
   if (positionals[0]) {
     try { conn = decodeInvite(positionals[0]) } catch (err) { fail(err.message) }
-  } else if (values.server || process.env.COWOVE_SERVER) {
-    conn = newConn(values.server || process.env.COWOVE_SERVER)
+  } else if (values.server || process.env.QUILT_SERVER) {
+    conn = newConn(values.server || process.env.QUILT_SERVER)
     if (values.room) conn.room = values.room
-    if (values.secret || process.env.COWOVE_SECRET) conn.secret = values.secret || process.env.COWOVE_SECRET
+    if (values.secret || process.env.QUILT_SECRET) conn.secret = values.secret || process.env.QUILT_SECRET
   } else if (saved.server) {
     conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}) }
   } else {
     const { defaultRelay } = await import('../src/settings.js')
     const d = defaultRelay()
-    if (!d) fail('Give a relay to start a session (cowove join --server wss://…), set a default with `cowove relay set <url>`,\nor pass an invite link to join one. Or run `cowove ui` to do it in your browser.')
+    if (!d) fail('Give a relay to start a session (quilt join --server wss://…), set a default with `quilt relay set <url>`,\nor pass an invite link to join one. Or run `quilt ui` to do it in your browser.')
     conn = newConn(d.relay, d.key)
     console.log(`starting a new session on your default relay ${d.relay}`)
   }
 
   const stamp = () => new Date().toLocaleTimeString()
   const name = values.name || saved.name || os.userInfo().username
-  console.log(`cowove: syncing ${dir}`)
+  console.log(`quilt: syncing ${dir}`)
   console.log(`  room ${conn.room} on ${conn.server} as "${name}"`)
   let run
   try {
@@ -139,7 +142,7 @@ async function join () {
       kind: values.agent ? 'agent' : 'human',
       inviteServer: saved.room === conn.room ? saved.inviteServer : undefined,
       onLog: (m) => console.log(`[${stamp()}] ${m}`),
-      onDebug: process.env.COWOVE_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
+      onDebug: process.env.QUILT_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
       onFatal: (err) => fail(err.message)
     })
   } catch (err) {
@@ -148,8 +151,8 @@ async function join () {
 
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('sync', { dir })
-  console.log(`\nInvite your partner by sending them this link:\n\n  ${run.invite}\n\nThey paste it into cowove (Join a session), or run \`cowove join <link>\` in an empty (or matching) folder.\n`)
-  console.log('Tip: run `cowove setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
+  console.log(`\nInvite your partner by sending them this link:\n\n  ${run.invite}\n\nThey paste it into quilt (Join a session), or run \`quilt join <link>\` in an empty (or matching) folder.\n`)
+  console.log('Tip: run `quilt setup` once so your AI tools can see each other. Ctrl+C to stop.\n')
 
   const stop = async () => {
     console.log('\nstopping…')
@@ -166,7 +169,7 @@ async function relayCmd () {
   const [sub, arg] = positionals
   const show = (h) => `ok · ${h.latencyMs} ms · ${h.connections} connection(s) · ${h.requiresKey ? 'starting sessions needs a relay key' : 'open to anyone'}`
   if (sub === 'set') {
-    if (!arg) fail('usage: cowove relay set <url> [--key <key>]')
+    if (!arg) fail('usage: quilt relay set <url> [--key <key>]')
     let url
     try { url = normalizeRelay(arg) } catch (err) { fail(err.message) }
     try {
@@ -178,7 +181,7 @@ async function relayCmd () {
     }
     const prev = getSettings()
     saveSettings({ relay: url, relayKey: values.key ?? (prev.relay === url ? prev.relayKey : undefined) })
-    return console.log(`default relay set. \`cowove join\` and the app now start sessions on ${url}.`)
+    return console.log(`default relay set. \`quilt join\` and the app now start sessions on ${url}.`)
   }
   if (sub === 'clear') {
     saveSettings({ relay: undefined, relayKey: undefined })
@@ -186,8 +189,8 @@ async function relayCmd () {
   }
   const s = getSettings()
   const url = sub === 'check' ? (arg || s.relay) : s.relay
-  if (!sub && !url) return console.log('no default relay. Set one with `cowove relay set wss://your-relay.example.com` (see docs/hosting.md).')
-  if (!url) fail('usage: cowove relay check <url>')
+  if (!sub && !url) return console.log('no default relay. Set one with `quilt relay set wss://your-relay.example.com` (see docs/hosting.md).')
+  if (!url) fail('usage: quilt relay check <url>')
   try {
     const h = await checkRelay(url)
     console.log(`${normalizeRelay(url)}${url === s.relay ? ' (default)' : ''}: ${show(h)}${url === s.relay && s.relayKey ? ' · key saved' : ''}`)
@@ -202,7 +205,7 @@ async function ui () {
   const { registerProcess, stopProcesses } = await import('../src/procs.js')
   const app = await startUi({
     port: Number(values.port || 7420),
-    // The app's "Shut down" button: stop every other cowove process, then this one.
+    // The app's "Shut down" button: stop every other quilt process, then this one.
     onShutdown: async () => {
       console.log('\nshutting down everything…')
       await stopProcesses()
@@ -211,8 +214,8 @@ async function ui () {
     }
   })
   registerProcess('app', { port: app.port })
-  console.log(`cowove is running at:\n\n  ${app.url}\n`)
-  console.log('Keep this terminal open while you work. Ctrl+C to stop, or `cowove stop` to shut everything down.')
+  console.log(`quilt is running at:\n\n  ${app.url}\n`)
+  console.log('Keep this terminal open while you work. Ctrl+C to stop, or `quilt stop` to shut everything down.')
   if (!values['no-open']) openBrowser(app.url)
   const stop = async () => { console.log('\nstopping…'); await app.close(); process.exit(0) }
   process.on('SIGINT', stop)
@@ -232,14 +235,14 @@ async function doSetup () {
   const changed = setup(process.cwd())
   if (!changed.length) return console.log('already set up')
   console.log('updated:\n' + changed.map((c) => `  - ${c}`).join('\n'))
-  console.log('\nRestart your AI tool (or reload MCP servers) to pick up the "cowove" MCP server.')
-  console.log('Other tools: point them at AGENTS.md, or have them run `cowove status`.')
+  console.log('\nRestart your AI tool (or reload MCP servers) to pick up the "quilt" MCP server.')
+  console.log('Other tools: point them at AGENTS.md, or have them run `quilt status`.')
 }
 
 async function daemonOrFail () {
   const { findDaemon, call } = await import('../src/control.js')
   const d = findDaemon()
-  if (!d) fail('cowove is not running here. Start it with `cowove join` in the project folder.')
+  if (!d) fail('quilt is not running here. Start it with `quilt join` in the project folder.')
   return { d, call }
 }
 
@@ -263,14 +266,14 @@ function splitRecipient (args) {
 
 async function say () {
   const { to, rest } = splitRecipient(argv)
-  if (!rest.length) fail('usage: cowove say [@name] <message>')
+  if (!rest.length) fail('usage: quilt say [@name] <message>')
   await simple('/say', { text: rest.join(' '), to }, (r) =>
     to ? `sent to ${to}${r.recipientOnline ? '' : ' (offline, they will see it when they reconnect)'}` : 'sent')
 }
 
 async function sendFile () {
   const [file, ...more] = argv
-  if (!file) fail('usage: cowove send <file> [@name] [message]')
+  if (!file) fail('usage: quilt send <file> [@name] [message]')
   if (!fs.existsSync(file)) fail(`no such file: ${file}`)
   const { to, rest } = splitRecipient(more)
   await simple('/send', { path: path.resolve(file), to, text: rest.join(' ') }, (r) =>
@@ -289,7 +292,7 @@ async function messages () {
 }
 
 async function getFile () {
-  if (!argv[0]) fail('usage: cowove get <message-id> [dest]')
+  if (!argv[0]) fail('usage: quilt get <message-id> [dest]')
   await simple('/get', { id: argv[0], dest: argv[1] ? path.resolve(argv[1]) : undefined }, (r) => `saved to ${r.path}`)
 }
 
@@ -335,9 +338,9 @@ async function chat () {
           else if (event === 'log' && !payload.startsWith('💬')) print(`  · ${payload}`)
         }
       }
-      if (!ctrl.signal.aborted) { print('lost connection to cowove'); process.exit(1) }
+      if (!ctrl.signal.aborted) { print('lost connection to quilt'); process.exit(1) }
     } catch (err) {
-      if (!ctrl.signal.aborted) { print(`lost connection to cowove: ${err.message}`); process.exit(1) }
+      if (!ctrl.signal.aborted) { print(`lost connection to quilt: ${err.message}`); process.exit(1) }
     }
   })()
 
@@ -380,7 +383,7 @@ async function invite () {
   const { encodeInvite } = await import('../src/runner.js')
   let dir = process.cwd()
   while (true) {
-    const f = path.join(dir, '.cowove', 'config.json')
+    const f = path.join(dir, '.quilt', 'config.json')
     if (fs.existsSync(f)) {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'))
       return console.log(encodeInvite({ ...c, server: c.inviteServer || c.server }))
@@ -393,7 +396,7 @@ async function invite () {
 async function stopAll () {
   const { stopProcesses, describeProcess } = await import('../src/procs.js')
   const stopped = await stopProcesses()
-  if (!stopped.length) return console.log('nothing to stop: cowove is not running')
+  if (!stopped.length) return console.log('nothing to stop: quilt is not running')
   console.log('stopped:\n' + stopped.map((p) => `  - ${describeProcess(p)}`).join('\n'))
 }
 

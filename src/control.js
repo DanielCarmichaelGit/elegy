@@ -1,11 +1,12 @@
 // Local control API (127.0.0.1 only) so the CLI and the MCP server can talk to
-// a running session. Discovery info is written to .cowove/daemon.json.
+// a running session. Discovery info is written to .quilt/daemon.json.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { renderStatus } from './status.js'
 import * as gitops from './git.js'
+import { migrateDir } from './legacy.js'
 
 export async function startControl (session, extras = {}) {
   const token = crypto.randomBytes(16).toString('hex')
@@ -26,7 +27,7 @@ export async function startControl (session, extras = {}) {
     'POST /commit-request': (b) => session.requestCommit(b.message),
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
     'POST /commit': async (b) => {
-      if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with cowove_request_commit instead.')
+      if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
       const open = session.commitStatus().open
       const message = String(b.message || '').trim() || open.map((r) => r.message).join('; ')
       const r = await gitops.commit(session.root, message)
@@ -63,7 +64,7 @@ export async function startControl (session, extras = {}) {
   }
 }
 
-// Server-sent events: pushes each new message as it arrives (used by `cowove chat`).
+// Server-sent events: pushes each new message as it arrives (used by `quilt chat`).
 function streamEvents (session, req, res) {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
   res.write(': connected\n\n')
@@ -83,10 +84,10 @@ function streamEvents (session, req, res) {
 }
 
 /** Finds the nearest folder (from `start` upward) with a running session. */
-export function findDaemon (start = process.env.COWOVE_DIR || process.cwd()) {
+export function findDaemon (start = process.env.QUILT_DIR || process.cwd()) {
   let dir = path.resolve(start)
   while (true) {
-    const file = path.join(dir, '.cowove', 'daemon.json')
+    const file = path.join(migrateDir(dir), 'daemon.json')
     if (fs.existsSync(file)) {
       const info = JSON.parse(fs.readFileSync(file, 'utf8'))
       try { process.kill(info.pid, 0) } catch { return null } // stale

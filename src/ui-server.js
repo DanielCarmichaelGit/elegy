@@ -14,6 +14,7 @@ import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
+import { quiltHome, migrateDir } from './legacy.js'
 
 // The saved default relay, without its key.
 const savedRelay = () => {
@@ -24,14 +25,14 @@ const savedRelay = () => {
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
 
-/** Your profile and preferences, from ~/.cowove/settings.json with sensible defaults. Never includes the relay key. */
+/** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. Never includes the relay key. */
 function profile () {
   const s = getSettings()
   return {
     name: s.name || os.userInfo().username,
     tool: s.tool || detectTool(),
     color: s.color || null,
-    joinDir: s.joinDir || '~/cowove',
+    joinDir: s.joinDir || '~/quilt',
     shareAgent: s.shareAgent !== false,
     summarize: !!s.summarize,
     preferLocal: !!s.preferLocal,
@@ -222,10 +223,10 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
   async function ensureRelay () {
     if (relay) return relay
     try {
-      relay = await startServer({ port: relayPort, dataDir: path.join(os.homedir(), '.cowove', 'relay-data'), log: () => {} })
+      relay = await startServer({ port: relayPort, dataDir: path.join(quiltHome(), 'relay-data'), log: () => {} })
     } catch (err) {
       if (err.code === 'EADDRINUSE') {
-        // Probably an `cowove serve` already running here; use it.
+        // Probably an `quilt serve` already running here; use it.
         relay = { port: relayPort, external: true }
       } else throw err
     }
@@ -347,8 +348,8 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
       return res.end(fs.readFileSync(LOGO))
     }
 
-    const supplied = req.headers['x-cowove-token'] || url.searchParams.get('t')
-    if (supplied !== token) return json(401, { error: 'Open cowove from the link printed by `cowove ui`.' })
+    const supplied = req.headers['x-quilt-token'] || url.searchParams.get('t')
+    if (supplied !== token) return json(401, { error: 'Open quilt from the link printed by `quilt ui`.' })
 
     try {
       if (req.method === 'GET' && url.pathname === '/api/events') return events(req, res)
@@ -380,7 +381,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
 
   async function receiveUpload (req, session) {
     const name = path.basename(decodeURIComponent(req.headers['x-filename'] || 'file')) || 'file'
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-up-'))
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-up-'))
     const file = path.join(dir, name)
     try {
       let size = 0
@@ -444,7 +445,7 @@ function listDir (p) {
     path: dir,
     parent: path.dirname(dir) !== dir ? path.dirname(dir) : null,
     dirs,
-    hasSession: fs.existsSync(path.join(dir, '.cowove', 'config.json')),
+    hasSession: fs.existsSync(path.join(migrateDir(dir), 'config.json')),
     isEmpty: entries.filter((e) => e.name !== '.DS_Store').length === 0
   }
 }

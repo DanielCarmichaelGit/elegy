@@ -44,6 +44,6 @@ test('the Claude CLI is found on its own, or inside the Claude app', () => {
 test('a Claude session is made in the folder with a free local command', () => {
   const [file, args, opts] = claudeSessionCommand('/bin/claude', '/Users/me/Panorama', 'abc')
   assert.equal(file, '/bin/claude')
-  assert.deepEqual(args, ['-p', '/rename Panorama (cowove)', '--session-id', 'abc'])
+  assert.deepEqual(args, ['-p', '/rename Panorama (quilt)', '--session-id', 'abc'])
   assert.deepEqual(opts, { cwd: '/Users/me/Panorama' })
 })

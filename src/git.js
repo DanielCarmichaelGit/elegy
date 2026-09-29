@@ -5,8 +5,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 
-// COWOVE_GH lets tests stand in a fake `gh`.
-const GH = () => process.env.COWOVE_GH || 'gh'
+// QUILT_GH lets tests stand in a fake `gh`.
+const GH = () => process.env.QUILT_GH || 'gh'
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/
 // Never stop to ask for a password or open an editor.
 const ENV = { GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', GIT_EDITOR: 'true', GH_NO_UPDATE_NOTIFIER: '1' }
@@ -40,7 +40,7 @@ export async function checkBranchName (name) {
   name = String(name || '').trim()
   if (!name) throw new Error('Enter a branch name.')
   // Not `--branch`: it expands @{-N} using the current folder's repo, so the
-  // answer would depend on where cowove happens to run.
+  // answer would depend on where quilt happens to run.
   if (name.startsWith('-') || name === 'HEAD' || (await run('git', ['check-ref-format', `refs/heads/${name}`], { allowFail: true })) === null) {
     throw new Error(`"${name}" isn't a valid branch name.`)
   }

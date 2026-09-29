@@ -1,5 +1,5 @@
 // Git and GitHub integration, offline: a local bare repo plays GitHub, and a
-// small fake `gh` (COWOVE_GH) clones from it and pretends to open PRs.
+// small fake `gh` (QUILT_GH) clones from it and pretends to open PRs.
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-git-')))
+const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-git-')))
 const home = path.join(root, 'home')
 fs.mkdirSync(home)
 process.env.HOME = home
@@ -65,7 +65,7 @@ else if (k === 'pr create') {
 } else if (k === 'pr view') out('https://github.com/me/app/pull/1')
 else { process.stderr.write('fake gh: unknown ' + a.join(' ') + '\\n'); process.exit(2) }
 `, { mode: 0o755 })
-process.env.COWOVE_GH = fakeGh
+process.env.QUILT_GH = fakeGh
 
 const git = await import('../src/git.js')
 const clone = (name) => { const d = path.join(root, name); g(root, 'clone', '-q', remote, d); return d }
@@ -215,12 +215,12 @@ test('gh: status, repos (with orgs) and branches', async () => {
   assert.ok(b.branches.includes('dev'))
   await assert.rejects(git.listBranches('../etc'), /owner\/name/)
 
-  process.env.COWOVE_GH = path.join(root, 'no-such-gh')
+  process.env.QUILT_GH = path.join(root, 'no-such-gh')
   try {
     const st = await git.ghStatus()
     assert.equal(st.installed, false)
     assert.match(st.message, /gh auth login/)
-  } finally { process.env.COWOVE_GH = fakeGh }
+  } finally { process.env.QUILT_GH = fakeGh }
 })
 
 // ------------------------------------------------------------------- API --
@@ -233,7 +233,7 @@ before(async () => {
 after(async () => { await ui.close(); fs.rmSync(root, { recursive: true, force: true }) })
 const api = (method, p, body) => fetch(base + p, {
   method,
-  headers: { 'x-cowove-token': ui.token, 'content-type': 'application/json' },
+  headers: { 'x-quilt-token': ui.token, 'content-type': 'application/json' },
   body: body ? JSON.stringify(body) : undefined
 }).then(async (r) => ({ status: r.status, body: await r.json() }))
 
@@ -248,13 +248,13 @@ test('API: start a session from GitHub, then commit and open a PR', async () => 
 
   const s = await api('POST', '/api/sessions', { mode: 'github', repo: 'me/app', newBranch: 'feature/api', hostRelay: true })
   assert.equal(s.status, 200, JSON.stringify(s.body))
-  assert.equal(s.body.dir, path.join(home, 'cowove', 'app'), 'defaults to the join folder')
+  assert.equal(s.body.dir, path.join(home, 'quilt', 'app'), 'defaults to the join folder')
   assert.equal(s.body.git, true)
   const id = s.body.id
 
   let st = await api('GET', `/api/sessions/${id}/git`)
   assert.equal(st.body.branch, 'feature/api')
-  assert.deepEqual(st.body.changed, [], '.cowove/ is kept out of git')
+  assert.deepEqual(st.body.changed, [], '.quilt/ is kept out of git')
 
   write(s.body.dir, 'api.txt', 'hi\n')
   assert.equal((await api('POST', `/api/sessions/${id}/git/commit`, { message: '' })).status, 400)

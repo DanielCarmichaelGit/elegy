@@ -36,7 +36,7 @@ function sidebarHtml (view) {
   const running = [...state.sessions.values()]
   return `
   <aside class="side">
-    <button class="brand" data-view="home" aria-label="Home"><img src="/logo.svg" alt=""><span>co<i>wo</i>ve</span></button>
+    <button class="brand" data-view="home" aria-label="Home"><img src="/logo.svg" alt=""><span>Quilt</span></button>
 
     <button class="me-card" data-view="settings" title="Edit your profile">
       ${avatar(p.name, p.color)}
@@ -203,7 +203,7 @@ function homeHtml () {
   <section class="card welcome">
     <div class="welcome-steps">
       <div><span class="n">1</span><b>Start a session</b><p class="hint">Pick a folder on your computer to work on together.</p></div>
-      <div><span class="n">2</span><b>Send an invite link</b><p class="hint">Partners click it or paste it into cowove. You approve who gets in.</p></div>
+      <div><span class="n">2</span><b>Send an invite link</b><p class="hint">Partners click it or paste it into Quilt. You approve who gets in.</p></div>
       <div><span class="n">3</span><b>Code together</b><p class="hint">Files sync live, and you can watch each other's AI work.</p></div>
     </div>
     <div class="welcome-actions">
@@ -429,7 +429,7 @@ export function joinSessionDialog (invite = '') {
     <div class="field">
       <label for="j-invite">Invite link</label>
       <textarea class="input mono" id="j-invite" rows="2" spellcheck="false" placeholder="https://cowove-relay.fly.dev/join/…" required></textarea>
-      <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a cowove invite link. Copy the whole link they sent.</span>
+      <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a quilt invite link. Copy the whole link they sent.</span>
     </div>
     <div class="field">
       <label for="j-dir">Put the files in</label>
@@ -563,11 +563,11 @@ function settingsHtml () {
   </form>
 
   <section class="card settings-sec">
-    <div class="sec-intro"><h2>This computer</h2><p>Where cowove keeps things.</p></div>
+    <div class="sec-intro"><h2>This computer</h2><p>Where Quilt keeps things.</p></div>
     <div class="sec-body">
-      <div class="kv"><span>Identity key</span><code>~/.cowove/identity.json</code><span class="hint">Proves your name is yours. Copy it to another computer to keep your name there.</span></div>
-      <div class="kv"><span>Settings</span><code>~/.cowove/settings.json</code></div>
-      <div class="sec-actions"><span class="hint">Stops every session and this app. Your files stay put.</span><button class="btn" type="button" data-shutdown>${I.power}<span>Shut down cowove</span></button></div>
+      <div class="kv"><span>Identity key</span><code>~/.quilt/identity.json</code><span class="hint">Proves your name is yours. Copy it to another computer to keep your name there.</span></div>
+      <div class="kv"><span>Settings</span><code>~/.quilt/settings.json</code></div>
+      <div class="sec-actions"><span class="hint">Stops every session and this app. Your files stay put.</span><button class="btn" type="button" data-shutdown>${I.power}<span>Shut down Quilt</span></button></div>
     </div>
   </section>`
 }

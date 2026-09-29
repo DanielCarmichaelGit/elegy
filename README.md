@@ -1,6 +1,6 @@
-<p align="center"><img src="assets/logo.svg" width="96" alt="cowove logo"></p>
+<p align="center"><img src="assets/logo.svg" width="96" alt="Quilt logo"></p>
 
-<h1 align="center">cowove</h1>
+<h1 align="center">Quilt</h1>
 
 <p align="center">Real-time pair vibe coding that doesn't care which AI tool you use.</p>
 
@@ -11,18 +11,18 @@ within milliseconds. Your agents can also see what the other agents are doing.
 
 ```
   you + Claude Code                                friend + Cursor
-  ~/my-app  <-->  cowove join                cowove join  <-->  ~/my-app
+  ~/my-app  <-->  quilt join                quilt join  <-->  ~/my-app
                        \                        /
-                        +--> cowove relay <-----+
+                        +--> quilt relay <-----+
                              (WebSocket)
 
-  each agent  --MCP-->  cowove_status / cowove_claim / cowove_message
+  each agent  --MCP-->  quilt_status / quilt_claim / quilt_message
 ```
 
 ## How it works
 
 - **Tool-agnostic by design.** Every AI coding tool eventually reads and writes
-  files, so cowove syncs files and nothing else. It watches your project folder and
+  files, so Quilt syncs files and nothing else. It watches your project folder and
   mirrors changes into a shared [Yjs](https://yjs.dev) CRDT document. Remote
   changes are written back to disk. Your editor or agent just sees files change.
 - **Real merges, not overwrites.** Text files are synced character by character.
@@ -30,7 +30,7 @@ within milliseconds. Your agents can also see what the other agents are doing.
   edits land. Binary files (images, etc.) sync as whole files.
 - **Works apart.** A small relay server connects everyone over WebSockets
   (host it anywhere, or tunnel it from your laptop). If your connection drops,
-  keep working: cowove keeps a local copy of the shared state and merges your
+  keep working: Quilt keeps a local copy of the shared state and merges your
   offline edits when you reconnect.
 - **Watch each other's AI, live.** The app shows your partner's AI conversation
   as it happens: their prompts, the AI's replies, and one-line actions like
@@ -41,15 +41,15 @@ within milliseconds. Your agents can also see what the other agents are doing.
   agent tools to see who's online, read a partner's AI feed, see where people
   are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
-  use the `cowove` CLI or read `.cowove/STATUS.md`.
+  use the `quilt` CLI or read `.quilt/STATUS.md`.
 
 ## Quick start
 
 ### Download the app
 
-Get cowove for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/cowove-mac-arm64.dmg),
-[Mac (Intel)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/cowove-mac-x64.dmg) or
-[Windows](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/cowove-windows-x64.exe), and open it.
+Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/quilt-mac-arm64.dmg),
+[Mac (Intel)](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/quilt-mac-x64.dmg) or
+[Windows](https://github.com/DanielCarmichaelGit/elegy/releases/latest/download/quilt-windows-x64.exe), and open it.
 Everything happens in the app: start a session, send the invite link, and
 partners click it to join. Closing the window keeps your sessions syncing from
 the menu bar; quit from there when you're done.
@@ -58,15 +58,15 @@ The app isn't signed by Apple yet, so the first time you open it macOS may say
 it can't check it. Open **System Settings → Privacy & Security** and click
 **Open Anyway**.
 
-To let your AI tools use cowove (its MCP server and the `cowove` command),
-choose **cowove → Install the cowove Command…** in the menu bar.
+To let your AI tools use Quilt (its MCP server and the `quilt` command),
+choose **Quilt → Install the Quilt Command…** in the menu bar.
 
 ### From source
 
 Requires Node.js 20+.
 
 ```bash
-git clone <this repo> && cd cowove && npm install && npm link   # puts `cowove` on your PATH
+git clone <this repo> && cd quilt && npm install && npm link   # puts `quilt` on your PATH
 npm run app                                                     # run the desktop app from source
 npm run dist:mac                                                # build the Mac app into dist/
 ```
@@ -74,10 +74,10 @@ npm run dist:mac                                                # build the Mac 
 ### The easy way: the app
 
 ```bash
-cowove ui
+quilt ui
 ```
 
-This opens cowove in your browser, where you can:
+This opens Quilt in your browser, where you can:
 
 - **Start a session:** pick your project folder, then either host the relay on
   your computer with one click or point at a hosted relay. You get an invite link to send.
@@ -86,21 +86,21 @@ This opens cowove in your browser, where you can:
   they just changed. Chat, send direct messages, and drag and drop files to share
   them. You can also claim files, and rejoin recent sessions later.
 
-The app only listens on `127.0.0.1` and needs the secret link `cowove ui` prints.
+The app only listens on `127.0.0.1` and needs the secret link `quilt ui` prints.
 
 ### The terminal way
 
 **1. Run a relay** that both of you can reach (see [Hosting the relay](#hosting-the-relay)):
 
 ```bash
-cowove serve                      # listens on :4321
+quilt serve                      # listens on :4321
 ```
 
 **2. Start a session** in your project folder:
 
 ```bash
 cd ~/code/my-app
-cowove join --server wss://your-relay.example.com --name you --tool claude
+quilt join --server wss://your-relay.example.com --name you --tool claude
 ```
 
 It prints an invite link like `https://cowove-relay.fly.dev/join/room-1a2b#…`.
@@ -110,19 +110,19 @@ Send it to your friend. Opening it in a browser shows them how to join.
 
 ```bash
 mkdir my-app && cd my-app
-cowove join <invite-link> --name friend --tool cursor
+quilt join <invite-link> --name friend --tool cursor
 ```
 
-Keep `cowove join` running in a terminal while you work. It logs who joined,
+Keep `quilt join` running in a terminal while you work. It logs who joined,
 what they're touching, claims, and messages.
 
 **4. Connect your AI tools** (once per project, by either of you; it syncs):
 
 ```bash
-cowove setup
+quilt setup
 ```
 
-This registers the `cowove` MCP server in `.mcp.json` (Claude Code) and
+This registers the `quilt` MCP server in `.mcp.json` (Claude Code) and
 `.cursor/mcp.json` (Cursor), and adds pairing etiquette to `CLAUDE.md` and
 `AGENTS.md` ("check what your partner is doing before you start; don't edit
 claimed files; re-read files before editing"). Restart or reload your tool to
@@ -132,46 +132,46 @@ pick up the MCP server.
 
 | Command | What it does |
 |---|---|
-| `cowove ui` | Open the app (start, join, chat, files) |
-| `cowove serve [--port 4321] [--data ./cowove-data]` | Run a relay |
-| `cowove relay set <url> [--key <key>]` | Use your hosted relay by default |
-| `cowove relay` / `cowove relay check <url>` / `cowove relay clear` | Show and test the default relay, test any relay, or forget it |
-| `cowove join` / `cowove join --server <url>` | Start a new session for this folder (on your default relay, or the one given) |
-| `cowove join <invite>` | Join a session |
-| `cowove join` | Rejoin this folder's last session (merges offline edits) |
-| `cowove invite` | Print the invite link again |
-| `cowove status` | Who's online, focus, recent edits, claims, messages |
-| `cowove focus "adding auth"` | Tell others what you're working on |
-| `cowove claim 'src/auth/**' "rewriting login"` | Lock files/folders/globs so only you can change them |
-| `cowove release <pattern>` / `cowove release` | Release one claim / all of yours |
-| `cowove chat` | Interactive chat in your terminal (live messages, DMs, files) |
-| `cowove say "pushing a schema change"` / `cowove say @bob "got a sec?"` | Message everyone / one person |
-| `cowove send design.png @bob "new mockup"` | Send a file (to everyone, or one person) |
-| `cowove messages` / `cowove messages --all` / `--with bob` | Unread messages / history / one conversation |
-| `cowove get <message-id> [dest]` | Download a shared file again |
-| `cowove setup` | Wire up MCP + agent instructions |
-| `cowove mcp` | The MCP server itself (your AI tool launches this) |
-| `cowove doctor [--watch 30]` | Check what cowove can see of your Claude Code / Cursor chats (safe to share: no chat text) |
+| `quilt ui` | Open the app (start, join, chat, files) |
+| `quilt serve [--port 4321] [--data ./quilt-data]` | Run a relay |
+| `quilt relay set <url> [--key <key>]` | Use your hosted relay by default |
+| `quilt relay` / `quilt relay check <url>` / `quilt relay clear` | Show and test the default relay, test any relay, or forget it |
+| `quilt join` / `quilt join --server <url>` | Start a new session for this folder (on your default relay, or the one given) |
+| `quilt join <invite>` | Join a session |
+| `quilt join` | Rejoin this folder's last session (merges offline edits) |
+| `quilt invite` | Print the invite link again |
+| `quilt status` | Who's online, focus, recent edits, claims, messages |
+| `quilt focus "adding auth"` | Tell others what you're working on |
+| `quilt claim 'src/auth/**' "rewriting login"` | Lock files/folders/globs so only you can change them |
+| `quilt release <pattern>` / `quilt release` | Release one claim / all of yours |
+| `quilt chat` | Interactive chat in your terminal (live messages, DMs, files) |
+| `quilt say "pushing a schema change"` / `quilt say @bob "got a sec?"` | Message everyone / one person |
+| `quilt send design.png @bob "new mockup"` | Send a file (to everyone, or one person) |
+| `quilt messages` / `quilt messages --all` / `--with bob` | Unread messages / history / one conversation |
+| `quilt get <message-id> [dest]` | Download a shared file again |
+| `quilt setup` | Wire up MCP + agent instructions |
+| `quilt mcp` | The MCP server itself (your AI tool launches this) |
+| `quilt doctor [--watch 30]` | Check what Quilt can see of your Claude Code / Cursor chats (safe to share: no chat text) |
 
 ### MCP tools for agents
 
 | Tool | Purpose |
 |---|---|
-| `cowove_join_session` | Join a session from an invite link, as an agent (no human needed) |
-| `cowove_start_session` | Start a new session for a folder and get an invite link |
-| `cowove_leave_session` / `cowove_session_info` | Leave; or see the folder, your name, who's online, and the invite |
-| `cowove_status` | Collaborators, their focus, recently edited files, claims, messages |
-| `cowove_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
-| `cowove_list_files` | Shared files with recent editors and claims |
-| `cowove_set_focus` | Announce the current task |
-| `cowove_claim` / `cowove_release` | Claim or release files before and after larger changes |
-| `cowove_message` | Message everyone, or one person with `to` |
-| `cowove_read_messages` | Read unread (or recent) messages, including received files |
-| `cowove_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
-| `cowove_get_file` | Download a shared file (again) |
+| `quilt_join_session` | Join a session from an invite link, as an agent (no human needed) |
+| `quilt_start_session` | Start a new session for a folder and get an invite link |
+| `quilt_leave_session` / `quilt_session_info` | Leave; or see the folder, your name, who's online, and the invite |
+| `quilt_status` | Collaborators, their focus, recently edited files, claims, messages |
+| `quilt_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
+| `quilt_list_files` | Shared files with recent editors and claims |
+| `quilt_set_focus` | Announce the current task |
+| `quilt_claim` / `quilt_release` | Claim or release files before and after larger changes |
+| `quilt_message` | Message everyone, or one person with `to` |
+| `quilt_read_messages` | Read unread (or recent) messages, including received files |
+| `quilt_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
+| `quilt_get_file` | Download a shared file (again) |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
-Point its MCP config at the command `cowove` with args `["mcp"]`.
+Point its MCP config at the command `quilt` with args `["mcp"]`.
 
 ## Watching each other's AI
 
@@ -192,12 +192,12 @@ or release it.
 Claims are enforced in code, not just by asking agents nicely:
 
 - **Your side:** if you change a file someone else has claimed (including
-  creating or deleting files in a claimed folder), cowove puts the shared version
+  creating or deleting files in a claimed folder), Quilt puts the shared version
   back on your disk, never sends the change, and keeps your version in
-  `.cowove/rejected/`.
+  `.quilt/rejected/`.
 - **Their side:** if a change to your claimed files still arrives (say, from a
-  partner running an older cowove), your cowove reverts it in the shared session
-  and keeps their version in your `.cowove/rejected/`.
+  partner running an older Quilt), your Quilt reverts it in the shared session
+  and keeps their version in your `.quilt/rejected/`.
 - **The relay:** claims live on the relay, not in the shared files. It checks
   who is asking (see [Security](#security)), refuses a claim that overlaps
   someone else's, and only lets the person who made a claim release it. So a
@@ -208,31 +208,31 @@ Claims are enforced in code, not just by asking agents nicely:
   both, everyone treats the earliest claim as the owner.
 
 Sharing is on when you join. Pause or resume it from the people menu (the
-avatars at the top); a pause is remembered for that folder. cowove reads Claude
+avatars at the top); a pause is remembered for that folder. Quilt reads Claude
 Code transcripts from `~/.claude/projects` and Cursor's local chat database
 (read-only, needs Node.js 22.13+). Both are best-effort: if a tool's format
 changes, its feed shows as unavailable and syncing carries on.
 
 ## Agents as participants
 
-An AI agent can be a full member of a session, with no human running cowove for
-it. Give the agent an invite link and it calls `cowove_join_session`. The project
+An AI agent can be a full member of a session, with no human running Quilt for
+it. Give the agent an invite link and it calls `quilt_join_session`. The project
 syncs into its folder, and everyone sees it in the session with an agent badge.
 It can then read partners' AI feeds, claim files, chat, and edit files that
-sync to everyone. It can also start a session with `cowove_start_session` and
+sync to everyone. It can also start a session with `quilt_start_session` and
 hand out the invite. The session lasts as long as the agent's MCP server runs.
 
-Agents that prefer the shell can run `cowove join <invite> --agent` instead.
+Agents that prefer the shell can run `quilt join <invite> --agent` instead.
 
 ## Messaging and file sharing
 
 Chat lives alongside the code. Messages go to everyone by default, or to one
 person with `@name`. Messages are kept in the room, so anyone offline sees
-them when they reconnect, and `cowove status` shows your unread count.
+them when they reconnect, and `quilt status` shows your unread count.
 
 Files you **send** (screenshots, logs, exports, a PDF spec) go through the relay
 as attachments. They are *not* added to the shared project folder. Recipients
-get them automatically in `.cowove/inbox/`, including files sent while they
+get them automatically in `.quilt/inbox/`, including files sent while they
 were offline. The limit is 100 MB per file.
 
 Direct messages and files are only shown to the sender and recipient, but they
@@ -246,16 +246,16 @@ friends just paste an invite link. The relay is a single small process. It
 comes ready to deploy with a Fly.io config (`fly.toml`, about $2–5/month), a
 Render blueprint (`render.yaml`), a docker-compose file with automatic HTTPS
 for any server (`deploy/`), and a prebuilt image published by CI
-(`ghcr.io/danielcarmichaelgit/cowove-relay`).
+(`ghcr.io/danielcarmichaelgit/quilt-relay`).
 
 **[docs/hosting.md](docs/hosting.md)** walks through each option. Once it's
 running:
 
 ```bash
-cowove relay set wss://your-relay.example.com --key <relay key>
+quilt relay set wss://your-relay.example.com --key <relay key>
 ```
 
-From then on, `cowove join`, the app and agents start sessions there by default.
+From then on, `quilt join`, the app and agents start sessions there by default.
 The relay key stops strangers from starting sessions on your relay. People you
 invite never need it.
 
@@ -268,19 +268,19 @@ Hosted relays are built for the public internet:
   days are deleted.
 - It serves a health check at `/healthz` and a status page at `/`.
 
-No server handy? `cowove ui` → **Host relay here** runs one on your computer.
+No server handy? `quilt ui` → **Host relay here** runs one on your computer.
 Use `cloudflared tunnel --url http://localhost:4321` for partners who aren't
 on your network.
 
 ## What syncs (and what doesn't)
 
-- Everything in the folder **except**: `.git/`, `node_modules/`, `.cowove/`,
+- Everything in the folder **except**: `.git/`, `node_modules/`, `.quilt/`,
   `.env` / `.env.*` (secrets stay local), editor swap files, anything in your
-  `.gitignore`, and anything in an optional `.cowoveignore` (same syntax).
+  `.gitignore`, and anything in an optional `.quiltignore` (same syntax).
 - Text files up to 2 MB and binary files up to 8 MB.
 - Symlinks are not synced.
 - On first join, if a file differs between your folder and the session, the
-  session's version wins and yours is copied to `.cowove/conflicts/<time>/`.
+  session's version wins and yours is copied to `.quilt/conflicts/<time>/`.
   Use `--prefer local` to push your versions instead.
 
 **Git:** the working tree is shared, but `.git` isn't. The simplest workflow
@@ -294,7 +294,7 @@ and the changes sync to everyone.
   browser opening the link never sends it to the relay. The first client to
   open a room sets it, and everyone else must match. Treat invite links like
   passwords.
-- Each person has a signing key in `~/.cowove/identity.json`, made on first use.
+- Each person has a signing key in `~/.quilt/identity.json`, made on first use.
   The first time a name joins a room, the relay ties that name to the key. After
   that, only that key can use the name: the relay checks a signature on every
   connect, and drops presence updates that use anyone else's name. Copy the file
@@ -317,4 +317,4 @@ npm test     # end-to-end tests: real relay, two clients, temp folders
 Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),
 `src/control.js` (local API for CLI/MCP), `src/mcp.js`, `src/setup.js`,
-`bin/cowove.js` (CLI).
+`bin/quilt.js` (CLI).

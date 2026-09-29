@@ -1,4 +1,4 @@
-// `cowove doctor`: explains what cowove can see of this machine's AI chats, so a
+// `quilt doctor`: explains what quilt can see of this machine's AI chats, so a
 // missing feed can be diagnosed from one pasted report. It prints counts,
 // lengths and names only, never chat text, so the report is safe to share.
 import fs from 'node:fs'
@@ -11,7 +11,7 @@ import { startAgentReaders } from './agents/index.js'
 export async function doctor ({ dir = process.cwd(), watchSeconds = 0, print = console.log, cursorDir } = {}) {
   dir = path.resolve(dir)
   const say = (s = '') => print(s)
-  say(`cowove doctor for ${dir}`)
+  say(`quilt doctor for ${dir}`)
   say(`node ${process.version} on ${process.platform}${cloudHint()}`)
   say()
   claude(dir, say)
@@ -62,7 +62,7 @@ async function cursor (dir, say, userDir = cursorUserDir()) {
   if (!found.length) {
     say('- ✗ Cursor has never opened this exact folder. Folders Cursor has opened recently:')
     for (const f of recentWorkspaceFolders(userDir).slice(0, 12)) say(`    ${f}`)
-    say('  If the project is in that list under another path (a parent folder, a symlink, a different drive letter or case), open this exact folder in Cursor, or run cowove there.')
+    say('  If the project is in that list under another path (a parent folder, a symlink, a different drive letter or case), open this exact folder in Cursor, or run quilt there.')
     return
   }
   say(`- workspace folder(s) for this project: ${found.map((f) => path.basename(f)).join(', ')}`)

@@ -2,7 +2,7 @@
 // and invite links that open the app.
 const { contextBridge, ipcRenderer } = require('electron')
 
-contextBridge.exposeInMainWorld('cowoveDesktop', {
+contextBridge.exposeInMainWorld('quiltDesktop', {
   platform: process.platform,
   pickFolder: (current) => ipcRenderer.invoke('pick-folder', current || ''),
   /** Calls `fn(link)` for each invite link opened, including one that launched the app. */

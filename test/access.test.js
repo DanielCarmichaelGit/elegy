@@ -11,7 +11,7 @@ import { generateIdentity } from '../src/identity.js'
 
 let srv, server
 const sessions = []
-const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-acc-${name}-`))
+const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-acc-${name}-`))
 const read = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel), 'utf8') } catch { return null } }
 const write = (dir, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
@@ -94,7 +94,7 @@ test('viewers can chat but their file changes are undone by the relay', async ()
   const { owner, ownerDir, bring } = await ownedRoom()
   const { s: vic, dir } = await bring('vic', { secret: VIEW })
   assert.equal(vic.access.role, 'viewer', 'the view-only invite makes a viewer')
-  // Their own cowove refuses the change and puts the shared file back.
+  // Their own quilt refuses the change and puts the shared file back.
   write(dir, 'README.md', 'vandalized\n')
   await waitFor(() => read(dir, 'README.md') === 'hello\n')
   // A client that ignores that (edits the doc directly) is undone by the relay.

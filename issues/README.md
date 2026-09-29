@@ -1,13 +1,13 @@
 # Issues
 
-Problems found while using cowove, one file per issue, worked through in order.
+Problems found while using Quilt, one file per issue, worked through in order.
 Each file says what's wrong, what we know, the likely causes, and what's
 needed to close it. Keep the file after it's fixed and mark it **Fixed** with
 the commit, so the history stays in one place.
 
 | # | Issue | Status |
 |---|---|---|
-| [001](001-cursor-messages-missing.md) | Cursor messages still don't show up | Needs info from a Cursor machine (`cowove doctor --watch 30`) |
+| [001](001-cursor-messages-missing.md) | Cursor messages still don't show up | Needs info from a Cursor machine (`quilt doctor --watch 30`) |
 | [002](002-cloud-sessions-dont-share.md) | Cloud sessions (Claude Code / Cursor cloud) share nothing | Diagnosed; fix needs a public relay (deploy) |
 | [003](003-claude-code-not-offered.md) | "Open in Claude Code" missing when Claude Code is installed | Open; detection only finds the desktop app |
 | [004](004-open-in-cursor-wrong-folder.md) | "Open in Cursor" opens Cursor but not the session folder | **Fixed** (748a583): opens a classic Cursor window on the folder |
@@ -22,7 +22,7 @@ Copy this into `NNN-short-name.md`:
 ```
 # NNN: <what's wrong, in a sentence>
 
-**Status:** Open · **Reported:** YYYY-MM-DD · **Seen on:** <tool, OS, how cowove was run>
+**Status:** Open · **Reported:** YYYY-MM-DD · **Seen on:** <tool, OS, how quilt was run>
 
 ## What happens
 ## What should happen

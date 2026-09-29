@@ -22,7 +22,7 @@ test('cursor prompts keep only the typed message', () => {
 })
 
 test('shares prompts, replies, and actions, and drops thinking', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-cursor-tx-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-cursor-tx-'))
   const dir = path.join(root, 'room')
   const projects = path.join(root, 'projects')
   fs.mkdirSync(dir)
@@ -54,11 +54,11 @@ test('shares prompts, replies, and actions, and drops thinking', async () => {
 })
 
 test('windows slug drops the drive colon', { skip: process.platform !== 'win32' }, () => {
-  assert.equal(cursorProjectSlug('C:\\Users\\bjmik\\cowove\\room-1fe78d15'), 'c-Users-bjmik-cowove-room-1fe78d15')
+  assert.equal(cursorProjectSlug('C:\\Users\\bjmik\\quilt\\room-1fe78d15'), 'c-Users-bjmik-quilt-room-1fe78d15')
 })
 
 test('matches the project folder when the drive letter case differs', { skip: process.platform !== 'win32' }, async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-cursor-tx-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-cursor-tx-'))
   const dir = path.join(root, 'room')
   const projects = path.join(root, 'projects')
   fs.mkdirSync(dir)

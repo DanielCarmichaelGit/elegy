@@ -6,7 +6,7 @@ Status: draft, awaiting review
 ## Goal
 
 Let collaborators watch each other's AI coding conversations live, and see
-and claim the project's files, from the `cowove ui` session screen. cowove stays
+and claim the project's files, from the `quilt ui` session screen. Quilt stays
 tool-agnostic for syncing; the feed is best-effort per tool, starting with
 Claude Code and Cursor.
 
@@ -29,7 +29,7 @@ Claude Code and Cursor.
 ```
   your machine                                         partner's machine
   ~/.claude/projects/…/*.jsonl ─┐
-  Cursor state.vscdb ───────────┤ agent readers          cowove ui
+  Cursor state.vscdb ───────────┤ agent readers          quilt ui
                                 ▼ (src/agents/)            ▲ feed, tree, file view
                            Session.agentFeed  ──Yjs──►  Session.agentFeed
                            awareness.agent    ──────►   awareness.agent
@@ -37,8 +37,8 @@ Claude Code and Cursor.
 
 ### 1. Agent readers (`src/agents/`)
 
-Each reader runs inside the process that syncs a folder (`cowove join` or
-`cowove ui`), watches only its own user's tool, and emits normalized entries.
+Each reader runs inside the process that syncs a folder (`quilt join` or
+`quilt ui`), watches only its own user's tool, and emits normalized entries.
 
 ```js
 // src/agents/index.js
@@ -134,7 +134,7 @@ flags, tokens, URLs and paths are never shared.
   entries.
 - `setAgentSharing(on)`: when turned off, new entries are dropped and one
   `{ kind: 'paused' }` entry is pushed; turning it back on pushes
-  `{ kind: 'resumed' }`. The choice is saved in `.cowove/config.json`
+  `{ kind: 'resumed' }`. The choice is saved in `.quilt/config.json`
   (`shareAgent: false`) so it survives restarts.
 - Awareness gains `agent: { tool, status, sharing, reason? }` for the live
   "working…" indicator and the people menu.
@@ -143,7 +143,7 @@ flags, tokens, URLs and paths are never shared.
   side, so open file tabs refresh.
 
 The session starts the readers in `runSession` (`src/runner.js`) and stops
-them in `run.stop()`, so `cowove join` and `cowove ui` behave the same.
+them in `run.stop()`, so `quilt join` and `quilt ui` behave the same.
 
 ### 3. Local app API (`src/ui-server.js`)
 
@@ -237,7 +237,7 @@ top bar.
 - `test/ui.test.js` additions: `/tree`, `/file` (text, binary, rejected
   `../` and unknown paths), folder claim via the existing route, `/sharing`,
   `/feed`.
-- Manual: two `cowove ui` sessions on this machine, one driven by a real
+- Manual: two `quilt ui` sessions on this machine, one driven by a real
   Claude Code conversation, checked in the browser.
 
 ## Out of scope

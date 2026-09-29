@@ -1,4 +1,4 @@
-// cowove app: boot, live events, home screen, folder picker and invites.
+// Quilt app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
 import { TOKEN, I, state, $, esc, basename, toast, api, decodeInvite, remember, recall } from './common.js'
 import { renderShell, joinSessionDialog } from './home.js'
@@ -21,7 +21,7 @@ async function boot () {
     if (isSession(state.view)) await loadMessages(state.view)
     connectEvents()
     render()
-    window.cowoveDesktop?.onInvite(openInviteLink)
+    window.quiltDesktop?.onInvite(openInviteLink)
   } catch (err) {
     renderLocked(err.message)
   }
@@ -78,7 +78,7 @@ const isSession = (view) => view !== 'home' && view !== 'settings'
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    document.title = 'cowove'
+    document.title = 'quilt'
     if (isSession(state.view)) markRead(state.view)
   }
 })
@@ -116,11 +116,11 @@ export async function go (view) {
 
 // --------------------------------------------------------------- render --
 export async function shutdown () {
-  if (!confirm('Shut down cowove? This stops every session, the relay, and this app. Your files stay where they are.')) return
+  if (!confirm('Shut down Quilt? This stops every session, the relay, and this app. Your files stay where they are.')) return
   try {
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop
-    renderLocked('cowove is shut down. You can close this tab.')
+    renderLocked('quilt is shut down. You can close this tab.')
   } catch (err) {
     toast(err.message)
   }
@@ -142,8 +142,8 @@ export function renderLocked (msg) {
   $('#app').innerHTML = `
     <div class="home"><div class="hero">
       <img src="/logo.svg" alt="">
-      <div class="wordmark">co<i>wo</i>ve</div>
-      <p class="tagline">${esc(msg || 'Open cowove using the link printed in your terminal by')} ${msg ? '' : '<code>cowove ui</code>.'}</p>
+      <div class="wordmark">Quilt</div>
+      <p class="tagline">${esc(msg || 'Open Quilt using the link printed in your terminal by')} ${msg ? '' : '<code>quilt ui</code>.'}</p>
     </div></div>`
 }
 
@@ -180,8 +180,8 @@ async function openInviteLink (link) {
 
 // -------------------------------------------------------- folder picker --
 export async function pickFolder (input) {
-  if (window.cowoveDesktop) {
-    const dir = await window.cowoveDesktop.pickFolder(input.value)
+  if (window.quiltDesktop) {
+    const dir = await window.quiltDesktop.pickFolder(input.value)
     if (dir) { input.value = dir; input.dispatchEvent(new Event('input', { bubbles: true })) }
     return
   }
@@ -209,7 +209,7 @@ export async function pickFolder (input) {
       $('#pick-list', back).innerHTML = d.dirs.length
         ? d.dirs.map((n) => `<button data-dir="${esc(n)}">${I.folder}<span>${esc(n)}</span></button>`).join('')
         : '<div class="empty-note" style="padding:14px">No subfolders</div>'
-      $('#pick-note', back).textContent = d.hasSession ? 'This folder has been used with cowove before.' : d.isEmpty ? 'This folder is empty.' : ''
+      $('#pick-note', back).textContent = d.hasSession ? 'This folder has been used with Quilt before.' : d.isEmpty ? 'This folder is empty.' : ''
       $('#pick-list', back).querySelectorAll('[data-dir]').forEach((b) => {
         b.onclick = () => load(`${d.path.replace(/[\\/]$/, '')}/${b.dataset.dir}`)
       })
@@ -240,7 +240,7 @@ export function openInvite (id) {
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
     <h3 id="inv-title">Invite someone</h3>
-    <p class="lead">Send them a link. They paste it into <b>Join a session</b> in cowove, or run <code>cowove join &lt;link&gt;</code>. Opening it in a browser explains what to do.</p>
+    <p class="lead">Send them a link. They paste it into <b>Join a session</b> in Quilt, or run <code>quilt join &lt;link&gt;</code>. Opening it in a browser explains what to do.</p>
     <div class="label" style="margin-bottom:6px">${s.viewInvite ? 'Can edit' : 'Invite link'}</div>
     <div class="codebox"><code id="inv-code">${esc(s.invite)}</code><button class="btn icon" data-copy="inv-code" title="Copy" aria-label="Copy invite link">${I.copy}</button></div>
     ${s.viewInvite ? `<div class="label" style="margin-bottom:6px">View only</div>

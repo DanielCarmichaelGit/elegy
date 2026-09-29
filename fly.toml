@@ -1,14 +1,14 @@
-# Fly.io config for a cowove relay. See docs/hosting.md.
+# Fly.io config for a quilt relay. See docs/hosting.md.
 #   fly launch --copy-config --no-deploy   (pick a unique app name)
 #   fly volumes create cowove_data --size 3
-#   fly secrets set COWOVE_RELAY_KEY=$(openssl rand -base64 24)
+#   fly secrets set QUILT_RELAY_KEY=$(openssl rand -base64 24)
 #   fly deploy
 app = "cowove-relay"
 primary_region = "iad"
 
 [env]
-  COWOVE_DATA = "/data"
-  COWOVE_TRUST_PROXY = "1"
+  QUILT_DATA = "/data"
+  QUILT_TRUST_PROXY = "1"
   PORT = "4321"
 
 [[mounts]]

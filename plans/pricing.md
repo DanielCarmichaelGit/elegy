@@ -15,13 +15,13 @@
 
 ## What it needs
 
-- **Accounts.** People sign in on the cowove website (the website is for
+- **Accounts.** People sign in on the Quilt website (the website is for
   sign-in and accounts; the app itself is the desktop app). Today a person is
-  a key kept on their computer (`~/.cowove/identity.json`); an account would
+  a key kept on their computer (`~/.quilt/identity.json`); an account would
   own that key, so the same person is recognized on every computer and
   nobody can use their name.
 - **The hosted relay checks the plan.** Today it takes one shared relay key
-  (`COWOVE_RELAY_KEY`). Instead, starting a cloud session would need a
+  (`QUILT_RELAY_KEY`). Instead, starting a cloud session would need a
   signed-in account on a paid plan (or an org seat); joining someone's
   session by invite link would stay free.
 - **Orgs.** Members, seats and billing, and org-level rules on top of the

@@ -1,5 +1,5 @@
 node_modules/
-.cowove/
-cowove-data/
+.quilt/
+quilt-data/
 .superpowers/
 dist/

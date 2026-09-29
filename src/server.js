@@ -28,6 +28,7 @@ import {
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { patternsOverlap, globMatcher } from './fsutil.js'
+import { adoptLegacyEnv } from './legacy.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -43,17 +44,17 @@ const sameSecret = (a, b) => a.length === b.length && crypto.timingSafeEqual(a, 
 
 /** Relay settings, from options or environment variables. */
 export function relayConfig (opts = {}) {
-  const env = process.env
+  const env = adoptLegacyEnv({ ...process.env })
   const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v))
   return {
-    relayKey: opts.relayKey ?? env.COWOVE_RELAY_KEY ?? '',
-    maxRoomBytes: num(opts.maxRoomBytes ?? env.COWOVE_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
-    maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.COWOVE_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
-    maxConnsPerIp: num(opts.maxConnsPerIp ?? env.COWOVE_MAX_CONNS_PER_IP, 50),
-    maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.COWOVE_MAX_NEW_ROOMS_PER_HOUR, 30),
-    roomTtlDays: num(opts.roomTtlDays ?? env.COWOVE_ROOM_TTL_DAYS, 30),
+    relayKey: opts.relayKey ?? env.QUILT_RELAY_KEY ?? '',
+    maxRoomBytes: num(opts.maxRoomBytes ?? env.QUILT_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
+    maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.QUILT_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
+    maxConnsPerIp: num(opts.maxConnsPerIp ?? env.QUILT_MAX_CONNS_PER_IP, 50),
+    maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
+    roomTtlDays: num(opts.roomTtlDays ?? env.QUILT_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
-    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.COWOVE_TRUST_PROXY || '')
+    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || '')
   }
 }
 
@@ -595,7 +596,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
 
   // Files shared in chat are stored on the relay, not in the synced project.
-  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'cowove-relay-')), 'files')
+  const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
 
   const stats = () => {
     let connections = 0
@@ -664,7 +665,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const room = getRoom(name)
     const creating = !room.exists
     if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
-    const auth = room.authorize(req.headers['x-cowove-secret'] || '', req.headers['x-cowove-key'] || '')
+    const auth = room.authorize(req.headers['x-quilt-secret'] || req.headers['x-cowove-secret'] || '', req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || '')
     if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(clientIp(req))
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
@@ -693,7 +694,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const secret = url.searchParams.get('secret') || ''
     const person = (url.searchParams.get('name') || '').trim()
     const publicKey = url.searchParams.get('key') || ''
-    const relayKey = url.searchParams.get('relayKey') || req.headers['x-cowove-key'] || ''
+    const relayKey = url.searchParams.get('relayKey') || req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || ''
     const viewSecret = url.searchParams.get('viewSecret') || ''
     const kind = url.searchParams.get('kind') === 'agent' ? 'agent' : 'human'
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
@@ -708,7 +709,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
     }
-    if (!publicKey) return reject(socket, 400, 'This relay needs a newer cowove; please update')
+    if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
@@ -845,10 +846,10 @@ p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
 
 const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/elegy/releases/latest/download'
 
-/** Where an invite link lands in a browser: opens the cowove app, or offers to download it. */
+/** Where an invite link lands in a browser: opens the Quilt app, or offers to download it. */
 function joinPage (room) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>Join on cowove</title><link rel="icon" href="/logo.svg">
+<meta name="robots" content="noindex"><title>Join on Quilt</title><link rel="icon" href="/logo.svg">
 <style>${PAGE_STYLE}
 .btn{display:block;width:100%;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:650;padding:12px 16px;margin-top:22px;cursor:pointer;text-decoration:none;font-size:16px}
 .btn.alt{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:10px;font-size:15px}
@@ -857,25 +858,25 @@ function joinPage (room) {
 details{margin-top:18px;text-align:left;color:var(--muted);font-size:13px}summary{cursor:pointer;text-align:center}
 code.block{display:block;background:var(--code);border-radius:8px;padding:8px 10px;margin-top:8px;overflow-wrap:anywhere;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
 </style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>You're invited to code together</h1>
-<p>Join the cowove session <b>${room}</b>.</p>
-<a class="btn" id="open" href="#">Open in cowove</a>
+<p>Join the Quilt session <b>${room}</b>.</p>
+<a class="btn" id="open" href="#">Open in Quilt</a>
 <p id="missing" hidden>This link is missing its secret. Ask for the full invite link.</p>
 <div id="get">
-<p>Don't have cowove yet? Download it, open it, then click <b>Open in cowove</b> again.</p>
+<p>Don't have Quilt yet? Download it, open it, then click <b>Open in Quilt</b> again.</p>
 <div class="dl" id="dl">
-<a href="${DOWNLOADS}/cowove-mac-arm64.dmg">Mac (Apple silicon)</a> ·
-<a href="${DOWNLOADS}/cowove-mac-x64.dmg">Mac (Intel)</a> ·
-<a href="${DOWNLOADS}/cowove-windows-x64.exe">Windows</a>
+<a href="${DOWNLOADS}/quilt-mac-arm64.dmg">Mac (Apple silicon)</a> ·
+<a href="${DOWNLOADS}/quilt-mac-x64.dmg">Mac (Intel)</a> ·
+<a href="${DOWNLOADS}/quilt-windows-x64.exe">Windows</a>
 </div>
-<p class="small">On a Mac, the first time you open it macOS may say it can't check cowove. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>.</p>
+<p class="small">On a Mac, the first time you open it macOS may say it can't check Quilt. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>.</p>
 </div>
 <details><summary>Use the terminal instead</summary>
 In the folder where you want the project, run:<code class="block" id="cmd"></code>
 <button class="btn alt" id="copy">Copy invite link</button></details>
 </div><script>
 const link = location.href
-document.getElementById('open').href = 'cowove://join?invite=' + encodeURIComponent(link)
-document.getElementById('cmd').textContent = 'cowove join "' + link + '"'
+document.getElementById('open').href = 'quilt://join?invite=' + encodeURIComponent(link)
+document.getElementById('cmd').textContent = 'quilt join "' + link + '"'
 if (!location.hash) { document.getElementById('missing').hidden = false; document.getElementById('open').hidden = true }
 document.getElementById('copy').onclick = async (e) => {
   try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch { prompt('Copy this link:', link) }
@@ -885,9 +886,9 @@ document.getElementById('copy').onclick = async (e) => {
 
 function statusPage (s) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>cowove relay</title><link rel="icon" href="/logo.svg">
-<style>${PAGE_STYLE}</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>cowove relay</h1>
+<title>quilt relay</title><link rel="icon" href="/logo.svg">
+<style>${PAGE_STYLE}</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>quilt relay</h1>
 <div class="ok"><i></i>Running</div>
 <p>${s.connections} connection${s.connections === 1 ? '' : 's'} · ${s.roomsLoaded} active room${s.roomsLoaded === 1 ? '' : 's'}${s.requiresKey ? ' · starting sessions needs a relay key' : ''}</p>
-<p>Point cowove at this relay with<br><code>cowove relay set wss://&lt;this address&gt;</code></p></div></body></html>`
+<p>Point Quilt at this relay with<br><code>quilt relay set wss://&lt;this address&gt;</code></p></div></body></html>`
 }

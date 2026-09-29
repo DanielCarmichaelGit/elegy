@@ -13,7 +13,7 @@ import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 import { generateIdentity } from '../src/identity.js'
 
-const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `cowove-relay-${n}-`))
+const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-relay-${n}-`))
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 async function waitFor (fn, ms = 5000) {
   const t = Date.now()
@@ -27,7 +27,7 @@ function cleanups (t) {
   t.after(async () => { for (const fn of fns.reverse()) await fn() })
   return (fn) => fns.push(fn)
 }
-// Sessions without an identity create one in ~/.cowove; keep that out of the real home.
+// Sessions without an identity create one in ~/.quilt; keep that out of the real home.
 process.env.HOME = tmp('home')
 
 test('health endpoint and status page', async (t) => {
@@ -38,7 +38,7 @@ test('health endpoint and status page', async (t) => {
   assert.equal(h.ok, true)
   assert.equal(h.requiresKey, true)
   const page = await (await fetch(`http://127.0.0.1:${srv.port}/status`)).text()
-  assert.match(page, /cowove relay/)
+  assert.match(page, /quilt relay/)
   assert.match(page, /Running/)
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/nope`)).status, 404)
 })
@@ -59,7 +59,7 @@ test('invites are links, and older codes still work', () => {
   const link = encodeInvite(conn)
   assert.equal(link, 'https://relay.example.com/join/room-1a2b#abc_D-9')
   assert.deepEqual(decodeInvite(link), conn)
-  assert.deepEqual(decodeInvite(`  cowove join ${link}\n`), conn)
+  assert.deepEqual(decodeInvite(`  quilt join ${link}\n`), conn)
   assert.deepEqual(decodeInvite(encodeInvite({ server: 'ws://192.168.1.4:4321/', room: 'r', secret: 's' })), { server: 'ws://192.168.1.4:4321', room: 'r', secret: 's' })
   const old = Buffer.from(JSON.stringify({ s: conn.server, r: conn.room, k: conn.secret })).toString('base64url')
   assert.deepEqual(decodeInvite(old), conn)
@@ -82,7 +82,7 @@ test('a relay key is needed to create rooms, not to join them', async (t) => {
   const guest = new Session({ dir: tmp('g'), server, room: 'r1', secret: 'x', name: 'guest' })
   defer(() => guest.stop())
   await guest.start({ waitTimeoutMs: 3000 })
-  const up = await fetch(`http://127.0.0.1:${srv.port}/files/other-room`, { method: 'POST', headers: { 'x-cowove-secret': 'x' }, body: 'hi' })
+  const up = await fetch(`http://127.0.0.1:${srv.port}/files/other-room`, { method: 'POST', headers: { 'x-quilt-secret': 'x' }, body: 'hi' })
   assert.equal(up.status, 403)
 })
 
@@ -122,7 +122,7 @@ test('file storage quota per room', async (t) => {
   const defer = cleanups(t)
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomFileBytes: 1000 })
   defer(() => srv.close())
-  const post = (body) => fetch(`http://127.0.0.1:${srv.port}/files/fq`, { method: 'POST', headers: { 'x-cowove-secret': 's' }, body })
+  const post = (body) => fetch(`http://127.0.0.1:${srv.port}/files/fq`, { method: 'POST', headers: { 'x-quilt-secret': 's' }, body })
   assert.equal((await post('x'.repeat(600))).status, 201)
   const r = await post('x'.repeat(600))
   assert.equal(r.status, 413)

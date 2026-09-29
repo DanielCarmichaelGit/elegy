@@ -42,9 +42,9 @@ function runCli (cmd, args, input) {
   })
 }
 
-/** The summarizing command: COWOVE_SUMMARY_CMD (for tests or other tools) or Claude Code's CLI. */
+/** The summarizing command: QUILT_SUMMARY_CMD (for tests or other tools) or Claude Code's CLI. */
 function command (kind) {
-  const custom = process.env.COWOVE_SUMMARY_CMD
+  const custom = process.env.QUILT_SUMMARY_CMD
   if (custom) {
     const [cmd, ...args] = custom.split(' ').filter(Boolean)
     return [cmd, [...args, INSTRUCTIONS[kind]]]
