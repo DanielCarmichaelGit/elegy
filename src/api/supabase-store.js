@@ -55,6 +55,11 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async revokeAgent (ownerId, id) {
       const rows = await one(db.from('agents').update({ revoked_at: new Date().toISOString() }).eq('id', id).eq('owner_id', ownerId).select('id'))
       return rows.length > 0
+    },
+    // Deleting the auth user cascades through profiles, devices, links and agents.
+    async deleteUser (userId) {
+      const { error } = await db.auth.admin.deleteUser(userId)
+      if (error) throw error
     }
   }
 }

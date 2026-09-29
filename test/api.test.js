@@ -314,3 +314,10 @@ test('unexpected errors are logged even when they are not Error objects', async 
   assert.match(lines[0], /PGRST301/)
   assert.match(lines[0], /db down/)
 })
+
+test('a signed-in person can delete their account', async () => {
+  store.addUser('bye', { name: 'Bye' })
+  assert.equal((await call('DELETE', '/v1/me/account', null)).status, 401)
+  assert.equal((await call('DELETE', '/v1/me/account', null, 'user:bye')).status, 200)
+  assert.equal(await store.profile('bye'), null)
+})

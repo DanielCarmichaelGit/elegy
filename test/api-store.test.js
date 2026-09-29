@@ -76,3 +76,15 @@ test('profiles, and agents only their owner can list or revoke', async () => {
   assert.equal(await s.revokeAgent('u1', a.id), true)
   assert.equal(await s.agentByKey('kh'), null)
 })
+
+test('deleting a user removes their profile, computers and agents', async () => {
+  const s = createMemoryStore()
+  s.addUser('gone', { name: 'Gone' })
+  const d = await s.upsertDevice({ userId: 'gone', name: 'Mac', platform: 'darwin', publicKey: 'pk-gone' })
+  await s.setDeviceToken(d.id, 'h-gone')
+  await s.createAgent({ ownerId: 'gone', name: 'A', keyPrefix: 'qa_xxxxx', keyHash: 'k-gone', publicKey: 'apk-gone', privateKeyEnc: 'e' })
+  await s.deleteUser('gone')
+  assert.equal(await s.profile('gone'), null)
+  assert.equal(await s.deviceByToken('h-gone'), null)
+  assert.equal(await s.agentByKey('k-gone'), null)
+})

@@ -136,6 +136,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       return { ok: true }
     }],
 
+    ['DELETE', /^\/v1\/me\/account$/, async (req) => {
+      const u = await user(req)
+      await store.deleteUser(u.userId)
+      return { ok: true }
+    }],
+
     ['POST', /^\/v1\/agents$/, async (req, body) => {
       const u = await user(req)
       const name = String(body.name || '').trim().slice(0, 40)

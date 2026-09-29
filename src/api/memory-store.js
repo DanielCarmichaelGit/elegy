@@ -54,6 +54,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       const a = agents.get(id)
       if (!a || a.ownerId !== ownerId) return false
       a.revokedAt = now(); return true
+    },
+    async deleteUser (userId) {
+      profiles.delete(userId)
+      for (const [id, d] of devices) if (d.userId === userId) devices.delete(id)
+      for (const [id, a] of agents) if (a.ownerId === userId) agents.delete(id)
     }
   }
 }
