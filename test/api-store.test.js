@@ -14,6 +14,32 @@ test('devices: the same computer relinking reuses its row and is un-revoked', as
   assert.equal(d2.id, d1.id)
   assert.equal(d2.revokedAt, null)
   assert.equal(d2.name, 'Mac 2')
+  assert.equal(await s.deviceByToken('h1'), null, 'the old token stays dead')
+})
+
+test('devices: revoking clears the token, and relinking clears it too', async () => {
+  const s = createMemoryStore()
+  const d = await s.upsertDevice({ userId: 'u1', name: 'Mac', platform: 'darwin', publicKey: 'pk1' })
+  await s.setDeviceToken(d.id, 'h1')
+  await s.revokeDevice(d.id)
+  assert.equal((await s.upsertDevice({ userId: 'u1', name: 'Mac', platform: 'darwin', publicKey: 'pk1' })).tokenHash, null)
+  await s.setDeviceToken(d.id, 'h2')
+  const again = await s.upsertDevice({ userId: 'u1', name: 'Mac', platform: 'darwin', publicKey: 'pk1' })
+  assert.equal(again.tokenHash, null, 'a relink without a revoke also retires the old token')
+  assert.equal(await s.deviceByToken('h2'), null)
+})
+
+test('devices: the same key under two accounts is two rows; one never touches the other', async () => {
+  const s = createMemoryStore()
+  const a = await s.upsertDevice({ userId: 'u1', name: 'Mac', platform: 'darwin', publicKey: 'pk1' })
+  await s.setDeviceToken(a.id, 'ha')
+  const b = await s.upsertDevice({ userId: 'u2', name: 'Stolen', platform: 'darwin', publicKey: 'pk1' })
+  assert.notEqual(b.id, a.id)
+  assert.equal(b.userId, 'u2')
+  const stillA = await s.deviceByToken('ha')
+  assert.equal(stillA.id, a.id)
+  assert.equal(stillA.userId, 'u1')
+  assert.equal(stillA.name, 'Mac')
 })
 
 test('links are found by device code and by user code', async () => {

@@ -47,8 +47,8 @@ All tables have row-level security on. "Owner" means `auth.uid()` matches the ro
 | Table | Columns | Access |
 |---|---|---|
 | `profiles` | `id` (= auth user id), `name`, `color`, `tool`, `created_at`, `updated_at` | owner: read, update. Created by a trigger on sign-up (name from the sign-in provider or the email's local part). |
-| `devices` | `id`, `user_id`, `name`, `platform`, `public_key` (the app's identity key, unique), `token_hash`, `created_at`, `last_seen_at`, `revoked_at` | owner: read; update only `revoked_at` (unlink) and `name`. `token_hash` not readable by clients (column privileges). Inserted by the API. |
-| `device_links` | `id`, `device_code_hash`, `user_code` (unique), `public_key`, `device_name`, `platform`, `status` (`pending`/`approved`/`denied`), `user_id`, `device_id`, `expires_at`, `created_at` | API only (no client policies). |
+| `devices` | `id`, `user_id`, `name`, `platform`, `public_key` (the app's identity key; unique per `(user_id, public_key)`, so approving a link for someone else's key makes your own row and never takes over theirs), `token_hash`, `created_at`, `last_seen_at`, `revoked_at` | owner: read; update only `revoked_at` (unlink) and `name`. `token_hash` not readable by clients (column privileges). Inserted by the API. |
+| `device_links` | `id`, `device_code_hash`, `user_code` (unique), `public_key`, `device_name`, `platform`, `status` (`pending`/`approving`/`approved`/`denied`/`consumed`), `user_id`, `device_id`, `expires_at`, `created_at` | API only (no client policies). |
 | `agents` | `id`, `owner_id`, `name`, `key_prefix` (first 8 chars, for display), `key_hash` (unique), `public_key`, `private_key_enc`, `created_at`, `last_used_at`, `revoked_at` | owner: read `id, name, key_prefix, public_key, created_at, last_used_at, revoked_at`; update only `revoked_at`. Secrets not readable by clients. Inserted by the API. |
 | `agent_rooms` | `agent_id`, `server`, `room`, `secret_enc`, `joined_at`, `last_active_at` | API only. Remembers which sessions an agent is in, so it can rejoin after being idle. |
 
@@ -64,11 +64,17 @@ Orgs, seats and subscriptions come later as new tables; nothing here needs to ch
 3. **Website** `/link`: requires sign-in (returns here after), calls `GET /v1/device/link/:userCode` (with the
    user's JWT) to show the computer's name, and **Approve** / **Deny** → `POST /v1/device/approve`
    `{ userCode, approve }`.
-   On approve the API creates the `devices` row (owner = the user, `public_key` from the request) and a device
-   token (`qd_` + 32 random bytes, stored hashed).
-4. **App → API** `POST /v1/device/poll` `{ deviceCode }` every `interval` seconds:
-   `202 { status: 'pending' }` · `200 { token, profile }` (the token is returned **once**) ·
-   `403 { status: 'denied' }` · `410 { status: 'expired' }`.
+   The API first claims the link (`pending` → `approving`, so two approvals can't both win), then creates or
+   reuses the `devices` row for (the user, `public_key` from the request) — clearing any old token — and marks
+   the link `approved`.
+4. **App → API** `POST /v1/device/poll` `{ deviceCode, signature }` every `interval` seconds, where `signature`
+   is base64url of `signChallenge(identity, 'device-link', deviceCode)` made with the computer's identity key.
+   Public keys are shared with session members, so this proof of possession is what stops someone who knows a
+   computer's key from starting and approving a link for it and collecting the token. Pending polls may omit it;
+   collecting the token requires it (`401` if missing or wrong).
+   `202 { status: 'pending' }` · `200 { token, profile }` (a device token, `qd_` + 32 random bytes, stored hashed,
+   returned **once**) · `401` (bad signature) · `403 { status: 'denied' }` · `410 { status: 'expired' }` (also for
+   an approved link not collected within 5 minutes of the code's expiry).
 5. The app stores `{ token, profile, api }` in `~/.quilt/account.json` (mode 600) and shows the person as signed in.
 6. The app uses the token for `GET /v1/me` (profile, and the token's validity) and `PUT /v1/me/profile` (profile
    edits made in the app sync to the account). A revoked or unknown token → `401`; the app then shows

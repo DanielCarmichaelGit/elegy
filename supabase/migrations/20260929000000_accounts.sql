@@ -16,11 +16,14 @@ create table public.devices (
   user_id uuid not null references auth.users (id) on delete cascade,
   name text not null,
   platform text not null default '',
-  public_key text not null unique,
+  public_key text not null,
   token_hash text unique,
   created_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
-  revoked_at timestamptz
+  revoked_at timestamptz,
+  -- Per account, not global: knowing a computer's public key must not let
+  -- another account take over its row.
+  unique (user_id, public_key)
 );
 
 create table public.device_links (
@@ -30,7 +33,7 @@ create table public.device_links (
   public_key text not null,
   device_name text not null,
   platform text not null default '',
-  status text not null default 'pending' check (status in ('pending', 'approved', 'denied', 'consumed')),
+  status text not null default 'pending' check (status in ('pending', 'approving', 'approved', 'denied', 'consumed')),
   user_id uuid references auth.users (id) on delete cascade,
   device_id uuid references public.devices (id) on delete cascade,
   expires_at timestamptz not null,
@@ -60,7 +63,6 @@ create table public.agent_rooms (
   primary key (agent_id, server, room)
 );
 
-create index devices_user_id on public.devices (user_id);
 create index agents_owner_id on public.agents (owner_id);
 
 alter table public.profiles enable row level security;

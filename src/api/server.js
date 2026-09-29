@@ -3,16 +3,19 @@
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
-import { parsePublicKey } from '../identity.js'
+import { parsePublicKey, verifyChallenge } from '../identity.js'
 import { newAgentIdentity } from './agent-keys.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
+// An approved link the app never collects stops working this long after its code expires.
+const COLLECT_GRACE_MS = 5 * 60 * 1000
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
 class HttpError extends Error { constructor (status, message) { super(message); this.status = status } }
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, now = Date.now, log = () => {}, startLimit = 10, trustProxy = false }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, now = Date.now, log = () => {}, startLimit = 10, trustProxy = false, maxStartKeys = 10_000 }) {
   const site = String(siteUrl || '').replace(/\/+$/, '')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
@@ -29,13 +32,17 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return d
   }
 
-  // A few link requests per minute per address is plenty for a person.
+  // A few link requests per minute per address is plenty for a person. Behind Fly,
+  // Fly-Client-IP is the real peer; X-Forwarded-For isn't used because Fly appends
+  // to whatever the client sent, so its first entry is client-controlled.
   const starts = new Map()
   function limitStarts (req) {
-    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress
+    const ip = (trustProxy && String(req.headers['fly-client-ip'] || '').trim()) || req.socket.remoteAddress
     const recent = (starts.get(ip) || []).filter((t) => now() - t < 60_000)
     if (recent.length >= startLimit) throw new HttpError(429, 'too many sign-in attempts; try again in a minute')
     starts.set(ip, [...recent, now()])
+    // Keep the map bounded: forget addresses with nothing in the last minute.
+    if (starts.size > maxStartKeys) for (const [k, ts] of starts) if (ts.every((t) => now() - t >= 60_000)) starts.delete(k)
   }
 
   const COLOR = /^#[0-9a-fA-F]{6}$/
@@ -68,9 +75,17 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     ['POST', /^\/v1\/device\/poll$/, async (req, body) => {
       const link = await store.linkByDeviceCode(hashToken(body.deviceCode))
       if (!link) throw new HttpError(404, 'unknown device code')
-      if (link.status === 'consumed' || (link.status === 'pending' && link.expiresAt < now())) throw new HttpError(410, 'expired')
+      const waiting = link.status === 'pending' || link.status === 'approving'
+      if (link.status === 'consumed' || (waiting && link.expiresAt < now())) throw new HttpError(410, 'expired')
+      if (link.status === 'approved' && link.expiresAt + COLLECT_GRACE_MS < now()) throw new HttpError(410, 'expired')
       if (link.status === 'denied') throw new HttpError(403, 'denied')
-      if (link.status === 'pending') return [202, { status: 'pending' }]
+      // Pending polls skip the signature check so the app can poll cheaply; they
+      // reveal nothing. Only collecting the token needs proof of the key.
+      if (waiting) return [202, { status: 'pending' }]
+      // Proof of possession: anyone can start a link with a computer's public key
+      // (it's shared with session members), but only the computer can sign for it.
+      const sig = typeof body.signature === 'string' ? Buffer.from(body.signature, 'base64url') : null
+      if (!sig || !verifyChallenge(parsePublicKey(link.publicKey), 'device-link', Buffer.from(String(body.deviceCode)), sig)) throw new HttpError(401, "this computer's signature doesn't match")
       // Approved: claim the link before minting, so two polls racing on the same
       // link can't both win a token — only the caller that flips it gets one.
       if (!await store.claimLink(link.id, 'approved', 'consumed')) throw new HttpError(410, 'expired')
@@ -88,8 +103,17 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     ['POST', /^\/v1\/device\/approve$/, async (req, body) => {
       const u = await user(req)
       const link = await openLink(body.userCode)
+      // Claim the link first, so two approvals racing on one code can't both make a device.
+      if (!await store.claimLink(link.id, 'pending', 'approving')) throw new HttpError(410, 'this code has expired or was already used')
       if (!body.approve) { await store.updateLink(link.id, { status: 'denied', userId: u.userId }); return { status: 'denied' } }
-      const device = await store.upsertDevice({ userId: u.userId, name: link.deviceName, platform: link.platform, publicKey: link.publicKey })
+      let device
+      try {
+        device = await store.upsertDevice({ userId: u.userId, name: link.deviceName, platform: link.platform, publicKey: link.publicKey })
+      } catch (err) {
+        // Put the link back so the person can retry rather than being stuck mid-approval.
+        await store.updateLink(link.id, { status: 'pending' }).catch(() => {})
+        throw err
+      }
       await store.updateLink(link.id, { status: 'approved', userId: u.userId, deviceId: device.id })
       return { status: 'approved', device: { id: device.id, name: device.name } }
     }],
@@ -101,7 +125,9 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
     ['PUT', /^\/v1\/me\/profile$/, async (req, body) => {
       const d = await device(req)
-      return { profile: await store.updateProfile(d.userId, cleanProfile(body)) }
+      const patch = cleanProfile(body)
+      if (!Object.keys(patch).length) return { profile: await store.profile(d.userId) }
+      return { profile: await store.updateProfile(d.userId, patch) }
     }],
 
     ['POST', /^\/v1\/me\/signout$/, async (req) => {
@@ -126,7 +152,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
     ['DELETE', /^\/v1\/agents\/([^/]+)$/, async (req, body, [id]) => {
       const u = await user(req)
-      if (!await store.revokeAgent(u.userId, id)) throw new HttpError(404, 'no such agent')
+      // Agent ids are uuids; anything else can't exist (and Postgres would reject it).
+      if (!UUID.test(id) || !await store.revokeAgent(u.userId, id)) throw new HttpError(404, 'no such agent')
       return { ok: true }
     }]
   ]
@@ -140,20 +167,21 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   }
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://x')
     const send = (status, data) => {
       res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors(req) })
       res.end(JSON.stringify(data))
     }
     if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' }); return res.end() }
     try {
+      const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
       if (!route) throw new HttpError(404, 'not found')
       const body = ['POST', 'PUT'].includes(req.method) ? await readJson(req) : {}
-      const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodeURIComponent))
+      const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodePart))
       if (Array.isArray(out)) send(out[0], out[1]); else send(200, out)
     } catch (err) {
-      if (!(err instanceof HttpError)) log(`api error: ${err.stack || err}`)
+      // Supabase errors are plain objects, so fall back to their JSON.
+      if (!(err instanceof HttpError)) log(`api error: ${err?.stack || err?.message || JSON.stringify(err)}`)
       send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' })
     }
   })
@@ -165,8 +193,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)) })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)), startKeys: () => starts.size })
   }))
+}
+
+function decodePart (s) {
+  try { return decodeURIComponent(s) } catch { throw new HttpError(400, 'bad path') }
 }
 
 function readJson (req) {
@@ -175,7 +207,10 @@ function readJson (req) {
     req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { req.destroy(); reject(new HttpError(413, 'too large')) } else chunks.push(c) })
     req.on('end', () => {
       if (!chunks.length) return resolve({})
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { reject(new HttpError(400, 'bad json')) }
+      let body
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return reject(new HttpError(400, 'bad json')) }
+      // Handlers read fields off the body; null, arrays and scalars carry none.
+      resolve(body && typeof body === 'object' && !Array.isArray(body) ? body : {})
     })
     req.on('error', reject)
   })

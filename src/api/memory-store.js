@@ -26,16 +26,18 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       l.status = toStatus
       return true
     },
+    // One row per (account, key): someone else approving a link for this key gets
+    // their own row, never this one. A relink retires the old token.
     async upsertDevice ({ userId, name, platform, publicKey }) {
-      let d = [...devices.values()].find((x) => x.publicKey === publicKey)
-      if (d) Object.assign(d, { userId, name, platform, revokedAt: null })
+      let d = [...devices.values()].find((x) => x.userId === userId && x.publicKey === publicKey)
+      if (d) Object.assign(d, { name, platform, tokenHash: null, revokedAt: null })
       else devices.set((d = { id: uuid(), userId, name, platform, publicKey, tokenHash: null, createdAt: now(), lastSeenAt: now(), revokedAt: null }).id, d)
       return { ...d }
     },
     async setDeviceToken (id, tokenHash) { devices.get(id).tokenHash = tokenHash },
     async deviceByToken (h) { const d = [...devices.values()].find((x) => x.tokenHash === h && !x.revokedAt); return d ? { ...d } : null },
     async touchDevice (id) { devices.get(id).lastSeenAt = now() },
-    async revokeDevice (id) { devices.get(id).revokedAt = now() },
+    async revokeDevice (id) { Object.assign(devices.get(id), { revokedAt: now(), tokenHash: null }) },
     async profile (userId) { const p = profiles.get(userId); return p ? { ...p } : null },
     async updateProfile (userId, patch) {
       const p = profiles.get(userId)

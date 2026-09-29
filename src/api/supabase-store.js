@@ -14,8 +14,9 @@ const SAFE_AGENT = 'id, owner_id, name, key_prefix, public_key, created_at, last
 // matching the memory store (the tested reference).
 export const rowFrom = (row) => row && Object.fromEntries(Object.entries(toCamel(row)).map(([k, v]) => [k, /At$/.test(k) ? ms(v) : v]))
 
-export function createSupabaseStore ({ url, serviceKey }) {
-  const db = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
+// `client` lets tests pass a stand-in for the supabase client.
+export function createSupabaseStore ({ url, serviceKey, client }) {
+  const db = client || createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
   const one = async (q) => { const { data, error } = await q; if (error) throw error; return data }
 
   return {
@@ -33,9 +34,11 @@ export function createSupabaseStore ({ url, serviceKey }) {
       const rows = await one(db.from('device_links').update({ status: toStatus }).eq('id', id).eq('status', fromStatus).select('id'))
       return rows.length > 0
     },
+    // One row per (account, key), so approving a link for someone else's key makes
+    // your own row instead of taking theirs. A relink retires the old token.
     async upsertDevice ({ userId, name, platform, publicKey }) {
       return rowFrom(await one(db.from('devices')
-        .upsert({ user_id: userId, name, platform, public_key: publicKey, revoked_at: null }, { onConflict: 'public_key' })
+        .upsert({ user_id: userId, name, platform, public_key: publicKey, token_hash: null, revoked_at: null }, { onConflict: 'user_id,public_key' })
         .select().single()))
     },
     async setDeviceToken (id, tokenHash) { await one(db.from('devices').update({ token_hash: tokenHash }).eq('id', id)) },
