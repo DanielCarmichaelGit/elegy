@@ -2,6 +2,7 @@
 // either the start/join page or your settings. Sessions themselves live in session.js.
 import { I, state, $, esc, basename, ago, toast, api, decodeInvite, avatar, PALETTE } from './common.js'
 import { go, pickFolder } from './app.js'
+import { quiltMark } from './mark.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -36,7 +37,7 @@ function sidebarHtml (view) {
   const running = [...state.sessions.values()]
   return `
   <aside class="side">
-    <button class="brand" data-view="home" aria-label="Home"><img src="/logo.svg" alt=""><span>Quilt</span></button>
+    <button class="brand" data-view="home" aria-label="Home">${quiltMark({ sew: 'first' })}</button>
 
     <button class="me-card" data-view="settings" title="Edit your profile">
       ${avatar(p.name, p.color)}
@@ -100,7 +101,7 @@ function bindSessionActions (root) {
     b.onclick = async () => {
       const label = b.querySelector('.grow') ? null : b.textContent
       b.disabled = true
-      if (label) b.textContent = 'Connecting…'
+      if (label) b.innerHTML = `${quiltMark({ word: false, loop: true, cls: 'qm-inline' })}<span>Connecting…</span>`
       try {
         const sum = await api('POST', '/api/sessions', { mode: 'rejoin', dir: b.dataset.rejoin })
         state.sessions.set(sum.id, sum)
@@ -460,7 +461,7 @@ async function submit (form, errSel, body, busy = 'Connecting…') {
   const btn = form.querySelector('button[type=submit]')
   const label = btn.textContent
   btn.disabled = true
-  btn.textContent = busy
+  btn.innerHTML = `${quiltMark({ word: false, loop: true, cls: 'qm-inline' })}<span>${esc(busy)}</span>`
   form.querySelector(errSel).textContent = ''
   try {
     const sum = await api('POST', '/api/sessions', body)

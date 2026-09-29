@@ -3,10 +3,13 @@
 import { TOKEN, I, state, $, esc, basename, toast, api, decodeInvite, remember, recall } from './common.js'
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
+import { quiltMark } from './mark.js'
 
 // ---------------------------------------------------------------- boot --
 async function boot () {
   if (!TOKEN) return renderLocked()
+  // Shown only if loading takes a moment: the Q pieces itself together while we wait.
+  const waiting = setTimeout(() => { if (!state.loaded) $('#app').innerHTML = `<div class="booting">${quiltMark({ word: false, loop: true })}</div>` }, 250)
   try {
     const s = await api('GET', '/api/state')
     state.recent = s.recent
@@ -16,6 +19,7 @@ async function boot () {
     state.maxFileBytes = s.maxFileBytes
     for (const sum of s.sessions) state.sessions.set(sum.id, sum)
     state.loaded = true
+    clearTimeout(waiting)
     const last = recall('view')
     state.view = state.sessions.has(last) || last === 'settings' ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
     if (isSession(state.view)) await loadMessages(state.view)
@@ -141,8 +145,7 @@ export function render () {
 export function renderLocked (msg) {
   $('#app').innerHTML = `
     <div class="home"><div class="hero">
-      <img src="/logo.svg" alt="">
-      <div class="wordmark">Quilt</div>
+      <div class="wordmark">${quiltMark({ sew: 'first' })}</div>
       <p class="tagline">${esc(msg || 'Open Quilt using the link printed in your terminal by')} ${msg ? '' : '<code>quilt ui</code>.'}</p>
     </div></div>`
 }

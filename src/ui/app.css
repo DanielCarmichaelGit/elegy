@@ -436,6 +436,7 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
   .wide-only { display: none !important; }
   .ws-top { gap: 6px; padding: 0 10px; }
   .ws-top .brand { font-size: 0; gap: 0; }
+  .ws-top .brand .qm-word { height: 22px; }
   .ws-top .tabs { display: none; }
   .ws-body { grid-template-columns: minmax(0, 1fr); }
   .ws-tree, .ws-chat { position: absolute; top: 0; bottom: 0; z-index: 5; width: min(340px, 88vw); display: none; box-shadow: var(--shadow-pop); }
@@ -724,3 +725,30 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .open-in { display: flex; }
 .open-in [data-open-in] + #open-in-more { margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .open-in .btn:has(+ #open-in-more) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+/* ---- The Quilt mark (mark.js): fabrics, sewing in once, and the loading animation ---- */
+:root { --qm-a: #C4472F; --qm-b: #8F2F22; --qm-c: #2F5D62; --qm-g: #EADFCD; }
+.qm { display: block; overflow: visible; }
+.qm-a { fill: var(--qm-a); } .qm-b { fill: var(--qm-b); } .qm-c { fill: var(--qm-c); } .qm-g { fill: var(--qm-g); }
+.qm-w { fill: var(--text); }
+.qm-p { transform-box: fill-box; transform-origin: center; }
+/* Sewn in once: each patch drops into place round the Q, then the tail, then "uilt" appears. */
+.qm-sew .qm-p { opacity: 0; transform: scale(.35) rotate(-10deg); animation: qm-sew .42s cubic-bezier(.2, .9, .3, 1.25) forwards; animation-delay: calc(var(--o) * 34ms + 80ms); }
+.qm-sew .qm-w { opacity: 0; animation: qm-fade .45s ease-out .78s forwards; }
+@keyframes qm-sew { to { opacity: 1; transform: none; } }
+@keyframes qm-fade { to { opacity: 1; } }
+/* Loading: the Q pieces itself together patch by patch, holds, then unpicks in the same order. */
+.qm-loop .qm-p { opacity: 0; animation: qm-loop 2.6s ease-in-out infinite; animation-delay: calc(var(--o) * 48ms); }
+@keyframes qm-loop { 0% { opacity: 0; transform: scale(.35); } 12%, 58% { opacity: 1; transform: none; } 74%, 100% { opacity: 0; transform: scale(.55); } }
+@media (prefers-reduced-motion: reduce) {
+  .qm-sew .qm-p, .qm-sew .qm-w { animation: none; opacity: 1; transform: none; }
+  .qm-loop .qm-p { animation: qm-fade-pulse 1.6s ease-in-out infinite; opacity: 1; transform: none; }
+  @keyframes qm-fade-pulse { 50% { opacity: .45; } }
+}
+.brand .qm-word { height: 26px; width: auto; }
+.side .brand .qm-word { height: 30px; }
+.wordmark .qm-word { height: 72px; width: auto; margin: 0 auto; }
+.booting { min-height: 100vh; display: grid; place-items: center; }
+.booting .qm-sym { width: 56px; height: 56px; }
+.qm-inline { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; margin-right: 8px; }
+.btn .qm-inline { margin-right: 6px; }

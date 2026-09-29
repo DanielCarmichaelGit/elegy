@@ -6,6 +6,7 @@ import { renderFeed } from './feed.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
 import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
+import { quiltMark } from './mark.js'
 
 let current = null // session id being shown
 let timers = []
@@ -56,7 +57,7 @@ export function mountSession (id) {
   $('#app').innerHTML = `
   <div class="ws" id="ws">
     <header class="ws-top">
-      <button class="brand" data-go="home" aria-label="Home"><img src="/logo.svg" alt=""><span>Quilt</span></button>
+      <button class="brand" data-go="home" aria-label="Home">${quiltMark({ sew: 'first' })}</button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
       <span class="access-pill" id="access-pill" hidden></span>

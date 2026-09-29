@@ -1,6 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
-<defs><clipPath id="c"><circle cx="8" cy="11" r="6.25"/></clipPath></defs>
-<circle cx="8" cy="11" r="6.25" fill="none" stroke="#000" stroke-width="1.5"/>
-<circle cx="14" cy="11" r="6.25" fill="none" stroke="#000" stroke-width="1.5"/>
-<circle cx="14" cy="11" r="6.25" fill="#000" clip-path="url(#c)"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-12 -12 240 240" width="22" height="22"><path fill="#000" d="M36 0 L36 36 L0 36Z M36 0 L72 0 L72 36 L36 36Z M72 0 L108 0 L108 36 L72 36Z M108 0 L144 0 L144 36 L108 36Z M144 0 L180 36 L144 36Z M0 36 L36 36 L36 72 L0 72Z M36 36 L72 36 L36 72Z M108 36 L144 36 L144 72Z M144 36 L180 36 L180 72 L144 72Z M0 72 L36 72 L36 108 L0 108Z M144 72 L180 72 L180 108 L144 108Z M0 108 L36 108 L36 144 L0 144Z M36 108 L72 144 L36 144Z M144 108 L144 144 L108 144Z M144 108 L180 108 L180 144 L144 144Z M0 144 L36 144 L36 180Z M36 144 L72 144 L72 180 L36 180Z M72 144 L108 144 L108 180 L72 180Z M108 144 L144 144 L144 180 L108 180Z M144 144 L180 144 L180 180 L144 180Z M180 144 L216 180 L180 180Z M144 180 L180 180 L180 216Z M180 180 L216 180 L180 216Z"/></svg>
