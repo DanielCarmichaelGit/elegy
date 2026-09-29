@@ -1235,3 +1235,10 @@ Expected: all tests pass. Then merge into `main` and push, as usual.
 - Spec coverage for this plan's slice: device flow (Tasks 1, 4), tokens and hashing (1), agent keys and encryption (2, 5), data model and row-level security (7), JWT verification (6), CORS and rate limits (4, 5), deployment (8). The MCP runtime, website and app are plans 2–4.
 - `agent_rooms` is created here (Task 7) but first used in plan 2.
 - The spec lists `devices` as owner-updatable for `name` and `revoked_at`; the grants in Task 7 match.
+
+## Carried into later plans (from execution)
+
+- **Plan 4 (desktop sign-in) must start with:** give the device-link poll signature its own context string (e.g. `quilt-device-link-v1`, via `signDeviceLink`/`verifyDeviceLink` in `src/identity.js`) instead of reusing the relay's auth payload, and make the relay client refuse room `device-link`. Until then a hostile relay could obtain a poll signature (impact limited to the attacker's own device row). The app must sign its polls: `{ deviceCode, signature }`.
+- **Plan 3 (website):** select columns explicitly on `devices`/`agents` (no `select('*')` — secret columns aren't granted); timestamps arrive as ISO strings through row-level security but as epoch ms from the API. Switch Supabase Auth's site URL, redirect URLs and email templates to Quilt.
+- **Plan 2 (agent runtime):** the website can revoke agents directly (row-level security), so the runtime re-checks `agentByKey`/`revoked_at` on each call; add `touchAgent` (last_used_at) and `agent_rooms` methods to both stores; never echo `agentByKey` rows in MCP responses; consider a per-user agent cap.
+- **Deferred minors:** clean up old `device_links` rows; per-device-code poll rate limit; tokenless "ghost" device rows from cross-account approvals; least-privilege database role for the API instead of a Supabase secret key.
