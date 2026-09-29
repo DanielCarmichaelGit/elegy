@@ -1,0 +1,35 @@
+# fly.api.toml — the Quilt accounts API (separate from the relay in fly.toml).
+#   fly apps create quilt-api
+#   fly secrets set --app quilt-api SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… AGENT_KEY_SECRET=… QUILT_SITE_URL=…
+#   fly deploy --config fly.api.toml --remote-only --ha=false
+app = "quilt-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = "node bin/quilt.js api"
+
+[env]
+  PORT = "8080"
+  QUILT_TRUST_PROXY = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

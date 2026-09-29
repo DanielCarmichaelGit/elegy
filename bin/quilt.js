@@ -12,6 +12,7 @@ const HELP = `quilt: real-time pair vibe coding with any AI tool
 Usage:
   quilt ui                                            Open the app in your browser (start, join, chat)
   quilt serve [--port 4321] [--data ./quilt-data]   Run a relay server (see docs/hosting.md)
+  quilt api [--port 8787] [--memory]                   Run the accounts API (needs SUPABASE_URL etc.; --memory for local testing)
   quilt relay set <url> [--key <key>]                 Use a hosted relay by default
   quilt relay [check [url] | clear]                   Show, test, or forget the default relay
   quilt join [--server <ws(s)://relay>]               Start a new session in this folder
@@ -48,6 +49,7 @@ const argv = process.argv.slice(3)
 async function main () {
   switch (cmd) {
     case 'serve': return serve()
+    case 'api': return apiCmd()
     case 'ui': return ui()
     case 'relay': return relayCmd()
     case 'join': return join()
@@ -94,6 +96,33 @@ async function serve () {
   const shutdown = async () => { await srv.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
+}
+
+async function apiCmd () {
+  const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, memory: { type: 'boolean' } } })
+  const { startApi } = await import('../src/api/server.js')
+  const env = process.env
+  let store, verifyUser
+  if (values.memory) {
+    const { createMemoryStore } = await import('../src/api/memory-store.js')
+    store = createMemoryStore(); store.addUser('local', { name: 'Local user' })
+    verifyUser = async (t) => (t === 'local' ? { userId: 'local', email: '' } : null)
+    console.log('in-memory mode: use "Authorization: Bearer local" as the signed-in user')
+  } else {
+    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'AGENT_KEY_SECRET', 'QUILT_SITE_URL']) if (!env[k]) fail(`${k} is not set`)
+    const { createSupabaseStore } = await import('../src/api/supabase-store.js')
+    const { createUserVerifier } = await import('../src/api/auth.js')
+    store = createSupabaseStore({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY })
+    verifyUser = createUserVerifier({ supabaseUrl: env.SUPABASE_URL })
+  }
+  const api = await startApi({
+    port: Number(values.port || env.PORT || 8787), host: values.host || '0.0.0.0', store, verifyUser,
+    siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000', agentKeySecret: env.AGENT_KEY_SECRET || 'dev-only-secret',
+    trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
+  })
+  console.log(`quilt accounts API listening on :${api.port}`)
+  const shutdown = async () => { await api.close(); process.exit(0) }
+  process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
 }
 
 async function join () {
