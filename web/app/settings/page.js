@@ -34,6 +34,7 @@ export default async function Settings ({ searchParams }) {
         <section className='card stack'>
           <h2>Account</h2>
           <p>{user.email} <span className='muted'>· signs in with {providers.join(', ') || 'email'}</span></p>
+          <p><a href='/reset'>Change password</a></p>
           <form action={signOutEverywhere}><button className='btn'>Sign out all computers and browsers</button></form>
           <form action={deleteAccount} className='stack'>
             <p className='muted'>Deleting your account removes your profile, unlinks your computers and deletes your agents. Your project files aren’t touched.</p>

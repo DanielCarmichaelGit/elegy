@@ -12,7 +12,8 @@ const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
 // Renders on the server (UTC on Netlify), so pin the zone and label it rather than showing an unlabelled local time
 const when = (t) => (t ? new Date(t).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC', timeZoneName: 'short' }) : 'never')
 
-export default async function Dashboard () {
+export default async function Dashboard ({ searchParams }) {
+  const q = await searchParams
   const user = await requireUser('/dashboard')
   const supabase = await createClient()
   // Name the columns: secret columns (token_hash) aren't granted to signed-in people.
@@ -32,6 +33,7 @@ export default async function Dashboard () {
             <form action='/auth/signout' method='post'><button className='btn ghost'>Sign out</button></form>
           </div>
         </div>
+        {q.password && <p className='notice'>Password updated.</p>}
         <section className='card stack'>
           <div className='row' style={{ justifyContent: 'space-between' }}>
             <h2>Your computers</h2>

@@ -1,10 +1,10 @@
 import Header from '@/components/Header.js'
-import { emailLink, provider } from './actions.js'
+import { emailLink, provider, passwordSignIn } from './actions.js'
 import { safeNext } from '@/lib/safe-next.js'
 
 export const metadata = { title: 'Sign in' }
 const LABELS = { google: 'Continue with Google', github: 'Continue with GitHub' }
-const ERRORS = { email: 'That email doesn’t look right.', send: 'We couldn’t send the link. Try again in a minute.', provider: 'That sign-in option isn’t available.', link: 'That sign-in link expired, was already used, or was opened in a different browser. Send a new one from this browser.' }
+const ERRORS = { email: 'That email doesn’t look right.', password: 'Wrong email or password.', send: 'We couldn’t send the link. Try again in a minute.', provider: 'That sign-in option isn’t available.', link: 'That sign-in link expired, was already used, or was opened in a different browser. Send a new one from this browser.' }
 
 export default async function SignIn ({ searchParams }) {
   const q = await searchParams
@@ -27,14 +27,33 @@ export default async function SignIn ({ searchParams }) {
                     <button className='btn' style={{ width: '100%' }}>{LABELS[p]}</button>
                   </form>
                 ))}
-                <form action={emailLink} className='stack'>
+                <form action={passwordSignIn} className='stack'>
                   <input type='hidden' name='next' value={next} />
                   <div className='field'>
                     <label htmlFor='email'>Email</label>
                     <input className='input' id='email' name='email' type='email' autoComplete='email' required />
                   </div>
-                  <button className='btn primary'>Email me a sign-in link</button>
+                  <div className='field'>
+                    <label htmlFor='password'>Password</label>
+                    <input className='input' id='password' name='password' type='password' autoComplete='current-password' required />
+                  </div>
+                  <button className='btn primary'>Sign in</button>
                 </form>
+                <p className='row' style={{ justifyContent: 'space-between' }}>
+                  <a className='muted' href={`/forgot?next=${encodeURIComponent(next)}`}>Forgot password?</a>
+                  <a className='muted' href={`/signup?next=${encodeURIComponent(next)}`}>New to Quilt? Create an account</a>
+                </p>
+                <details>
+                  <summary className='muted'>Or email me a sign-in link</summary>
+                  <form action={emailLink} className='stack' style={{ marginTop: 12 }}>
+                    <input type='hidden' name='next' value={next} />
+                    <div className='field'>
+                      <label htmlFor='link-email'>Email</label>
+                      <input className='input' id='link-email' name='email' type='email' autoComplete='email' required />
+                    </div>
+                    <button className='btn'>Email me a sign-in link</button>
+                  </form>
+                </details>
               </>)}
           {q.error && <p className='notice bad'>{ERRORS[q.error] || 'Something went wrong.'}</p>}
         </div>
