@@ -30,12 +30,15 @@ function arc (i) {
 const PATCHES = [C.peach, C.butter, C.mint, C.lilac]
 
 /** The mark's shapes. mono: one colour for everything; else pastel patches with ink/thread colours. */
-function body ({ word, mono, ink = C.ink, thread = C.ink }) {
+function body ({ word, mono, ink = C.ink }) {
   const ring = mono
     ? `<circle cx="52" cy="62" r="35" fill="none" stroke="${mono}" stroke-width="15"/>`
     : PATCHES.map((c, i) => `<path d="${arc(i)}" fill="none" stroke="${c}" stroke-width="15"/>`).join('')
-  const t = mono || thread
-  const line = `<path d="${word ? THREAD_LONG : THREAD_SHORT}" fill="none" stroke="${t}" stroke-width="5" stroke-linecap="round"/><path d="${word ? TIP_LONG : TIP_SHORT}" fill="${t}"/>`
+  // Full colour: the thread fades from the butter patch it leaves to the peach patch.
+  const fade = word ? 'x1="73" y1="0" x2="301" y2="0"' : 'x1="73" y1="86" x2="114" y2="115"'
+  const t = mono || 'url(#fade)'
+  const defs = mono ? '' : `<defs><linearGradient id="fade" gradientUnits="userSpaceOnUse" ${fade}><stop offset="0" stop-color="${C.butter}"/><stop offset="1" stop-color="${C.peach}"/></linearGradient></defs>`
+  const line = `${defs}<path d="${word ? THREAD_LONG : THREAD_SHORT}" fill="none" stroke="${t}" stroke-width="5" stroke-linecap="round"/><path d="${word ? TIP_LONG : TIP_SHORT}" fill="${t}"/>`
   const text = word ? `<path transform="${UILT_AT}" fill="${mono || ink}" d="${UILT}"/>` : ''
   return ring + line + text
 }
@@ -55,7 +58,7 @@ function tile ({ bg, fg = 'sym', dark = false, rx = 56, span = 0.46, size = 256,
   const s = (t * span) / ringW
   const tx = margin + t / 2 - cx * s
   const ty = margin + t / 2 - cy * s
-  const inner = fg === 'small' ? small(dark ? C.paper : C.ink) : body({ word: false, thread: dark ? C.peach : C.ink })
+  const inner = fg === 'small' ? small(dark ? C.paper : C.ink) : body({ word: false })
   return `<rect x="${margin}" y="${margin}" width="${t}" height="${t}" rx="${rx}" fill="${bg}"/><g transform="translate(${tx.toFixed(2)} ${ty.toFixed(2)}) scale(${s.toFixed(4)})">${inner}</g>`
 }
 
@@ -64,9 +67,9 @@ const put = (rel, text) => { out[rel] = text; fs.mkdirSync(path.dirname(path.joi
 
 // ---- logo ----
 put('brand/logo/quilt-horizontal.svg', svg(VB.word, body({ word: true })))
-put('brand/logo/quilt-horizontal-dark.svg', svg(VB.word, body({ word: true, ink: C.paper, thread: C.peach })))
+put('brand/logo/quilt-horizontal-dark.svg', svg(VB.word, body({ word: true, ink: C.paper })))
 put('brand/logo/quilt-symbol.svg', svg(VB.sym, body({ word: false })))
-put('brand/logo/quilt-symbol-dark.svg', svg(VB.sym, body({ word: false, thread: C.peach })))
+put('brand/logo/quilt-symbol-dark.svg', svg(VB.sym, body({ word: false })))
 put('brand/logo/quilt-symbol-small.svg', svg(VB.small, small(C.ink)))
 put('brand/logo/quilt-icon.svg', svg([0, 0, 256, 256], tile({ bg: C.blush })))
 put('brand/logo/quilt-icon-dark.svg', svg([0, 0, 256, 256], tile({ bg: C.ink, dark: true })))

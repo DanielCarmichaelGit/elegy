@@ -3,7 +3,7 @@
   --bg: #fff8f3; --panel: #ffffff; --panel-2: #fdeee6; --text: #2b2a38; --muted: #6e6c7e;
   --border: #f3dfd4; --border-strong: #e6cbbd; --accent: #c24f33; --ok: #2f7a5c; --bad: #b83a2e;
   --qm-a: #ffb8a3; --qm-b: #ffe08a; --qm-c: #a8e6cf; --qm-d: #c9b8ff; --qm-g: #fdeee6;
-  --qm-thread: var(--text); --shadow: 43, 42, 56;
+  --shadow: 43, 42, 56;
   --sans: var(--font-poppins), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -97,8 +97,8 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .qm { display: block; overflow: visible; }
 .qm-p { fill: none; stroke-width: 15; transform-box: fill-box; transform-origin: center; }
 .qm-1 { stroke: var(--qm-a); } .qm-2 { stroke: var(--qm-b); } .qm-3 { stroke: var(--qm-c); } .qm-4 { stroke: var(--qm-d); }
-.qm-t { fill: none; stroke: var(--qm-thread); stroke-width: 5; stroke-linecap: round; }
-.qm-tip { fill: var(--qm-thread); }
+.qm-t { fill: none; stroke-width: 5; stroke-linecap: round; }
+.qm-s1 { stop-color: var(--qm-b); } .qm-s2 { stop-color: var(--qm-a); }
 .qm-w { fill: var(--text); }
 /* Sewn in once: each patch drops into place round the Q, then the thread runs out and "uilt" appears. */
 .qm-sew .qm-p { opacity: 0; transform: scale(.35) rotate(-10deg); animation: qm-sew .42s cubic-bezier(.2, .9, .3, 1.25) forwards; animation-delay: calc(var(--o) * 70ms + 80ms); }

@@ -17,7 +17,12 @@ const TIP_LONG = 'M276.4 104.5Q288 106.4 300.6 111.1Q287.4 111.5 275.6 109.5Z'
 const THREAD_SHORT = 'M73 86C79 97 86 104 95 107.6'
 const TIP_SHORT = 'M95.9 105.3Q106.1 109.4 113.6 115Q104.3 114 94.1 109.9Z'
 
+// The thread fades from the butter patch it leaves (bottom right) to the peach patch (top right).
+// Gradient ids are numbered so several marks can share a page.
+const FADE_LONG = 'x1="73" y1="0" x2="301" y2="0"'
+const FADE_SHORT = 'x1="73" y1="86" x2="114" y2="115"'
 let sewn = false
+let fades = 0
 
 /**
  * The mark as inline SVG.
@@ -28,7 +33,9 @@ let sewn = false
 export function quiltMark ({ word = true, sew = false, loop = false, cls = '' } = {}) {
   const doSew = sew === 'first' ? !sewn && (sewn = true) : !!sew
   const mode = loop ? ' qm-loop' : doSew ? ' qm-sew' : ''
-  const thread = `<path class="qm-t" pathLength="1" d="${word ? THREAD_LONG : THREAD_SHORT}"/><path class="qm-tip" d="${word ? TIP_LONG : TIP_SHORT}"/>`
+  const id = `qm-fade-${++fades}`
+  const fade = `<defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" ${word ? FADE_LONG : FADE_SHORT}><stop offset="0" class="qm-s1"/><stop offset="1" class="qm-s2"/></linearGradient></defs>`
+  const thread = `${fade}<path class="qm-t" stroke="url(#${id})" pathLength="1" d="${word ? THREAD_LONG : THREAD_SHORT}"/><path class="qm-tip" fill="url(#${id})" d="${word ? TIP_LONG : TIP_SHORT}"/>`
   const text = word ? `<path class="qm-w" transform="${UILT_AT}" d="${UILT}"/>` : ''
   const vb = word ? '8 18 296 98' : '8 18 108 100'
   return `<svg class="qm${word ? ' qm-word' : ' qm-sym'}${mode}${cls ? ' ' + cls : ''}" viewBox="${vb}" role="img" aria-label="${loop ? 'Loading' : 'Quilt'}">${RING}${thread}${text}</svg>`
