@@ -123,6 +123,7 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .agents-card { margin-bottom: 64px; }
 
 .cta-band { margin-bottom: 64px; border-radius: 18px; position: relative; overflow: hidden; padding: 56px 24px; text-align: center; }
+.cta-band .quilt-patch { position: absolute; inset: 0; }
 .cta-inner { position: relative; background: var(--panel); border-radius: 14px; padding: 40px 32px; max-width: 620px; margin: 0 auto; }
 .cta-inner h2 { font-size: 28px; margin: 0 0 8px; }
 .cta-inner .sub { margin: 0 0 22px; }
