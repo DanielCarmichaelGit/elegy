@@ -1,9 +1,11 @@
 'use server'
 import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
 import { rememberSpace } from '@/lib/space-cookie.js'
+import { isSlug } from '@/lib/space.js'
 
 // Unlinking goes straight through row-level security: people may set revoked_at on their own computers.
 export async function unlinkComputer (formData) {
@@ -53,4 +55,13 @@ export async function dismissFirstOrg () {
 async function clearOrgName () {
   const supabase = await createClient()
   await supabase.auth.updateUser({ data: { org_name: null } })
+}
+
+// Domain join requests: the API checks the person's confirmed email matches the org's domain.
+export async function askToJoin (formData) {
+  const user = await requireUser('/dashboard')
+  const slug = String(formData.get('slug') || '')
+  if (!isSlug(slug)) redirect('/dashboard')
+  const r = await apiCall(user, 'POST', `/v1/orgs/${slug}/requests`, {})
+  redirect(r.ok ? '/dashboard?asked=1' : '/dashboard?askFailed=1')
 }

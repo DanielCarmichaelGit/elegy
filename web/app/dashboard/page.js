@@ -11,7 +11,7 @@ import { myOrgs } from '@/lib/org.js'
 import { SPACE_COOKIE, spaceHome } from '@/lib/space.js'
 import { when } from '@/lib/org-view.js'
 import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
-import { unlinkComputer, revokeAgent } from './actions.js'
+import { unlinkComputer, revokeAgent, askToJoin } from './actions.js'
 
 export const metadata = { title: 'Dashboard' }
 const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
@@ -28,6 +28,9 @@ export default async function Dashboard ({ searchParams }) {
   const { data: computers } = await supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false })
   const agentsRes = await apiCall(user, 'GET', '/v1/agents')
   const agents = (agentsRes.data?.agents || []).filter((a) => !a.revokedAt)
+  // Orgs on the person's own (confirmed, non-public) email domain that take join requests.
+  const discover = await apiCall(user, 'GET', '/v1/orgs/discover')
+  const joinable = discover.data?.orgs || []
   const ua = (await headers()).get('user-agent') || ''
   const download = downloadFor(ua) || DOWNLOADS.macArm
   return (
@@ -46,6 +49,19 @@ export default async function Dashboard ({ searchParams }) {
         {q.left && <p className='notice'>You left the org.</p>}
         {q.orgDeleted && <p className='notice'>The org was deleted.</p>}
         {!orgs.length && user.orgName && <FirstOrg name={user.orgName} />}
+        {q.asked && <p className='notice'>Asked. Someone at the org will let you in.</p>}
+        {q.askFailed && <p className='notice bad'>Could not send your request. Try again.</p>}
+        {joinable.length > 0 && (
+          <section className='card stack'>
+            <h2>Orgs at {discover.data.domain}</h2>
+            {joinable.map((o) => (
+              <div key={o.slug} className='list-row'>
+                <b>{o.name}</b>
+                {o.requested
+                  ? <span className='pill'>Requested</span>
+                  : <form action={askToJoin}><input type='hidden' name='slug' value={o.slug} /><button className='btn'>Ask to join</button></form>}
+              </div>))}
+          </section>)}
         <section className='card stack'>
           <div className='row' style={{ justifyContent: 'space-between' }}>
             <h2>Your computers</h2>

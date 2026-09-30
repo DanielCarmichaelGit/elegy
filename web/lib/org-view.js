@@ -44,3 +44,9 @@ export function peopleNotIn (people, members) {
   const inTeam = new Set((members || []).map((m) => m.memberId))
   return (people || []).filter((p) => !inTeam.has(p.memberId))
 }
+
+const GONE = { accepted: 'This invite was already used.', cancelled: 'This invite was cancelled.', expired: 'This invite has expired. Ask for a new one.' }
+/** Why an invite can't be used any more (null while it's pending). */
+export function inviteGone (status) {
+  return Object.hasOwn(GONE, status) ? GONE[status] : null
+}

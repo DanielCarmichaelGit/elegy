@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allowed, assignableRoles, orgTabs, peopleNotIn, safeMessage, when } from '../lib/org-view.js'
+import { allowed, assignableRoles, inviteGone, orgTabs, peopleNotIn, safeMessage, when } from '../lib/org-view.js'
 
 const owner = { isOwner: true, grants: {} }
 const member = { isOwner: false, grants: { teams: { r: true } } }
@@ -45,6 +45,14 @@ test('assignableRoles: never Owner, and only roles within your own grid', () => 
   const lead = { isOwner: false, grants: { teams: { r: true, c: true }, roles: { r: true, u: true } } }
   assert.deepEqual(assignableRoles(roles, lead).map((r) => r.id), ['m', 'l'])
   assert.deepEqual(assignableRoles(undefined, lead), [])
+})
+
+test('inviteGone explains an invite that can no longer be used', () => {
+  assert.equal(inviteGone('pending'), null)
+  assert.equal(inviteGone('accepted'), 'This invite was already used.')
+  assert.equal(inviteGone('cancelled'), 'This invite was cancelled.')
+  assert.equal(inviteGone('expired'), 'This invite has expired. Ask for a new one.')
+  assert.equal(inviteGone('toString'), null)
 })
 
 test('peopleNotIn leaves out people already in the team', () => {
