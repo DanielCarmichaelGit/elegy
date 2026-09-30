@@ -227,9 +227,10 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     async removeTeamMember (teamId, memberId) { return teamMembers.delete(`${teamId}:${memberId}`) },
 
-    // Invites: only the token's hash is kept.
+    // Invites: only the token's hash is kept. Mirrors org_invites.email's
+    // lowercase check constraint.
     async createInvite (i) {
-      const row = { id: uuid(), acceptedAt: null, cancelledAt: null, createdAt: now(), ...i }
+      const row = { id: uuid(), acceptedAt: null, cancelledAt: null, createdAt: now(), ...i, email: i.email.toLowerCase() }
       invites.set(row.id, row); return copy(row)
     },
     async inviteByToken (h) { return copy(all(invites, (i) => i.tokenHash === h)[0]) },
@@ -243,11 +244,12 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       i.acceptedAt = now(); return true
     },
 
-    // Domain join requests: at most one pending per person per org.
+    // Domain join requests: at most one pending per person per org. Mirrors
+    // join_requests.email's lowercase check constraint.
     async createJoinRequest ({ orgId, userId, email }) {
       const pending = all(requests, (r) => r.orgId === orgId && r.userId === userId && r.status === 'pending')[0]
       if (pending) return copy(pending)
-      const r = { id: uuid(), orgId, userId, email, status: 'pending', decidedBy: null, decidedAt: null, createdAt: now() }
+      const r = { id: uuid(), orgId, userId, email: email.toLowerCase(), status: 'pending', decidedBy: null, decidedAt: null, createdAt: now() }
       requests.set(r.id, r); return copy(r)
     },
     async joinRequestById (orgId, id) { const r = requests.get(id); return r && r.orgId === orgId ? copy(r) : null },

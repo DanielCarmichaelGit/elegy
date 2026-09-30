@@ -6,6 +6,8 @@ const toCamel = (row) => row && Object.fromEntries(Object.entries(row).map(([k, 
 const toSnake = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).map(([k, v]) => [k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase()), v]))
 const ts = (v) => (v == null ? v : typeof v === 'number' ? new Date(v).toISOString() : v)
 const ms = (v) => (v == null ? v : Date.parse(v))
+// Postgres's foreign-key-violation code, for the same checks memory-store.js mirrors.
+const fkViolation = (what) => Object.assign(new Error(`${what} is still referenced`), { code: '23503' })
 const SAFE_AGENT = 'id, owner_id, name, key_prefix, public_key, created_at, last_used_at, revoked_at'
 // Named columns for the org tables, so a select never picks up a secret by accident.
 const ORG = 'id, name, slug, owner_id, domain, domain_requests, created_at'
@@ -155,8 +157,15 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async teamsOfMember (memberId) {
       return (await one(db.from('team_members').select('team_id, access').eq('member_id', memberId))).map((r) => ({ teamId: r.team_id, access: r.access }))
     },
+    // team_members.org_id is not null (composite FKs to teams(id, org_id) and
+    // org_members(id, org_id)), so look the team's org up first and stamp it
+    // on the upsert; a missing team fails the same way the real FK would.
     async addTeamMember ({ teamId, memberId, access }) {
-      return rowFrom(await one(db.from('team_members').upsert({ team_id: teamId, member_id: memberId, access }, { onConflict: 'team_id,member_id' }).select(TEAM_MEMBER).single()))
+      const team = await one(db.from('teams').select('org_id').eq('id', teamId).maybeSingle())
+      if (!team) throw fkViolation('team')
+      return rowFrom(await one(db.from('team_members')
+        .upsert({ team_id: teamId, member_id: memberId, access, org_id: team.org_id }, { onConflict: 'team_id,member_id' })
+        .select(TEAM_MEMBER).single()))
     },
     async setTeamAccess (teamId, memberId, access) {
       return rowFrom(await one(db.from('team_members').update({ access }).eq('team_id', teamId).eq('member_id', memberId).select(TEAM_MEMBER).maybeSingle()))
@@ -165,9 +174,11 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return (await one(db.from('team_members').delete().eq('team_id', teamId).eq('member_id', memberId).select('team_id'))).length > 0
     },
 
-    // Invites: only the token's hash is stored.
+    // Invites: only the token's hash is stored. org_invites.email must be
+    // lowercase (a check constraint), matching the invite flow's
+    // case-insensitive match on the invitee's confirmed email.
     async createInvite (i) {
-      return rowFrom(await one(db.from('org_invites').insert(toSnake({ ...i, expiresAt: ts(i.expiresAt) })).select(INVITE).single()))
+      return rowFrom(await one(db.from('org_invites').insert(toSnake({ ...i, email: i.email.toLowerCase(), expiresAt: ts(i.expiresAt) })).select(INVITE).single()))
     },
     async inviteByToken (h) { return rowFrom(await one(db.from('org_invites').select(INVITE).eq('token_hash', h).maybeSingle())) },
     async inviteById (orgId, id) { return rowFrom(await one(db.from('org_invites').select(INVITE).eq('org_id', orgId).eq('id', id).maybeSingle())) },
@@ -183,11 +194,12 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return rows.length > 0
     },
 
-    // Domain join requests: the partial unique index keeps one pending per person per org.
+    // Domain join requests: the partial unique index keeps one pending per
+    // person per org. join_requests.email must be lowercase (a check constraint).
     async createJoinRequest ({ orgId, userId, email }) {
       const pending = await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('user_id', userId).eq('status', 'pending').maybeSingle())
       if (pending) return rowFrom(pending)
-      return rowFrom(await one(db.from('join_requests').insert({ org_id: orgId, user_id: userId, email }).select(REQUEST).single()))
+      return rowFrom(await one(db.from('join_requests').insert({ org_id: orgId, user_id: userId, email: email.toLowerCase() }).select(REQUEST).single()))
     },
     async joinRequestById (orgId, id) { return rowFrom(await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('id', id).maybeSingle())) },
     async listJoinRequests (orgId) {

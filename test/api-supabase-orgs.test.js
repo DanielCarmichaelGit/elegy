@@ -152,13 +152,34 @@ test('supabase decideJoinRequest only decides a pending request', async () => {
   assert.deepEqual([update.status, update.decided_by], ['approved', 'u1'])
 })
 
-test('supabase listTeamMembers flattens the nested member name; addTeamMember upserts', async () => {
-  const { client, calls } = fakeDb((q) => (q.ops.some(([op]) => op === 'upsert')
-    ? { team_id: 't1', member_id: 'm1', access: 'editor', scopes: [], added_at: ISO }
-    : [{ team_id: 't1', member_id: 'm1', access: 'viewer', scopes: [], added_at: ISO, org_members: { user_id: 'u1', profiles: { name: 'Dana' } } }]))
+test('supabase listTeamMembers flattens the nested member name; addTeamMember looks up the team and sets org_id', async () => {
+  const { client, calls } = fakeDb((q) => {
+    if (q.table === 'teams') return { org_id: 'o1' }
+    if (q.ops.some(([op]) => op === 'upsert')) return { team_id: 't1', member_id: 'm1', access: 'editor', scopes: [], added_at: ISO }
+    return [{ team_id: 't1', member_id: 'm1', access: 'viewer', scopes: [], added_at: ISO, org_members: { user_id: 'u1', profiles: { name: 'Dana' } } }]
+  })
   const s = createSupabaseStore({ client })
   const [m] = await s.listTeamMembers('t1')
   assert.deepEqual([m.memberId, m.access, m.name, 'orgMembers' in m], ['m1', 'viewer', 'Dana', false])
   await s.addTeamMember({ teamId: 't1', memberId: 'm1', access: 'editor' })
-  assert.deepEqual(calls[1].ops.find(([op]) => op === 'upsert')[2], { onConflict: 'team_id,member_id' })
+  assert.equal(calls[1].table, 'teams')
+  assert.ok(has(calls[1], 'eq', 'id', 't1'))
+  const upsert = calls[2].ops.find(([op]) => op === 'upsert')
+  assert.deepEqual(upsert[1], { team_id: 't1', member_id: 'm1', access: 'editor', org_id: 'o1' })
+  assert.deepEqual(upsert[2], { onConflict: 'team_id,member_id' })
+})
+
+test('supabase addTeamMember throws a 23503 like a foreign-key violation when the team does not exist', async () => {
+  const { client } = fakeDb(() => null)
+  await assert.rejects(createSupabaseStore({ client }).addTeamMember({ teamId: 'nope', memberId: 'm1', access: 'viewer' }), (err) => err.code === '23503')
+})
+
+test('supabase createInvite and createJoinRequest lowercase the stored email', async () => {
+  const { client: c1, calls: i1 } = fakeDb(() => ({ id: 'i1' }))
+  await createSupabaseStore({ client: c1 }).createInvite({ orgId: 'o1', email: 'A@Acme.com', roleId: 'r1', tokenHash: 'h', invitedBy: 'u1', expiresAt: Date.now() })
+  assert.equal(i1[0].ops.find(([op]) => op === 'insert')[1].email, 'a@acme.com')
+
+  const { client: c2, calls: i2 } = fakeDb((q) => (q.ops.some(([op]) => op === 'insert') ? { id: 'j1' } : null))
+  await createSupabaseStore({ client: c2 }).createJoinRequest({ orgId: 'o1', userId: 'u2', email: 'B@Acme.com' })
+  assert.equal(i2[1].ops.find(([op]) => op === 'insert')[1].email, 'b@acme.com')
 })
