@@ -240,11 +240,12 @@ async function relayCmd () {
 }
 
 async function ui () {
-  const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, 'no-open': { type: 'boolean' } } })
+  const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, 'no-open': { type: 'boolean' }, preview: { type: 'boolean' } } })
   const { startUi } = await import('../src/ui-server.js')
   const { registerProcess, stopProcesses } = await import('../src/procs.js')
   const app = await startUi({
     port: Number(values.port || 7420),
+    preview: !!values.preview,
     // The app's "Shut down" button: stop every other quilt process, then this one.
     onShutdown: async () => {
       console.log('\nshutting down everything…')
