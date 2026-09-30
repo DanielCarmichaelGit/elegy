@@ -104,7 +104,14 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async updateRole (id, { name, grants }) {
       return rowFrom(await one(db.from('roles').update(toSnake({ name, grants })).eq('id', id).select(ROLE).single()))
     },
-    async deleteRole (id) { await one(db.from('roles').delete().eq('id', id)) },
+    // Closed invites (accepted, cancelled or expired) are cleared first, since
+    // org_invites.role_id is NO ACTION, not cascade; an open invite still makes
+    // the role delete fail with Postgres's 23503, which `one` rethrows as-is.
+    async deleteRole (id) {
+      await one(db.from('org_invites').delete().eq('role_id', id)
+        .or(`accepted_at.not.is.null,cancelled_at.not.is.null,expires_at.lte.${new Date().toISOString()}`))
+      await one(db.from('roles').delete().eq('id', id))
+    },
     // In use: someone holds it, or an open invite would hand it out.
     async roleInUse (id) {
       if ((await one(db.from('org_members').select('id').eq('role_id', id).limit(1))).length) return true

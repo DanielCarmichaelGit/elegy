@@ -80,3 +80,39 @@ test('supabase roleInUse counts members, then open invites only', async () => {
   const invites = calls.find((q) => q.table === 'org_invites')
   assert.ok(has(invites, 'is', 'accepted_at', null) && has(invites, 'is', 'cancelled_at', null))
 })
+
+test('supabase deleteRole clears closed invites before deleting the role', async () => {
+  const { client, calls } = fakeDb(() => null)
+  await createSupabaseStore({ client }).deleteRole('r1')
+  assert.equal(calls[0].table, 'org_invites')
+  assert.ok(has(calls[0], 'eq', 'role_id', 'r1'))
+  assert.ok(calls[0].ops.some(([op, filter]) => op === 'or' &&
+    /accepted_at\.not\.is\.null/.test(filter) && /cancelled_at\.not\.is\.null/.test(filter) && /expires_at\.lte\./.test(filter)))
+  assert.equal(calls[1].table, 'roles')
+  assert.ok(has(calls[1], 'eq', 'id', 'r1'), 'roles delete only runs after the invites are cleared')
+})
+
+test('supabase deleteRole lets the foreign-key error propagate when an invite is still open', async () => {
+  const chain = (q) => new Proxy({}, {
+    get (_, op) {
+      if (op === 'then') {
+        const error = q.table === 'roles' ? { code: '23503', message: 'still referenced' } : null
+        return (res, rej) => Promise.resolve({ data: null, error }).then(res, rej)
+      }
+      return (...args) => { q.ops.push([op, ...args]); return chain(q) }
+    }
+  })
+  const client = { from (table) { const q = { table, ops: [] }; return chain(q) } }
+  await assert.rejects(createSupabaseStore({ client }).deleteRole('r1'), (err) => err.code === '23503')
+})
+
+test('supabase transferOrg lets the RPC\'s errcode propagate (QO001/QO002)', async () => {
+  const chain = (q) => new Proxy({}, {
+    get (_, op) {
+      if (op === 'then') return (res, rej) => Promise.resolve({ data: null, error: { code: 'QO002', message: 'target is not a member of this org' } }).then(res, rej)
+      return (...args) => { q.ops.push([op, ...args]); return chain(q) }
+    }
+  })
+  const client = { rpc (fn, args) { const q = { rpc: fn, args, ops: [] }; return chain(q) } }
+  await assert.rejects(createSupabaseStore({ client }).transferOrg('o1', 'u2'), (err) => err.code === 'QO002')
+})

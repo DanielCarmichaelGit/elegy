@@ -7,6 +7,8 @@ const pick = (o, drop) => Object.fromEntries(Object.entries(o).filter(([k]) => !
 const copy = (o) => (o ? structuredClone(o) : null)
 // Postgres's unique-violation code, which the API turns into a 409.
 const duplicate = (what) => Object.assign(new Error(`${what} already exists`), { code: '23505' })
+// Postgres's foreign-key-violation code, mirrored for the checks the schema enforces with NO ACTION.
+const fkViolation = (what) => Object.assign(new Error(`${what} is still referenced`), { code: '23503' })
 
 export function createMemoryStore ({ now = Date.now } = {}) {
   const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map()
@@ -15,6 +17,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const all = (m, keep) => [...m.values()].filter(keep)
   const nameOf = (userId) => profiles.get(userId)?.name || ''
   const findMember = (orgId, userId) => all(members, (m) => m.orgId === orgId && m.userId === userId)[0]
+  // Mirrors the composite (role_id, org_id) foreign key: a role from another org can't be attached here.
+  const roleInOrg = (roleId, orgId) => roleId == null || roles.get(roleId)?.orgId === orgId
   // Leaving an org also leaves its teams, like the cascade in Postgres.
   const dropMember = (id) => {
     members.delete(id)
@@ -117,13 +121,16 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [k, i] of invites) if (i.orgId === id) invites.delete(k)
       for (const [k, r] of requests) if (r.orgId === id) requests.delete(k)
     },
-    // Ownership moves in one step: the old owner becomes an Admin.
+    // Ownership moves in one step: the old owner becomes an Admin. Mirrors
+    // transfer_org's own errcodes (QO002/QO001) for the same two checks.
     async transferOrg (orgId, toUserId) {
       const o = orgs.get(orgId)
       const to = findMember(orgId, toUserId)
-      if (!to) throw new Error('not a member of this org')
+      if (!to) throw Object.assign(new Error('target is not a member of this org'), { code: 'QO002' })
+      const from = findMember(orgId, o.ownerId)
+      if (!from) throw Object.assign(new Error('current owner is not a member of this org'), { code: 'QO001' })
       const builtin = (b) => all(roles, (r) => r.orgId === orgId && r.builtin === b)[0]
-      findMember(orgId, o.ownerId).roleId = builtin('admin').id
+      from.roleId = builtin('admin').id
       to.roleId = builtin('owner').id
       o.ownerId = toUserId
     },
@@ -143,28 +150,44 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (grants !== undefined) r.grants = copy(grants)
       return copy(r)
     },
-    // A deleted role's invites go with it, like the cascade in Postgres.
+    // A deleted role's closed invites (accepted, cancelled or expired) go with
+    // it; an open invite still referencing the role blocks the delete, mirroring
+    // the (role_id, org_id) foreign key's NO ACTION in Postgres.
     async deleteRole (id) {
+      const t = now()
+      for (const [k, i] of invites) {
+        if (i.roleId === id && (i.acceptedAt || i.cancelledAt || i.expiresAt <= t)) invites.delete(k)
+      }
+      if (all(invites, (i) => i.roleId === id).length) throw fkViolation('role')
       roles.delete(id)
-      for (const [k, i] of invites) if (i.roleId === id) invites.delete(k)
     },
     // In use: someone holds it, or an open invite would hand it out.
     async roleInUse (id) {
       return all(members, (m) => m.roleId === id).length > 0 ||
         all(invites, (i) => i.roleId === id && !i.acceptedAt && !i.cancelledAt).length > 0
     },
+    // A seam for tests only until the full invites API lands (Task 4's createInvite).
+    async createInvite ({ orgId, email, roleId, tokenHash, invitedBy, expiresAt }) {
+      const i = { id: uuid(), orgId, email, roleId, tokenHash, invitedBy, expiresAt, acceptedAt: null, cancelledAt: null, createdAt: now() }
+      invites.set(i.id, i); return copy(i)
+    },
 
     // Members.
     async memberOf (orgId, userId) { return copy(findMember(orgId, userId)) },
     async memberById (orgId, id) { const m = members.get(id); return m && m.orgId === orgId ? copy(m) : null },
-    async listMembers (orgId) { return all(members, (m) => m.orgId === orgId).map((m) => ({ ...copy(m), name: nameOf(m.userId) })) },
+    async listMembers (orgId) { return all(members, (m) => m.orgId === orgId).map((m) => ({ ...copy(m), name: nameOf(m.userId) })).sort((a, b) => a.joinedAt - b.joinedAt) },
     async addMember ({ orgId, userId, roleId }) {
       const existing = findMember(orgId, userId)
       if (existing) return copy(existing)
+      if (!roleInOrg(roleId, orgId)) throw fkViolation('role')
       const m = { id: uuid(), orgId, userId, agentId: null, roleId, joinedAt: now() }
       members.set(m.id, m); return copy(m)
     },
-    async setMemberRole (id, roleId) { const m = members.get(id); m.roleId = roleId; return copy(m) },
+    async setMemberRole (id, roleId) {
+      const m = members.get(id)
+      if (!roleInOrg(roleId, m.orgId)) throw fkViolation('role')
+      m.roleId = roleId; return copy(m)
+    },
     async removeMember (id) { dropMember(id) }
   }
 }

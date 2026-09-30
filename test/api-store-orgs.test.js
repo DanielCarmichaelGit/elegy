@@ -114,3 +114,52 @@ test('deleting an org removes its roles and members; deleting a person removes t
   assert.equal(await s.memberOf(other.id, 'u1'), null)
   assert.equal(await s.userEmail('u1'), null)
 })
+
+test('deleting a role clears its closed invites first, and refuses while one is open', async () => {
+  const s = setup()
+  const org = await newOrg(s)
+  const lead = await s.createRole({ orgId: org.id, name: 'Lead', grants: {} })
+  await s.createInvite({ orgId: org.id, email: 'x@acme.com', roleId: lead.id, tokenHash: 'h1', invitedBy: 'u1', expiresAt: Date.now() - 1000 })
+  await s.deleteRole(lead.id)
+  assert.equal(await s.roleById(org.id, lead.id), null, 'a role with only an expired (closed) invite can be deleted')
+
+  const lead2 = await s.createRole({ orgId: org.id, name: 'Lead2', grants: {} })
+  await s.createInvite({ orgId: org.id, email: 'y@acme.com', roleId: lead2.id, tokenHash: 'h2', invitedBy: 'u1', expiresAt: Date.now() + 1000 * 60 * 60 })
+  assert.equal(await s.roleInUse(lead2.id), true, 'an open invite is reported in use')
+  await assert.rejects(s.deleteRole(lead2.id), (err) => err.code === '23503')
+  assert.ok(await s.roleById(org.id, lead2.id), 'the role survives the refused delete')
+})
+
+test('transferOrg reports QO002/QO001 like transfer_org, instead of throwing a plain error', async () => {
+  const s = setup()
+  const org = await newOrg(s)
+  await assert.rejects(s.transferOrg(org.id, 'u2'), (err) => err.code === 'QO002', 'target not a member')
+  const memberRole = (await s.listRoles(org.id)).find((r) => r.builtin === 'member').id
+  await s.addMember({ orgId: org.id, userId: 'u2', roleId: memberRole })
+  await s.removeMember((await s.memberOf(org.id, 'u1')).id)
+  await assert.rejects(s.transferOrg(org.id, 'u2'), (err) => err.code === 'QO001', 'current owner no longer a member')
+})
+
+test('a role from another org cannot be attached to a member (composite FK)', async () => {
+  const s = setup()
+  const org = await newOrg(s)
+  const other = await newOrg(s, 'Other', 'other', 'u2')
+  const otherRole = (await s.listRoles(other.id)).find((r) => r.builtin === 'member').id
+  await assert.rejects(s.addMember({ orgId: org.id, userId: 'u2', roleId: otherRole }), (err) => err.code === '23503')
+  const memberRole = (await s.listRoles(org.id)).find((r) => r.builtin === 'member').id
+  const m = await s.addMember({ orgId: org.id, userId: 'u2', roleId: memberRole })
+  await assert.rejects(s.setMemberRole(m.id, otherRole), (err) => err.code === '23503')
+})
+
+test('listMembers is sorted by joinedAt', async () => {
+  let t = 1000
+  const s = createMemoryStore({ now: () => t })
+  s.addUser('u1', { name: 'Dana', email: 'dana@acme.com' })
+  s.addUser('u2', { name: 'Eli', email: 'eli@acme.com' })
+  s.addUser('u3', { name: 'Cal', email: 'cal@acme.com' })
+  const org = await newOrg(s)
+  const memberRole = (await s.listRoles(org.id)).find((r) => r.builtin === 'member').id
+  t = 3000; await s.addMember({ orgId: org.id, userId: 'u3', roleId: memberRole })
+  t = 2000; await s.addMember({ orgId: org.id, userId: 'u2', roleId: memberRole })
+  assert.deepEqual((await s.listMembers(org.id)).map((m) => m.userId), ['u1', 'u2', 'u3'])
+})
