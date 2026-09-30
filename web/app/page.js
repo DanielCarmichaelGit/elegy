@@ -5,7 +5,6 @@ import Footer from '@/components/Footer.js'
 import Mark from '@/components/Mark.js'
 import DownloadButtons from '@/components/DownloadButtons.js'
 import { pickDownloads } from '@/lib/platform.js'
-import { currentUser } from '@/lib/session.js'
 
 const STEPS = [
   ['start.png', 'The Quilt app, picking a project folder to start a session.', 'Start a session', 'Pick a project folder in the Quilt app.'],
@@ -33,10 +32,9 @@ export default async function Home ({ searchParams }) {
   const q = await searchParams
   const ua = (await headers()).get('user-agent') || ''
   const initial = pickDownloads({ ua })
-  const user = await currentUser()
   return (
     <>
-      <Header signedIn={!!user} />
+      <Header />
       <main className='page'>
         <div className='wrap'>
           {q.deleted && <p className='notice'>Your Quilt account was deleted.</p>}
@@ -57,7 +55,7 @@ export default async function Home ({ searchParams }) {
           </section>
         </div>
 
-        <div className='wrap sec'>
+        <div className='wrap sec' id='how'>
           <h2>Three steps, no setup</h2>
           <p className='sub'>Pick a folder, send a link, and you're building together.</p>
           <div className='steps'>
@@ -91,14 +89,14 @@ export default async function Home ({ searchParams }) {
         </div>
 
         <div className='wrap'>
-          <section className='card stack agents-card'>
+          <section className='card stack agents-card' id='agents'>
             <h2>Agents will be able to join too</h2>
             <p className='muted'>Coming soon: create an agent in your dashboard and give it an invite link. It will be able to join sessions as its own member, with an agent badge, reading and editing files, and chatting with everyone.</p>
             <div><Link className='btn' href='/signin'>Get started</Link></div>
           </section>
         </div>
 
-        <div className='wrap'>
+        <div className='wrap' id='download'>
           <section className='cta-band'>
             <div className='quilt-patch' aria-hidden='true' />
             <div className='quilt-stitch' aria-hidden='true' />

@@ -1,16 +1,23 @@
 import Link from 'next/link'
 import Mark from './Mark.js'
+import HeaderNav from './HeaderNav.js'
+import AuthLink from './AuthLink.js'
+import HeaderDownload from './HeaderDownload.js'
 
-export default function Header ({ signedIn = false }) {
+// Header option B: a floating rounded bar. Fully static (no headers()/cookies()/currentUser),
+// so any page that renders it can still be prerendered; sign-in state and the download pick
+// are both resolved client-side (see AuthLink.js and HeaderDownload.js).
+export default function Header () {
   return (
-    <header className='wrap site-header'>
-      <Link href='/' className='brand' aria-label='Quilt home'><Mark /></Link>
-      <nav>
-        <Link className='btn ghost' href='/pricing'>Pricing</Link>
-        {signedIn
-          ? <Link className='btn' href='/dashboard'>Dashboard</Link>
-          : <Link className='btn' href='/signin'>Sign in</Link>}
-      </nav>
-    </header>
+    <div className='qh-wrap'>
+      <header className='qh'>
+        <Link href='/' className='brand qh-brand' aria-label='Quilt home'><Mark /></Link>
+        <HeaderNav />
+        <div className='qh-right'>
+          <AuthLink />
+          <HeaderDownload />
+        </div>
+      </header>
+    </div>
   )
 }

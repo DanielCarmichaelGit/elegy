@@ -20,7 +20,8 @@ function WindowsLogo () {
   )
 }
 
-const Logo = ({ os }) => os === 'windows' ? <WindowsLogo /> : <AppleLogo />
+// Exported so other spots (the header's own download button) can reuse the same glyphs.
+export const OsIcon = ({ os }) => os === 'windows' ? <WindowsLogo /> : <AppleLogo />
 
 // Fine print under the buttons: links to whichever builds aren't already showing as buttons.
 function FinePrint ({ primary, others }) {
@@ -58,7 +59,7 @@ export default function DownloadButtons ({ initial, className = '' }) {
       <div className='row dl-row' style={{ justifyContent: 'center' }}>
         {primary.map((d, i) => (
           <a key={d.href} className={i === 0 ? 'btn primary dl-btn' : 'btn ghost dl-btn'} href={d.href}>
-            <Logo os={d.os} />{d.label}
+            <OsIcon os={d.os} />{d.label}
           </a>
         ))}
       </div>
