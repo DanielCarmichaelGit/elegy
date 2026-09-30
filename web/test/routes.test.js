@@ -33,7 +33,7 @@ test('public pages render', async () => {
 })
 
 test('private pages send signed-out people to sign in, and come back after', async () => {
-  for (const path of ['/dashboard', '/settings', '/link?code=AAAA-BBBB', '/reset']) {
+  for (const path of ['/dashboard', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/invites', '/org/acme/settings', '/orgs/new', '/invite/qi_test']) {
     const res = await get(path)
     assert.equal(res.status, 307, path)
     const to = new URL(res.headers.get('location'), base)
@@ -47,9 +47,11 @@ test('the sign-in page renders with the email form', async () => {
   assert.match(html, /type="email"/)
 })
 
-test('the sign-up page renders with a password field', async () => {
+test('the sign-up page renders with a password field and the just-me / team choice', async () => {
   const html = await (await get('/signup')).text()
   assert.match(html, /type="password"/)
+  assert.match(html, /Just me/)
+  assert.match(html, /A team/)
 })
 
 test('the forgot-password page renders with an email field', async () => {

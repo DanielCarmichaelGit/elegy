@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
-const PRIVATE = ['/dashboard', '/settings', '/link', '/reset']
+const PRIVATE = ['/dashboard', '/settings', '/link', '/reset', '/org', '/orgs', '/invite']
 
 export async function proxy (request) {
   let response = NextResponse.next({ request })

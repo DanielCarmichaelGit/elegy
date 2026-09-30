@@ -6,7 +6,17 @@ const toCamel = (row) => row && Object.fromEntries(Object.entries(row).map(([k, 
 const toSnake = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).map(([k, v]) => [k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase()), v]))
 const ts = (v) => (v == null ? v : typeof v === 'number' ? new Date(v).toISOString() : v)
 const ms = (v) => (v == null ? v : Date.parse(v))
+// Postgres's foreign-key-violation code, for the same checks memory-store.js mirrors.
+const fkViolation = (what) => Object.assign(new Error(`${what} is still referenced`), { code: '23503' })
 const SAFE_AGENT = 'id, owner_id, name, key_prefix, public_key, created_at, last_used_at, revoked_at'
+// Named columns for the org tables, so a select never picks up a secret by accident.
+const ORG = 'id, name, slug, owner_id, domain, domain_requests, created_at'
+const ROLE = 'id, org_id, name, builtin, grants, created_at'
+const MEMBER = 'id, org_id, user_id, agent_id, role_id, joined_at'
+const TEAM = 'id, org_id, name, created_at'
+const TEAM_MEMBER = 'team_id, member_id, access, scopes, added_at'
+const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, accepted_at, cancelled_at, created_at'
+const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
 
 // One mapper for every table: camelCases the columns and turns every `*At` field
 // (createdAt, updatedAt, lastSeenAt, lastUsedAt, revokedAt, expiresAt, joinedAt,
@@ -18,6 +28,7 @@ export const rowFrom = (row) => row && Object.fromEntries(Object.entries(toCamel
 export function createSupabaseStore ({ url, serviceKey, client }) {
   const db = client || createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
   const one = async (q) => { const { data, error } = await q; if (error) throw error; return data }
+  const memberOf = async (orgId, userId) => rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('user_id', userId).maybeSingle()))
 
   return {
     async createLink (l) {
@@ -60,6 +71,160 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async deleteUser (userId) {
       const { error } = await db.auth.admin.deleteUser(userId)
       if (error) throw error
+    },
+
+    // The address a person signs in with, and whether they've confirmed it.
+    async userEmail (userId) {
+      const { data, error } = await db.auth.admin.getUserById(userId)
+      if (error) { if (error.status === 404) return null; throw error }
+      const u = data?.user
+      return u ? { email: u.email || '', confirmed: !!u.email_confirmed_at } : null
+    },
+
+    // Orgs. create_org makes the org, its three built-in roles and its owner in one
+    // transaction. first: true is for "a team" sign-ups, where two tabs (or a double
+    // click) can both see no org yet; create_org locks on the owner and hands back
+    // whichever org they end up in rather than making a second one.
+    async createOrg ({ name, slug, ownerId, grants, first = false }) {
+      return rowFrom(await one(db.rpc('create_org', {
+        p_name: name, p_slug: slug, p_owner: ownerId, p_owner_grants: grants.owner, p_admin_grants: grants.admin, p_member_grants: grants.member, p_first: first
+      })))
+    },
+    async orgBySlug (slug) { return rowFrom(await one(db.from('orgs').select(ORG).eq('slug', slug).maybeSingle())) },
+    async orgById (id) { return rowFrom(await one(db.from('orgs').select(ORG).eq('id', id).maybeSingle())) },
+    async orgsForUser (userId) {
+      const rows = await one(db.from('org_members').select(`role_id, orgs (${ORG})`).eq('user_id', userId))
+      return rows.map((r) => ({ ...rowFrom(r.orgs), roleId: r.role_id })).sort((a, b) => a.name.localeCompare(b.name))
+    },
+    async orgsByDomain (domain) { return (await one(db.from('orgs').select(ORG).eq('domain', domain).eq('domain_requests', true))).map(rowFrom) },
+    async updateOrg (id, { name, domain, domainRequests }) {
+      return rowFrom(await one(db.from('orgs').update(toSnake({ name, domain, domainRequests })).eq('id', id).select(ORG).single()))
+    },
+    // Cascades to roles, members, teams, invites and requests.
+    async deleteOrg (id) { await one(db.from('orgs').delete().eq('id', id)) },
+    async transferOrg (orgId, fromUserId, toUserId) { await one(db.rpc('transfer_org', { p_org: orgId, p_from: fromUserId, p_to: toUserId })) },
+
+    // Roles.
+    async listRoles (orgId) { return (await one(db.from('roles').select(ROLE).eq('org_id', orgId))).map(rowFrom) },
+    async roleById (orgId, id) { return rowFrom(await one(db.from('roles').select(ROLE).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async createRole ({ orgId, name, grants }) {
+      return rowFrom(await one(db.from('roles').insert({ org_id: orgId, name, grants }).select(ROLE).single()))
+    },
+    async updateRole (id, { name, grants }) {
+      return rowFrom(await one(db.from('roles').update(toSnake({ name, grants })).eq('id', id).select(ROLE).single()))
+    },
+    // Closed invites (accepted, cancelled or expired) are cleared first, since
+    // org_invites.role_id is NO ACTION, not cascade; an open invite still makes
+    // the role delete fail with Postgres's 23503, which `one` rethrows as-is.
+    async deleteRole (id) {
+      await one(db.from('org_invites').delete().eq('role_id', id)
+        .or(`accepted_at.not.is.null,cancelled_at.not.is.null,expires_at.lte.${new Date().toISOString()}`))
+      await one(db.from('roles').delete().eq('id', id))
+    },
+    // In use: someone holds it, or an open (not accepted, not cancelled, not
+    // expired) invite would hand it out — the same definition deleteRole uses.
+    async roleInUse (id) {
+      if ((await one(db.from('org_members').select('id').eq('role_id', id).limit(1))).length) return true
+      return (await one(db.from('org_invites').select('id').eq('role_id', id)
+        .is('accepted_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).limit(1))).length > 0
+    },
+
+    // Members.
+    memberOf,
+    async memberById (orgId, id) { return rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async listMembers (orgId) {
+      const rows = await one(db.from('org_members').select(`${MEMBER}, profiles (name)`).eq('org_id', orgId).order('joined_at'))
+      return rows.map(({ profiles, ...r }) => ({ ...rowFrom(r), name: profiles?.name || '' }))
+    },
+    // Already a member: the upsert does nothing and we return the existing row.
+    async addMember ({ orgId, userId, roleId }) {
+      const row = await one(db.from('org_members')
+        .upsert({ org_id: orgId, user_id: userId, role_id: roleId }, { onConflict: 'org_id,user_id', ignoreDuplicates: true })
+        .select(MEMBER).maybeSingle())
+      return row ? rowFrom(row) : memberOf(orgId, userId)
+    },
+    async setMemberRole (id, roleId) { return rowFrom(await one(db.from('org_members').update({ role_id: roleId }).eq('id', id).select(MEMBER).single())) },
+    // Cascades to the member's team memberships.
+    async removeMember (id) { await one(db.from('org_members').delete().eq('id', id)) },
+
+    // Teams.
+    async listTeams (orgId) { return (await one(db.from('teams').select(TEAM).eq('org_id', orgId).order('name'))).map(rowFrom) },
+    async teamById (orgId, id) { return rowFrom(await one(db.from('teams').select(TEAM).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async createTeam ({ orgId, name }) { return rowFrom(await one(db.from('teams').insert({ org_id: orgId, name }).select(TEAM).single())) },
+    async renameTeam (id, name) { return rowFrom(await one(db.from('teams').update({ name }).eq('id', id).select(TEAM).single())) },
+    async deleteTeam (id) { await one(db.from('teams').delete().eq('id', id)) },
+    async listTeamMembers (teamId) {
+      const rows = await one(db.from('team_members').select(`${TEAM_MEMBER}, org_members (user_id, profiles (name))`).eq('team_id', teamId).order('added_at'))
+      return rows.map(({ org_members: m, ...r }) => ({ ...rowFrom(r), name: m?.profiles?.name || '' }))
+    },
+    async teamsOfMember (memberId) {
+      return (await one(db.from('team_members').select('team_id, access').eq('member_id', memberId))).map((r) => ({ teamId: r.team_id, access: r.access }))
+    },
+    // team_members.org_id is not null (composite FKs to teams(id, org_id) and
+    // org_members(id, org_id)), so look the team's org up first and stamp it
+    // on the upsert; a missing team fails the same way the real FK would.
+    async addTeamMember ({ teamId, memberId, access }) {
+      const team = await one(db.from('teams').select('org_id').eq('id', teamId).maybeSingle())
+      if (!team) throw fkViolation('team')
+      return rowFrom(await one(db.from('team_members')
+        .upsert({ team_id: teamId, member_id: memberId, access, org_id: team.org_id }, { onConflict: 'team_id,member_id' })
+        .select(TEAM_MEMBER).single()))
+    },
+    async setTeamAccess (teamId, memberId, access) {
+      return rowFrom(await one(db.from('team_members').update({ access }).eq('team_id', teamId).eq('member_id', memberId).select(TEAM_MEMBER).maybeSingle()))
+    },
+    async removeTeamMember (teamId, memberId) {
+      return (await one(db.from('team_members').delete().eq('team_id', teamId).eq('member_id', memberId).select('team_id'))).length > 0
+    },
+
+    // Invites: only the token's hash is stored. org_invites.email must be
+    // lowercase (a check constraint), matching the invite flow's
+    // case-insensitive match on the invitee's confirmed email.
+    async createInvite (i) {
+      return rowFrom(await one(db.from('org_invites').insert(toSnake({ ...i, email: i.email.toLowerCase(), expiresAt: ts(i.expiresAt) })).select(INVITE).single()))
+    },
+    async inviteByToken (h) { return rowFrom(await one(db.from('org_invites').select(INVITE).eq('token_hash', h).maybeSingle())) },
+    async inviteById (orgId, id) { return rowFrom(await one(db.from('org_invites').select(INVITE).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async listInvites (orgId) {
+      return (await one(db.from('org_invites').select(INVITE).eq('org_id', orgId).is('accepted_at', null).is('cancelled_at', null).order('created_at'))).map(rowFrom)
+    },
+    async updateInvite (id, patch) {
+      return rowFrom(await one(db.from('org_invites').update(toSnake({ ...patch, expiresAt: ts(patch.expiresAt), cancelledAt: ts(patch.cancelledAt) })).eq('id', id).select(INVITE).single()))
+    },
+    // Check-and-set, so one invite can't be accepted twice, after it was
+    // cancelled, or once it's expired — mirrors roleInUse's open-invite definition.
+    async claimInvite (id) {
+      const rows = await one(db.from('org_invites').update({ accepted_at: new Date().toISOString() }).eq('id', id)
+        .is('accepted_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).select('id'))
+      return rows.length > 0
+    },
+
+    // Domain join requests: the partial unique index (join_requests_one_pending)
+    // keeps one pending per person per org. The fast-path select below is only
+    // that — a fast path — since two concurrent calls can both pass it; the
+    // insert is what's race-safe: if it loses the race, its 23505 means someone
+    // else's row won, so re-select and hand that one back instead of throwing.
+    // join_requests.email must be lowercase (a check constraint).
+    async createJoinRequest ({ orgId, userId, email }) {
+      const pending = await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('user_id', userId).eq('status', 'pending').maybeSingle())
+      if (pending) return rowFrom(pending)
+      try {
+        return rowFrom(await one(db.from('join_requests').insert({ org_id: orgId, user_id: userId, email: email.toLowerCase() }).select(REQUEST).single()))
+      } catch (err) {
+        if (err.code !== '23505') throw err
+        return rowFrom(await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('user_id', userId).eq('status', 'pending').maybeSingle()))
+      }
+    },
+    async joinRequestById (orgId, id) { return rowFrom(await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async listJoinRequests (orgId) {
+      const rows = await one(db.from('join_requests').select(`${REQUEST}, profiles (name)`).eq('org_id', orgId).eq('status', 'pending').order('created_at'))
+      return rows.map(({ profiles, ...r }) => ({ ...rowFrom(r), name: profiles?.name || '' }))
+    },
+    async joinRequestsForUser (userId) { return (await one(db.from('join_requests').select(REQUEST).eq('user_id', userId))).map(rowFrom) },
+    // Check-and-set: a request is decided once.
+    async decideJoinRequest (id, { status, decidedBy }) {
+      const rows = await one(db.from('join_requests').update({ status, decided_by: decidedBy, decided_at: new Date().toISOString() }).eq('id', id).eq('status', 'pending').select('id'))
+      return rows.length > 0
     }
   }
 }

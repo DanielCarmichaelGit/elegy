@@ -7,7 +7,7 @@ export async function currentUser () {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
   const { data: { session } } = await supabase.auth.getSession()
-  return { id: user.id, email: user.email, identities: user.identities || [], accessToken: session?.access_token }
+  return { id: user.id, email: user.email, identities: user.identities || [], orgName: user.user_metadata?.org_name || null, accessToken: session?.access_token }
 }
 
 export async function requireUser (nextPath) {

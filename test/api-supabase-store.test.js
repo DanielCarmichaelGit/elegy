@@ -65,6 +65,17 @@ test('supabase upsertDevice: one row per (account, key), and a relink clears the
   assert.equal(upsert[1].revoked_at, null)
 })
 
+test('supabase claimInvite only claims an invite that is unaccepted, uncancelled and unexpired', async () => {
+  const { client, calls } = fakeClient({ id: 'i1' })
+  const s = createSupabaseStore({ client })
+  await s.claimInvite('i1')
+  const update = calls[0]
+  assert.ok(update.ops.some(([op, col]) => op === 'is' && col === 'accepted_at'))
+  assert.ok(update.ops.some(([op, col]) => op === 'is' && col === 'cancelled_at'))
+  const gt = update.ops.find(([op, col]) => op === 'gt' && col === 'expires_at')
+  assert.ok(gt, 'claimInvite must also require expires_at to be in the future')
+})
+
 test('the migration keys devices on (user_id, public_key) and allows the approving status', () => {
   const sql = fs.readFileSync(new URL('../supabase/migrations/20260929000000_accounts.sql', import.meta.url), 'utf8')
   const devices = sql.match(/create table public\.devices \(([\s\S]*?)\n\);/)[1]

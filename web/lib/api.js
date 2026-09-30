@@ -12,7 +12,9 @@ export async function apiCall (user, method, path, body) {
       method,
       headers: { authorization: `Bearer ${user.accessToken}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
-      cache: 'no-store'
+      cache: 'no-store',
+      // A hung API request would otherwise leave the page waiting forever.
+      signal: AbortSignal.timeout(15000)
     })
     return { ok: res.ok, status: res.status, data: await res.json().catch(() => null) }
   } catch {
