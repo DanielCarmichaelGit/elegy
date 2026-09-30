@@ -1,10 +1,10 @@
-import Header from '@/components/Header.js'
+import { AppHeaderSkeleton } from '@/components/AppHeader.js'
 
 // Shown instantly on navigation while settings loads. Includes the Header so nothing shifts.
 export default function Loading () {
   return (
     <>
-      <Header />
+      <AppHeaderSkeleton />
       <main className='wrap page stack' style={{ maxWidth: 640 }}>
         <div className='skeleton skeleton-title' />
         <div className='card skeleton-card' />

@@ -24,8 +24,8 @@ export default function HeaderDownload () {
   // Unknown, or genuinely ambiguous (both Mac and Windows offered): a plain link down to
   // the download band rather than guessing.
   if (!pick || pick.primary.length !== 1) {
-    return <Link className='btn dark qh-dl' href='/#download'>Download</Link>
+    return <Link className='btn primary qh-dl' href='/#download'>Download</Link>
   }
   const d = pick.primary[0]
-  return <a className='btn dark qh-dl' href={d.href}><OsIcon os={d.os} />Download</a>
+  return <a className='btn primary qh-dl' href={d.href}><OsIcon os={d.os} />Download</a>
 }

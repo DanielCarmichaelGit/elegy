@@ -1,4 +1,4 @@
-import Header from '@/components/Header.js'
+import AppHeader from '@/components/AppHeader.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { TOOLS } from '@/lib/tools.js'
@@ -15,7 +15,7 @@ export default async function Settings ({ searchParams }) {
   const providers = [...new Set(user.identities.map((i) => i.provider))]
   return (
     <>
-      <Header signedIn />
+      <AppHeader user={user} />
       <main className='wrap page stack' style={{ maxWidth: 640 }}>
         <h1 style={{ fontSize: 32 }}>Settings</h1>
         {q.saved && <p className='notice'>Saved. Your computers pick this up next time they check in.</p>}

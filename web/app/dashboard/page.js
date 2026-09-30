@@ -1,9 +1,8 @@
 import { headers, cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
-import Header from '@/components/Header.js'
+import AppHeader from '@/components/AppHeader.js'
 import NewAgent from '@/components/NewAgent.js'
 import FirstOrg from '@/components/FirstOrg.js'
-import SpaceSwitcher from '@/components/SpaceSwitcher.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
@@ -40,16 +39,9 @@ export default async function Dashboard ({ searchParams }) {
   const download = downloadFor(ua) || DOWNLOADS.macArm
   return (
     <>
-      <Header signedIn />
+      <AppHeader user={user} space='personal' />
       <main className='wrap page stack'>
-        <div className='row' style={{ justifyContent: 'space-between' }}>
-          <h1 style={{ fontSize: 32 }}>Dashboard</h1>
-          <div className='row'>
-            <SpaceSwitcher orgs={orgs} current='personal' />
-            <a className='btn ghost' href='/settings'>Settings</a>
-            <form action='/auth/signout' method='post'><button className='btn ghost'>Sign out</button></form>
-          </div>
-        </div>
+        <h1 style={{ fontSize: 32 }}>Dashboard</h1>
         {q.password && <p className='notice'>Password updated.</p>}
         {q.left && <p className='notice'>You left the org.</p>}
         {q.orgDeleted && <p className='notice'>The org was deleted.</p>}
@@ -67,7 +59,7 @@ export default async function Dashboard ({ searchParams }) {
                   : <form action={askToJoin}><input type='hidden' name='slug' value={o.slug} /><button className='btn'>Ask to join</button></form>}
               </div>))}
           </section>)}
-        <section className='card stack'>
+        <section className='card stack' id='computers'>
           <div className='row' style={{ justifyContent: 'space-between' }}>
             <h2>Your computers</h2>
             <a className='btn ghost' href={download.href}>{download.label}</a>
@@ -80,7 +72,7 @@ export default async function Dashboard ({ searchParams }) {
               </div>))
             : <p className='muted'>No computers yet. Open the Quilt app and choose <b>Sign in</b>.</p>}
         </section>
-        <section className='card stack'>
+        <section className='card stack' id='agents'>
           <h2>Your agents</h2>
           <p className='muted'>Coming soon: agents will be able to join sessions as their own members, with an agent badge.</p>
           {!agentsRes.ok && <p className='notice bad'>Could not load your agents right now.</p>}
