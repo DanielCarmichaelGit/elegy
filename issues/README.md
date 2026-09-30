@@ -14,6 +14,7 @@ the commit, so the history stays in one place.
 | [005](005-website-needs-signed-identities.md) | The website and relay-hosted AI tools can't join since identities became signed | Won't fix: browser version shelved; relay-hosted AI moves to 002 |
 | [006](006-approved-member-not-shown-as-present.md) | Someone let into a session only shows in Access, not in the people bubble | Likely caused by 007; recheck in a fresh session |
 | [007](007-relay-crashes-on-oversized-session.md) | Nothing syncs: the relay crashes when a session holds a build folder | **Fixed**: nested ignore files, relay size guard |
+| [008](008-invite-links-break.md) | Invite links stop working | Needs info: what the link does when it breaks |
 
 Feature ideas (not bugs) go in [unlocks.md](unlocks.md).
 
