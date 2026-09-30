@@ -207,7 +207,7 @@ async function relayCmd () {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { key: { type: 'string' } } })
   const { getSettings, saveSettings, normalizeRelay, checkRelay } = await import('../src/settings.js')
   const [sub, arg] = positionals
-  const show = (h) => `ok · ${h.latencyMs} ms · ${h.connections} connection(s) · ${h.requiresKey ? 'starting sessions needs a relay key' : 'open to anyone'}`
+  const show = (h) => `ok · ${h.latencyMs} ms · ${h.requiresKey ? 'starting sessions needs a relay key' : 'open to anyone'}`
   if (sub === 'set') {
     if (!arg) fail('usage: quilt relay set <url> [--key <key>]')
     let url
