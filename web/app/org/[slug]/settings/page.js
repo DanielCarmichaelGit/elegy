@@ -16,9 +16,11 @@ export default async function Settings ({ params, searchParams }) {
   if (!allowed(me, 'org', 'r')) notFound()
   const canEdit = allowed(me, 'org', 'u')
   const others = me.isOwner
-    ? ((await apiCall(user, 'GET', `/v1/orgs/${slug}/members`)).data?.members || []).filter((m) => !m.isYou)
+    ? ((await apiCall(user, 'GET', `/v1/orgs/${slug}/members`)).data?.members || []).filter((m) => !m.isYou && m.userId)
     : []
-  const myDomain = String(user.email || '').split('@')[1] || 'yourcompany.com'
+  // A neutral example: the web side has no public-mail-domain list to check the
+  // viewer's own domain against, so it never suggests theirs as the org's domain.
+  const domainPlaceholder = 'yourcompany.com'
   return (
     <div className='stack'>
       <Notice q={q} />
@@ -32,7 +34,7 @@ export default async function Settings ({ params, searchParams }) {
           </div>
           <div className='field'>
             <label htmlFor='org-domain'>Email domain</label>
-            <input className='input' id='org-domain' name='domain' defaultValue={me.org.domain || ''} placeholder={myDomain} />
+            <input className='input' id='org-domain' name='domain' defaultValue={me.org.domain || ''} placeholder={domainPlaceholder} />
           </div>
           <label className='row'><input type='checkbox' name='domainRequests' defaultChecked={me.org.domainRequests} /> Let people with a confirmed email at this domain ask to join</label>
           <p className='muted'>The domain can only be your own confirmed email's domain, never a public one like gmail.com. Someone who can send invites approves each request.</p>
@@ -51,6 +53,7 @@ export default async function Settings ({ params, searchParams }) {
                   <select className='input' name='memberId' aria-label='New owner'>
                     {others.map((m) => <option key={m.id} value={m.id}>{m.name || m.email}</option>)}
                   </select>
+                  <input className='input' name='confirm' placeholder={`Type ${slug}`} aria-label={`Type ${slug} to confirm`} required />
                   <button className='btn'>Transfer</button>
                 </div>)
               : <p className='muted'>Invite someone first.</p>}

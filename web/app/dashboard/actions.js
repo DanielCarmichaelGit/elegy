@@ -63,5 +63,5 @@ export async function askToJoin (formData) {
   const slug = String(formData.get('slug') || '')
   if (!isSlug(slug)) redirect('/dashboard')
   const r = await apiCall(user, 'POST', `/v1/orgs/${slug}/requests`, {})
-  redirect(r.ok ? '/dashboard?asked=1' : '/dashboard?askFailed=1')
+  redirect(r.ok ? '/dashboard?asked=1' : `/dashboard?error=${encodeURIComponent(r.data?.error || 'Could not send your request. Try again.')}`)
 }

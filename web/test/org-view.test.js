@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allowed, assignableRoles, inviteGone, orgTabs, peopleNotIn, safeMessage, when } from '../lib/org-view.js'
+import { allowed, assignableRoles, inviteGone, isInviteToken, orgTabs, peopleNotIn, safeMessage, when } from '../lib/org-view.js'
 
 const owner = { isOwner: true, grants: {} }
 const member = { isOwner: false, grants: { teams: { r: true } } }
@@ -53,6 +53,18 @@ test('inviteGone explains an invite that can no longer be used', () => {
   assert.equal(inviteGone('cancelled'), 'This invite was cancelled.')
   assert.equal(inviteGone('expired'), 'This invite has expired. Ask for a new one.')
   assert.equal(inviteGone('toString'), null)
+})
+
+test('isInviteToken checks the shape before it reaches the API', () => {
+  const valid = `qi_${'A'.repeat(43)}`
+  assert.equal(isInviteToken(valid), true)
+  assert.equal(isInviteToken('..'), false)
+  assert.equal(isInviteToken('.'), false)
+  assert.equal(isInviteToken(`xx_${'A'.repeat(43)}`), false)
+  assert.equal(isInviteToken(`qi_${'A'.repeat(42)}`), false)
+  assert.equal(isInviteToken(`qi_${'A'.repeat(44)}`), false)
+  assert.equal(isInviteToken(`qi_${'A'.repeat(42)}!`), false)
+  assert.equal(isInviteToken(undefined), false)
 })
 
 test('peopleNotIn leaves out people already in the team', () => {

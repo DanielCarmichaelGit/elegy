@@ -50,3 +50,10 @@ const GONE = { accepted: 'This invite was already used.', cancelled: 'This invit
 export function inviteGone (status) {
   return Object.hasOwn(GONE, status) ? GONE[status] : null
 }
+
+// Tokens are minted as `qi_` plus 32 random bytes, base64url-encoded (43 chars, no padding).
+const INVITE_TOKEN = /^qi_[A-Za-z0-9_-]{43}$/
+/** Whether a string could be one of our invite tokens, checked before it ever reaches the API. */
+export function isInviteToken (t) {
+  return typeof t === 'string' && INVITE_TOKEN.test(t)
+}

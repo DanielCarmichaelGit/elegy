@@ -2,7 +2,7 @@ import Header from '@/components/Header.js'
 import Notice from '@/components/Notice.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
-import { inviteGone } from '@/lib/org-view.js'
+import { inviteGone, isInviteToken } from '@/lib/org-view.js'
 import { acceptInvite } from './actions.js'
 
 export const metadata = { title: 'Join an org' }
@@ -11,7 +11,8 @@ export default async function Invite ({ params, searchParams }) {
   const { token } = await params
   const q = await searchParams
   const user = await requireUser(`/invite/${encodeURIComponent(token)}`)
-  const r = await apiCall(user, 'GET', `/v1/invites/${encodeURIComponent(token)}`)
+  // A malformed token can never match a real invite, so don't waste an API call on it.
+  const r = isInviteToken(token) ? await apiCall(user, 'GET', `/v1/invites/${encodeURIComponent(token)}`) : { ok: false, status: 404, data: null }
   const inv = r.ok ? r.data : null
   const forMe = inv && String(user.email || '').toLowerCase() === inv.email
   let body

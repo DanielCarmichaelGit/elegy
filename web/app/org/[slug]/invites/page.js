@@ -15,13 +15,16 @@ export default async function Invites ({ params, searchParams }) {
   const me = await orgMe(user.accessToken, slug)
   if (!allowed(me, 'invites', 'r')) notFound()
   const canInvite = allowed(me, 'invites', 'c')
+  const canResend = allowed(me, 'invites', 'u')
   const [r, rolesRes] = await Promise.all([
     apiCall(user, 'GET', `/v1/orgs/${slug}/invites`),
-    canInvite ? apiCall(user, 'GET', `/v1/orgs/${slug}/roles`) : null
+    (canInvite || canResend) ? apiCall(user, 'GET', `/v1/orgs/${slug}/roles`) : null
   ])
   const invites = r.data?.invites || []
   const requests = r.data?.requests || []
   const roles = assignableRoles(rolesRes?.data?.roles, me)
+  // Resending needs the role to still exist and still be within the viewer's own grid (the API checks the same).
+  const canResendInvite = (i) => canResend && roles.some((x) => x.id === i.roleId)
   const memberRole = roles.find((x) => x.builtin === 'member')?.id
   const roleSelect = () => (
     <select className='input' name='roleId' defaultValue={memberRole} aria-label='Role'>
@@ -53,7 +56,7 @@ export default async function Invites ({ params, searchParams }) {
                 <div key={i.id} className='list-row'>
                   <span><b>{i.email}</b> <span className='pill'>{i.role}</span> <span className='muted'>· {i.expired ? 'expired' : `expires ${when(i.expiresAt)}`}</span></span>
                   <span className='row'>
-                    {allowed(me, 'invites', 'u') && <form action={resendInvite}>{hidden(i.id)}<button className='btn ghost'>Resend</button></form>}
+                    {canResendInvite(i) && <form action={resendInvite}>{hidden(i.id)}<button className='btn ghost'>Resend</button></form>}
                     {allowed(me, 'invites', 'd') && <form action={cancelInvite}>{hidden(i.id)}<button className='btn ghost danger'>Cancel</button></form>}
                   </span>
                 </div>))}

@@ -9,7 +9,7 @@ import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
 import { myOrgs } from '@/lib/org.js'
 import { SPACE_COOKIE, spaceHome } from '@/lib/space.js'
-import { when } from '@/lib/org-view.js'
+import { safeMessage, when } from '@/lib/org-view.js'
 import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
 import { unlinkComputer, revokeAgent, askToJoin } from './actions.js'
 
@@ -25,11 +25,14 @@ export default async function Dashboard ({ searchParams }) {
   if (home !== '/dashboard') redirect(home)
   const supabase = await createClient()
   // Name the columns: secret columns (token_hash) aren't granted to signed-in people.
-  const { data: computers } = await supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false })
-  const agentsRes = await apiCall(user, 'GET', '/v1/agents')
+  // Independent calls, so they run together rather than one after another.
+  const [{ data: computers }, agentsRes, discover] = await Promise.all([
+    supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false }),
+    apiCall(user, 'GET', '/v1/agents'),
+    // Orgs on the person's own (confirmed, non-public) email domain that take join requests.
+    apiCall(user, 'GET', '/v1/orgs/discover')
+  ])
   const agents = (agentsRes.data?.agents || []).filter((a) => !a.revokedAt)
-  // Orgs on the person's own (confirmed, non-public) email domain that take join requests.
-  const discover = await apiCall(user, 'GET', '/v1/orgs/discover')
   const joinable = discover.data?.orgs || []
   const ua = (await headers()).get('user-agent') || ''
   const download = downloadFor(ua) || DOWNLOADS.macArm
@@ -50,7 +53,7 @@ export default async function Dashboard ({ searchParams }) {
         {q.orgDeleted && <p className='notice'>The org was deleted.</p>}
         {!orgs.length && user.orgName && <FirstOrg name={user.orgName} />}
         {q.asked && <p className='notice'>Asked. Someone at the org will let you in.</p>}
-        {q.askFailed && <p className='notice bad'>Could not send your request. Try again.</p>}
+        {q.error && <p className='notice bad'>{safeMessage(q.error)}</p>}
         {joinable.length > 0 && (
           <section className='card stack'>
             <h2>Orgs at {discover.data.domain}</h2>
