@@ -7,6 +7,10 @@ const toSnake = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v 
 const ts = (v) => (v == null ? v : typeof v === 'number' ? new Date(v).toISOString() : v)
 const ms = (v) => (v == null ? v : Date.parse(v))
 const SAFE_AGENT = 'id, owner_id, name, key_prefix, public_key, created_at, last_used_at, revoked_at'
+// Named columns for the org tables, so a select never picks up a secret by accident.
+const ORG = 'id, name, slug, owner_id, domain, domain_requests, created_at'
+const ROLE = 'id, org_id, name, builtin, grants, created_at'
+const MEMBER = 'id, org_id, user_id, agent_id, role_id, joined_at'
 
 // One mapper for every table: camelCases the columns and turns every `*At` field
 // (createdAt, updatedAt, lastSeenAt, lastUsedAt, revokedAt, expiresAt, joinedAt,
@@ -18,6 +22,7 @@ export const rowFrom = (row) => row && Object.fromEntries(Object.entries(toCamel
 export function createSupabaseStore ({ url, serviceKey, client }) {
   const db = client || createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
   const one = async (q) => { const { data, error } = await q; if (error) throw error; return data }
+  const memberOf = async (orgId, userId) => rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('user_id', userId).maybeSingle()))
 
   return {
     async createLink (l) {
@@ -60,6 +65,68 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async deleteUser (userId) {
       const { error } = await db.auth.admin.deleteUser(userId)
       if (error) throw error
-    }
+    },
+
+    // The address a person signs in with, and whether they've confirmed it.
+    async userEmail (userId) {
+      const { data, error } = await db.auth.admin.getUserById(userId)
+      if (error) { if (error.status === 404) return null; throw error }
+      const u = data?.user
+      return u ? { email: u.email || '', confirmed: !!u.email_confirmed_at } : null
+    },
+
+    // Orgs. create_org makes the org, its three built-in roles and its owner in one transaction.
+    async createOrg ({ name, slug, ownerId, grants }) {
+      return rowFrom(await one(db.rpc('create_org', {
+        p_name: name, p_slug: slug, p_owner: ownerId, p_owner_grants: grants.owner, p_admin_grants: grants.admin, p_member_grants: grants.member
+      })))
+    },
+    async orgBySlug (slug) { return rowFrom(await one(db.from('orgs').select(ORG).eq('slug', slug).maybeSingle())) },
+    async orgById (id) { return rowFrom(await one(db.from('orgs').select(ORG).eq('id', id).maybeSingle())) },
+    async orgsForUser (userId) {
+      const rows = await one(db.from('org_members').select(`role_id, orgs (${ORG})`).eq('user_id', userId))
+      return rows.map((r) => ({ ...rowFrom(r.orgs), roleId: r.role_id })).sort((a, b) => a.name.localeCompare(b.name))
+    },
+    async orgsByDomain (domain) { return (await one(db.from('orgs').select(ORG).eq('domain', domain).eq('domain_requests', true))).map(rowFrom) },
+    async updateOrg (id, { name, domain, domainRequests }) {
+      return rowFrom(await one(db.from('orgs').update(toSnake({ name, domain, domainRequests })).eq('id', id).select(ORG).single()))
+    },
+    // Cascades to roles, members, teams, invites and requests.
+    async deleteOrg (id) { await one(db.from('orgs').delete().eq('id', id)) },
+    async transferOrg (orgId, toUserId) { await one(db.rpc('transfer_org', { p_org: orgId, p_to: toUserId })) },
+
+    // Roles.
+    async listRoles (orgId) { return (await one(db.from('roles').select(ROLE).eq('org_id', orgId))).map(rowFrom) },
+    async roleById (orgId, id) { return rowFrom(await one(db.from('roles').select(ROLE).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async createRole ({ orgId, name, grants }) {
+      return rowFrom(await one(db.from('roles').insert({ org_id: orgId, name, grants }).select(ROLE).single()))
+    },
+    async updateRole (id, { name, grants }) {
+      return rowFrom(await one(db.from('roles').update(toSnake({ name, grants })).eq('id', id).select(ROLE).single()))
+    },
+    async deleteRole (id) { await one(db.from('roles').delete().eq('id', id)) },
+    // In use: someone holds it, or an open invite would hand it out.
+    async roleInUse (id) {
+      if ((await one(db.from('org_members').select('id').eq('role_id', id).limit(1))).length) return true
+      return (await one(db.from('org_invites').select('id').eq('role_id', id).is('accepted_at', null).is('cancelled_at', null).limit(1))).length > 0
+    },
+
+    // Members.
+    memberOf,
+    async memberById (orgId, id) { return rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async listMembers (orgId) {
+      const rows = await one(db.from('org_members').select(`${MEMBER}, profiles (name)`).eq('org_id', orgId).order('joined_at'))
+      return rows.map(({ profiles, ...r }) => ({ ...rowFrom(r), name: profiles?.name || '' }))
+    },
+    // Already a member: the upsert does nothing and we return the existing row.
+    async addMember ({ orgId, userId, roleId }) {
+      const row = await one(db.from('org_members')
+        .upsert({ org_id: orgId, user_id: userId, role_id: roleId }, { onConflict: 'org_id,user_id', ignoreDuplicates: true })
+        .select(MEMBER).maybeSingle())
+      return row ? rowFrom(row) : memberOf(orgId, userId)
+    },
+    async setMemberRole (id, roleId) { return rowFrom(await one(db.from('org_members').update({ role_id: roleId }).eq('id', id).select(MEMBER).single())) },
+    // Cascades to the member's team memberships.
+    async removeMember (id) { await one(db.from('org_members').delete().eq('id', id)) }
   }
 }
