@@ -2,6 +2,7 @@ import { headers, cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import Header from '@/components/Header.js'
 import NewAgent from '@/components/NewAgent.js'
+import FirstOrg from '@/components/FirstOrg.js'
 import SpaceSwitcher from '@/components/SpaceSwitcher.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
@@ -44,6 +45,7 @@ export default async function Dashboard ({ searchParams }) {
         {q.password && <p className='notice'>Password updated.</p>}
         {q.left && <p className='notice'>You left the org.</p>}
         {q.orgDeleted && <p className='notice'>The org was deleted.</p>}
+        {!orgs.length && user.orgName && <FirstOrg name={user.orgName} />}
         <section className='card stack'>
           <div className='row' style={{ justifyContent: 'space-between' }}>
             <h2>Your computers</h2>

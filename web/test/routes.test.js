@@ -47,9 +47,11 @@ test('the sign-in page renders with the email form', async () => {
   assert.match(html, /type="email"/)
 })
 
-test('the sign-up page renders with a password field', async () => {
+test('the sign-up page renders with a password field and the just-me / team choice', async () => {
   const html = await (await get('/signup')).text()
   assert.match(html, /type="password"/)
+  assert.match(html, /Just me/)
+  assert.match(html, /A team/)
 })
 
 test('the forgot-password page renders with an email field', async () => {
