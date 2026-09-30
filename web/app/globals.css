@@ -268,3 +268,8 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
   .skeleton { animation: none; background: var(--panel-2); }
 }
+
+/* Secondary sign-in options: quiet, smaller than the form */
+.auth-secondary { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.auth-secondary .btn.small { height: 34px; font-size: 13px; font-weight: 500; width: 100%; }
+.auth-secondary a.muted { color: var(--muted); }
