@@ -9,6 +9,7 @@ import { HttpError, UUID } from './http.js'
 import { orgRoutes } from './routes/orgs.js'
 import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
+import { inviteRoutes } from './routes/invites.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -175,7 +176,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   // Org routes live in their own modules and share the caller check and the limiter.
   const ctx = { store, user, now, site, mailer, log, limit: limitInvites }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx))
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
