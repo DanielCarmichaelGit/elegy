@@ -275,8 +275,13 @@ on your network.
 ## What syncs (and what doesn't)
 
 - Everything in the folder **except**: `.git/`, `node_modules/`, `.quilt/`,
-  `.env` / `.env.*` (secrets stay local), editor swap files, anything in your
-  `.gitignore`, and anything in an optional `.quiltignore` (same syntax).
+  `.env` / `.env.*` (secrets stay local), build caches (`.next/`, `.turbo/`,
+  `.nuxt/`, `.svelte-kit/`, `.parcel-cache/`, `.vercel/`), editor swap files,
+  anything in a `.gitignore`, and anything in a `.quiltignore`.
+- **To keep something out of the session**, list it in a `.quiltignore`
+  (same syntax as `.gitignore`). Use it for files git tracks but you don't
+  want to share, e.g. `design/*.psd` or `private-notes.md`. Like `.gitignore`,
+  a `.quiltignore` or `.gitignore` in a subfolder applies to that subfolder.
 - Text files up to 2 MB and binary files up to 8 MB.
 - Symlinks are not synced.
 - On first join, if a file differs between your folder and the session, the

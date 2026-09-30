@@ -13,7 +13,7 @@ import { loadIdentity } from './identity.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { formatBytes } from './status.js'
 import {
-  loadIgnore, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
+  loadIgnore, IGNORE_FILES, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
   toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES
 } from './fsutil.js'
 import { applyTextDiff } from './textdiff.js'
@@ -370,7 +370,7 @@ export class Session extends EventEmitter {
   /** Pushes the on-disk state of a path into the shared doc. Returns true if anything changed. */
   ingest (rel) {
     if (!this.syncable(rel)) return false
-    if (rel === '.gitignore' || rel === '.quiltignore' || rel === '.cowoveignore') this.ig = loadIgnore(this.root)
+    if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) {
       if (disk.tooLarge && !this.warnedLarge.has(rel)) {
@@ -537,7 +537,7 @@ export class Session extends EventEmitter {
       }
       this.lastKnown.set(rel, shared)
     }
-    if (rel === '.gitignore' || rel === '.quiltignore' || rel === '.cowoveignore') this.ig = loadIgnore(this.root)
+    if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
 
     if (this.ready) {
       this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })

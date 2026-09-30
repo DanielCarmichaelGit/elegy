@@ -48,7 +48,9 @@ export function relayConfig (opts = {}) {
   const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v))
   return {
     relayKey: opts.relayKey ?? env.QUILT_RELAY_KEY ?? '',
-    maxRoomBytes: num(opts.maxRoomBytes ?? env.QUILT_MAX_ROOM_MB, 256) * (opts.maxRoomBytes !== undefined ? 1 : MB),
+    // A room's whole history lives in memory while anyone is in it, and takes
+    // several times its stored size there: keep this well under the machine's memory.
+    maxRoomBytes: num(opts.maxRoomBytes ?? env.QUILT_MAX_ROOM_MB, 32) * (opts.maxRoomBytes !== undefined ? 1 : MB),
     maxRoomFileBytes: num(opts.maxRoomFileBytes ?? env.QUILT_MAX_ROOM_FILES_MB, 2048) * (opts.maxRoomFileBytes !== undefined ? 1 : MB),
     maxConnsPerIp: num(opts.maxConnsPerIp ?? env.QUILT_MAX_CONNS_PER_IP, 50),
     maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
@@ -545,9 +547,22 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   }
   const noteCreated = (ip) => newRooms.set(ip, [...(newRooms.get(ip) || []), Date.now()])
 
+  const tooBig = new Set() // stored rooms already reported as too big to load
+  /** A stored room far over the limit would run the relay out of memory while loading. */
+  const tooBigToLoad = (name) => {
+    if (!dataDir || rooms.has(name)) return false
+    let size = 0
+    try { size = fs.statSync(path.join(dataDir, `${name}.ydoc`)).size } catch { return false }
+    if (size <= cfg.maxRoomBytes * 2) return false
+    if (!tooBig.has(name)) { tooBig.add(name); log(`[${name}] too big to load (${Math.round(size / MB)} MB stored, limit ${Math.round(cfg.maxRoomBytes / MB)} MB); refusing it`) }
+    return true
+  }
+
+  /** The room, loading it if needed; null if it's too big to load. */
   const getRoom = (name) => {
     let room = rooms.get(name)
     if (!room) {
+      if (tooBigToLoad(name)) return null
       room = new Room(name, dataDir, cfg, log)
       rooms.set(name, room)
       // Idle rooms are saved and dropped from memory (only when they're on disk).
@@ -631,6 +646,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         const { token, room: roomName, secret, name, tool } = body || {}
         if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
         const room = getRoom(roomName)
+        if (!room) return text(413, TOO_BIG)
         if (!room.exists || room.authorize(String(secret || ''), '') !== 'editor') { dropIfUnused(room); return text(403, 'wrong room secret') }
         if (!room.conns.size) room.onEmpty && room.onEmpty()
         const k = tokenKey(token)
@@ -648,6 +664,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       let room = null
       if (link) {
         room = getRoom(link.room)
+        if (!room) return text(413, TOO_BIG)
         if (!room.exists) { dropIfUnused(room); room = null } else {
           link.aiSeenAt = Date.now()
           saveLinks()
@@ -663,6 +680,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
     const [, name, id] = m
     const room = getRoom(name)
+    if (!room) return text(413, TOO_BIG)
     const creating = !room.exists
     if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
     const auth = room.authorize(req.headers['x-quilt-secret'] || req.headers['x-cowove-secret'] || '', req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || '')
@@ -686,7 +704,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     text(405, 'method not allowed')
   })
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * MB })
+  // One message can't be bigger than a whole room may be.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: Math.max(MB, Math.min(64 * MB, cfg.maxRoomBytes)) })
 
   httpServer.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://x')
@@ -701,6 +720,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const ip = clientIp(req)
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
+    if (!room) return reject(socket, 413, TOO_BIG)
     const creating = !room.exists
     if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret)
@@ -828,6 +848,8 @@ function receiveFile (req, dir, room, done) {
   out.on('finish', () => { if (!failed) done(null, id) })
   out.on('error', (err) => fail(500, err.message))
 }
+
+const TOO_BIG = 'Session over the size limit'
 
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)

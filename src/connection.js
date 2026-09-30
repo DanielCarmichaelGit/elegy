@@ -13,6 +13,8 @@ import {
 } from './protocol.js'
 import { signChallenge } from './identity.js'
 
+const ROOM_FULL_MESSAGE = 'This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'
+
 const REQUEST_TIMEOUT_MS = 10000
 
 export const REMOTE = Symbol('remote')
@@ -85,6 +87,9 @@ export class Connection extends EventEmitter {
       } else if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))
         this.close()
+      } else if (res.statusCode === 413) {
+        this.emit('fatal', new Error(ROOM_FULL_MESSAGE))
+        this.close()
       } else if (res.statusCode === 429) {
         this.emit('warn', 'relay says there are too many connections from this network; retrying')
       } else {
@@ -102,7 +107,7 @@ export class Connection extends EventEmitter {
         this.emit('fatal', new Error(`Relay refused connection: ${String(reason) || 'identity check failed'}`))
         this.close()
       } else if (code === CLOSE_ROOM_FULL) {
-        this.emit('fatal', new Error('This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'))
+        this.emit('fatal', new Error(ROOM_FULL_MESSAGE))
         this.closed = true
       }
       const wasConnected = this.connected

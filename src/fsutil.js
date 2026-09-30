@@ -1,21 +1,37 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { makeIgnore, isIgnored } from './pathrules.js'
+import { makeIgnore, isIgnored, scopeIgnore, IGNORE_FILES } from './pathrules.js'
 
+export { IGNORE_FILES } from './pathrules.js'
 export { MAX_TEXT_BYTES, MAX_BINARY_BYTES, isIgnored, isSafeRelPath, globMatcher, patternsOverlap } from './pathrules.js'
 
 export function toPosix (p) {
   return p.split(path.sep).join('/')
 }
 
-/** Builds the ignore matcher from built-ins, .gitignore and .quiltignore. */
+/**
+ * Builds the ignore matcher from built-ins and every .gitignore / .quiltignore
+ * in the project, each applying to its own folder. Folders already ignored
+ * aren't searched, so a .gitignore inside node_modules has no say.
+ */
 export function loadIgnore (root) {
-  const texts = []
-  for (const file of ['.gitignore', '.quiltignore', '.cowoveignore']) {
-    try { texts.push(fs.readFileSync(path.join(root, file), 'utf8')) } catch {}
+  const ig = makeIgnore()
+  const visit = (dirRel) => {
+    const dir = path.join(root, dirRel)
+    for (const file of IGNORE_FILES) {
+      try { ig.add(scopeIgnore(fs.readFileSync(path.join(dir, file), 'utf8'), dirRel)) } catch {}
+    }
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const rel = dirRel ? `${dirRel}/${e.name}` : e.name
+      if (!isIgnored(ig, rel)) visit(rel)
+    }
   }
-  return makeIgnore(texts)
+  visit('')
+  return ig
 }
 
 /**

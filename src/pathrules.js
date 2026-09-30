@@ -10,9 +10,31 @@ export const MAX_BINARY_BYTES = 8 * 1024 * 1024
 // copies of the project.
 export const ALWAYS_IGNORED = [
   '.git', '.quilt', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db', '.claude/worktrees',
+  // Build output and caches: large, machine-specific, and rebuilt by each person.
+  '.next', '.turbo', '.nuxt', '.svelte-kit', '.parcel-cache', '.vercel',
   '.env', '.env.*', '!.env.example',
   '*.swp', '*.swo', '*~', '.#*'
 ]
+
+/** Files whose patterns say what isn't synced, in the folder they sit in. */
+export const IGNORE_FILES = ['.gitignore', '.quiltignore', '.cowoveignore']
+
+/**
+ * Rewrites an ignore file found in subfolder `dir` so its patterns apply from
+ * the project root, the way git scopes a nested .gitignore to its folder.
+ */
+export function scopeIgnore (text, dir) {
+  if (!dir) return text
+  return text.split(/\r?\n/).map((line) => {
+    if (!line.trim() || line.startsWith('#')) return line
+    const neg = line.startsWith('!')
+    const body = neg ? line.slice(1) : line
+    // A slash anywhere but the end anchors the pattern to this folder.
+    const anchored = body.replace(/\/+\s*$/, '').includes('/')
+    const scoped = anchored ? `${dir}/${body.replace(/^\//, '')}` : `${dir}/**/${body}`
+    return (neg ? '!' : '') + scoped
+  }).join('\n')
+}
 
 /** An ignore matcher from the built-ins plus the text of .gitignore / .quiltignore files. */
 export function makeIgnore (texts = []) {

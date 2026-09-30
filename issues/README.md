@@ -12,6 +12,8 @@ the commit, so the history stays in one place.
 | [003](003-claude-code-not-offered.md) | "Open in Claude Code" missing when Claude Code is installed | Open; detection only finds the desktop app |
 | [004](004-open-in-cursor-wrong-folder.md) | "Open in Cursor" opens Cursor but not the session folder | **Fixed** (748a583): opens a classic Cursor window on the folder |
 | [005](005-website-needs-signed-identities.md) | The website and relay-hosted AI tools can't join since identities became signed | Won't fix: browser version shelved; relay-hosted AI moves to 002 |
+| [006](006-approved-member-not-shown-as-present.md) | Someone let into a session only shows in Access, not in the people bubble | Likely caused by 007; recheck in a fresh session |
+| [007](007-relay-crashes-on-oversized-session.md) | Nothing syncs: the relay crashes when a session holds a build folder | **Fixed**: nested ignore files, relay size guard |
 
 Feature ideas (not bugs) go in [unlocks.md](unlocks.md).
 

@@ -118,6 +118,26 @@ test('a room over its size quota refuses new edits', async (t) => {
   assert.match(fatal.message, /size limit/)
 })
 
+test('a stored room too big to load is refused instead of loaded', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('toobig')
+  const big = new Y.Doc()
+  big.getMap('files').set('a.txt', new Y.Text('x'.repeat(10000))) // over twice the limit
+  fs.writeFileSync(path.join(dataDir, 'huge.ydoc'), Y.encodeStateAsUpdate(big))
+  const logs = []
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: (m) => logs.push(m), dataDir, maxRoomBytes: 4000 })
+  defer(() => srv.close())
+  const s = new Session({ dir: tmp('toobig-client'), server: `ws://127.0.0.1:${srv.port}`, room: 'huge', secret: 's', name: 'a' })
+  let fatal = null
+  s.on('fatal', (err) => { fatal = err })
+  defer(() => s.stop())
+  s.start({ waitTimeoutMs: 3000 }).catch(() => {})
+  await waitFor(() => fatal)
+  assert.match(fatal.message, /size limit/)
+  assert.equal(srv.rooms.get('huge'), undefined, 'the room is not kept in memory')
+  assert.ok(logs.some((m) => /too big to load/.test(m)))
+})
+
 test('file storage quota per room', async (t) => {
   const defer = cleanups(t)
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomFileBytes: 1000 })
