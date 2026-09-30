@@ -1,10 +1,10 @@
 // Links a throwaway "computer" to your account through the real website and API.
-// Usage: QUILT_API=https://quilt-api.fly.dev node scripts/link-smoke.mjs
+// Usage: QUILT_API=https://api.heyquilt.com node scripts/link-smoke.mjs
 // It prints a link: open it, sign in, click Approve. The script then collects the
 // token (signing the poll like the app will), reads your profile, and signs out.
 import { generateIdentity, signChallenge } from '../src/identity.js'
 
-const API = process.env.QUILT_API || 'https://quilt-api.fly.dev'
+const API = process.env.QUILT_API || 'https://api.heyquilt.com'
 const call = async (m, p, b, t) => { const r = await fetch(API + p, { method: m, headers: { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) }, body: b ? JSON.stringify(b) : undefined }); return { s: r.status, b: await r.json().catch(() => null) } }
 const id = generateIdentity()
 const start = await call('POST', '/v1/device/start', { publicKey: id.publicKey, deviceName: 'link smoke test', platform: 'test' })

@@ -1,5 +1,5 @@
 // How to connect an agent (Claude Code, Cursor, …) to Quilt with its key.
-export const MCP_URL = 'https://quilt-api.fly.dev/mcp'
+export const MCP_URL = 'https://api.heyquilt.com/mcp'
 
 export function agentSetup (key) {
   return {

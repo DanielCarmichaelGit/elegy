@@ -1,5 +1,5 @@
 // scripts/api-smoke.mjs — checks a deployed accounts API end to end.
-// Usage: QUILT_API=https://quilt-api.fly.dev QUILT_TEST_JWT=<a signed-in user's access token> node scripts/api-smoke.mjs
+// Usage: QUILT_API=https://api.heyquilt.com QUILT_TEST_JWT=<a signed-in user's access token> node scripts/api-smoke.mjs
 import { generateIdentity, signChallenge } from '../src/identity.js'
 const API = process.env.QUILT_API; const JWT = process.env.QUILT_TEST_JWT
 const call = async (m, p, b, t) => { const r = await fetch(API + p, { method: m, headers: { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) }, body: b ? JSON.stringify(b) : undefined }); return { s: r.status, b: await r.json().catch(() => null) } }
