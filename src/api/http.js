@@ -9,10 +9,10 @@ export function needId (id, what = 'thing') {
   return String(id)
 }
 
-// C0/C1 controls, zero-width characters, and bidi overrides/isolates: none of
-// these belong in a name, and a bidi override can make a name display backwards
-// or hide characters, e.g. in an email subject.
-const INVISIBLE = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠⁦-⁩؜]/
+// C0/C1 controls, zero-width characters (including the byte-order mark), and
+// bidi overrides/isolates: none of these belong in a name, and a bidi override
+// can make a name display backwards or hide characters, e.g. in an email subject.
+const INVISIBLE = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠⁦-⁩؜﻿]/
 
 /** The code points of `value` with control/zero-width/bidi characters removed. */
 export function stripInvisible (value) {

@@ -17,6 +17,12 @@ test('cleanName strips C0/C1 controls, zero-width characters, and bidi overrides
   assert.equal(cleanName('Ada؜Lovelace', 80, 'msg'), 'AdaLovelace')
 })
 
+test('cleanName strips a byte-order mark in the middle of a name, not just at the edge', () => {
+  // trim() alone would only catch a BOM at the very start or end; a mid-string
+  // one needs the INVISIBLE strip to actually run on it.
+  assert.equal(cleanName('Ada﻿Lovelace', 80, 'msg'), 'AdaLovelace')
+})
+
 test('cleanName slices by code point, so a surrogate pair at the cut point is never split', () => {
   const smiley = '\u{1F600}' // U+1F600, a surrogate pair in UTF-16 (2 code units, 1 code point)
   // Naive UTF-16 slicing at max=2 on "a<smiley>" would cut the emoji in half,
@@ -31,4 +37,8 @@ test('stripInvisible returns an array of code points with the invisible ones rem
   assert.deepEqual(stripInvisible('a​b'), ['a', 'b'])
   assert.deepEqual(stripInvisible(null), [])
   assert.deepEqual(stripInvisible(undefined), [])
+})
+
+test('stripInvisible removes a byte-order mark in the middle of a string', () => {
+  assert.deepEqual(stripInvisible('Ada﻿Lovelace'), [...'AdaLovelace'])
 })
