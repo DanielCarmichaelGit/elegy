@@ -79,6 +79,17 @@ test('supabase roleInUse counts members, then open invites only', async () => {
   assert.equal(await createSupabaseStore({ client }).roleInUse('r1'), true)
   const invites = calls.find((q) => q.table === 'org_invites')
   assert.ok(has(invites, 'is', 'accepted_at', null) && has(invites, 'is', 'cancelled_at', null))
+  assert.ok(invites.ops.some(([op, col]) => op === 'gt' && col === 'expires_at'), 'excludes expired invites too, like deleteRole')
+})
+
+test('supabase roleInUse treats an expired invite as closed, matching deleteRole', async () => {
+  // Simulates the real `.gt('expires_at', now)` filtering the expired invite out.
+  const { client } = fakeDb((q) => {
+    if (q.table !== 'org_invites') return []
+    const filtersExpired = q.ops.some(([op, col]) => op === 'gt' && col === 'expires_at')
+    return filtersExpired ? [] : [{ id: 'i1' }]
+  })
+  assert.equal(await createSupabaseStore({ client }).roleInUse('r1'), false)
 })
 
 test('supabase deleteRole clears closed invites before deleting the role', async () => {

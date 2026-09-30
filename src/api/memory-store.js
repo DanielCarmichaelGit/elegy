@@ -19,6 +19,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const findMember = (orgId, userId) => all(members, (m) => m.orgId === orgId && m.userId === userId)[0]
   // Mirrors the composite (role_id, org_id) foreign key: a role from another org can't be attached here.
   const roleInOrg = (roleId, orgId) => roleId == null || roles.get(roleId)?.orgId === orgId
+  // An invite still holds its role open only while it's neither accepted nor
+  // cancelled nor expired; deleteRole and roleInUse agree on this one definition.
+  const inviteOpen = (i) => !i.acceptedAt && !i.cancelledAt && i.expiresAt > now()
   // Leaving an org also leaves its teams, like the cascade in Postgres.
   const dropMember = (id) => {
     members.delete(id)
@@ -154,9 +157,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // it; an open invite still referencing the role blocks the delete, mirroring
     // the (role_id, org_id) foreign key's NO ACTION in Postgres.
     async deleteRole (id) {
-      const t = now()
       for (const [k, i] of invites) {
-        if (i.roleId === id && (i.acceptedAt || i.cancelledAt || i.expiresAt <= t)) invites.delete(k)
+        if (i.roleId === id && !inviteOpen(i)) invites.delete(k)
       }
       if (all(invites, (i) => i.roleId === id).length) throw fkViolation('role')
       roles.delete(id)
@@ -164,7 +166,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // In use: someone holds it, or an open invite would hand it out.
     async roleInUse (id) {
       return all(members, (m) => m.roleId === id).length > 0 ||
-        all(invites, (i) => i.roleId === id && !i.acceptedAt && !i.cancelledAt).length > 0
+        all(invites, (i) => i.roleId === id && inviteOpen(i)).length > 0
     },
     // A seam for tests only until the full invites API lands (Task 4's createInvite).
     async createInvite ({ orgId, email, roleId, tokenHash, invitedBy, expiresAt }) {

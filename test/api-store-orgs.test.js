@@ -120,6 +120,7 @@ test('deleting a role clears its closed invites first, and refuses while one is 
   const org = await newOrg(s)
   const lead = await s.createRole({ orgId: org.id, name: 'Lead', grants: {} })
   await s.createInvite({ orgId: org.id, email: 'x@acme.com', roleId: lead.id, tokenHash: 'h1', invitedBy: 'u1', expiresAt: Date.now() - 1000 })
+  assert.equal(await s.roleInUse(lead.id), false, 'an expired invite does not count as open')
   await s.deleteRole(lead.id)
   assert.equal(await s.roleById(org.id, lead.id), null, 'a role with only an expired (closed) invite can be deleted')
 

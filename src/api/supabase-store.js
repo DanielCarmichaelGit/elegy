@@ -112,10 +112,12 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
         .or(`accepted_at.not.is.null,cancelled_at.not.is.null,expires_at.lte.${new Date().toISOString()}`))
       await one(db.from('roles').delete().eq('id', id))
     },
-    // In use: someone holds it, or an open invite would hand it out.
+    // In use: someone holds it, or an open (not accepted, not cancelled, not
+    // expired) invite would hand it out — the same definition deleteRole uses.
     async roleInUse (id) {
       if ((await one(db.from('org_members').select('id').eq('role_id', id).limit(1))).length) return true
-      return (await one(db.from('org_invites').select('id').eq('role_id', id).is('accepted_at', null).is('cancelled_at', null).limit(1))).length > 0
+      return (await one(db.from('org_invites').select('id').eq('role_id', id)
+        .is('accepted_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).limit(1))).length > 0
     },
 
     // Members.
