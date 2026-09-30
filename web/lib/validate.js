@@ -9,8 +9,13 @@ export function isValidPassword (password) {
   return typeof password === 'string' && password.length >= 8 && password.length <= 72
 }
 
+// C0/DEL control characters, zero-width characters (ZWSP/ZWNJ/ZWJ/LRM/RLM),
+// bidi overrides/isolates, and the BOM/ZWNBSP: none of these belong in a name
+// that gets shown in a switcher and used as a slug's raw material.
+const BAD_ORG_NAME_CHARS = /[\u0000-\u001F\u007F​-‏‪-‮⁦-⁩﻿]/
+
 export function isValidOrgName (name) {
   if (typeof name !== 'string') return false
   const n = name.trim()
-  return n.length >= 1 && n.length <= 80
+  return n.length >= 1 && n.length <= 80 && !BAD_ORG_NAME_CHARS.test(n)
 }

@@ -92,7 +92,14 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async userEmail (userId) { const u = users.get(userId); return u ? { ...u } : null },
 
     // Orgs. Creating one makes its three built-in roles and its owner together.
-    async createOrg ({ name, slug, ownerId, grants }) {
+    // first: true mirrors create_org's advisory lock for "a team" sign-ups: if
+    // the owner is already in an org (this call or another one that won the
+    // race), that org comes back instead of a second one.
+    async createOrg ({ name, slug, ownerId, grants, first = false }) {
+      if (first) {
+        const already = all(members, (m) => m.userId === ownerId)[0]
+        if (already) return copy(orgs.get(already.orgId))
+      }
       if (all(orgs, (o) => o.slug === slug).length) throw duplicate('org')
       const org = { id: uuid(), name, slug, ownerId, domain: null, domainRequests: false, createdAt: now() }
       orgs.set(org.id, org)

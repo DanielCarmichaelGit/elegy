@@ -45,10 +45,17 @@ test('supabase createOrg and transferOrg go through the one-transaction function
   const { client, calls } = fakeDb((q) => (q.rpc === 'create_org' ? orgRow('o1', 'Acme') : null))
   const s = createSupabaseStore({ client })
   const org = await s.createOrg({ name: 'Acme', slug: 'acme', ownerId: 'u1', grants: BUILTIN })
-  assert.deepEqual(calls[0].args, { p_name: 'Acme', p_slug: 'acme', p_owner: 'u1', p_owner_grants: BUILTIN.owner, p_admin_grants: BUILTIN.admin, p_member_grants: BUILTIN.member })
+  assert.deepEqual(calls[0].args, { p_name: 'Acme', p_slug: 'acme', p_owner: 'u1', p_owner_grants: BUILTIN.owner, p_admin_grants: BUILTIN.admin, p_member_grants: BUILTIN.member, p_first: false })
   assert.deepEqual([org.id, org.ownerId, org.domainRequests, org.createdAt], ['o1', 'u1', false, Date.parse(ISO)])
   await s.transferOrg('o1', 'u2')
   assert.deepEqual([calls[1].rpc, calls[1].args], ['transfer_org', { p_org: 'o1', p_to: 'u2' }])
+})
+
+test('supabase createOrg passes p_first through for first-org sign-ups', async () => {
+  const { client, calls } = fakeDb((q) => (q.rpc === 'create_org' ? orgRow('o1', 'Acme') : null))
+  const s = createSupabaseStore({ client })
+  await s.createOrg({ name: 'Acme', slug: 'acme', ownerId: 'u1', grants: BUILTIN, first: true })
+  assert.equal(calls[0].args.p_first, true)
 })
 
 test('supabase orgsForUser flattens the embedded org and sorts by name', async () => {

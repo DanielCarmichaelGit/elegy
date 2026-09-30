@@ -32,20 +32,16 @@ export async function revokeAgent (formData) {
 
 // "A team" sign-ups carry their org's name in the account until the org exists.
 // Only for people in no org yet (not, say, someone who accepted an invite first).
+// first: true tells the API to guard this server-side: two tabs (or a double
+// click) that both call this at once still end up with exactly one org.
 export async function createFirstOrg () {
   const user = await requireUser('/dashboard')
   if (!user.orgName) return { error: 'There’s no org waiting to be created.' }
-  const mine = await apiCall(user, 'GET', '/v1/orgs')
-  if (!mine.ok) return { error: 'Couldn’t reach Quilt. Try again.' }
-  let slug = mine.data.orgs[0]?.slug
-  if (!slug) {
-    const made = await apiCall(user, 'POST', '/v1/orgs', { name: user.orgName })
-    if (!made.ok) return { error: made.data?.error || 'Couldn’t create your org. Try again.' }
-    slug = made.data.org.slug
-  }
+  const made = await apiCall(user, 'POST', '/v1/orgs', { name: user.orgName, first: true })
+  if (!made.ok) return { error: made.data?.error || 'Couldn’t create your org. Try again.' }
   await clearOrgName()
-  await rememberSpace(slug)
-  return { slug }
+  await rememberSpace(made.data.org.slug)
+  return { slug: made.data.org.slug }
 }
 
 export async function dismissFirstOrg () {

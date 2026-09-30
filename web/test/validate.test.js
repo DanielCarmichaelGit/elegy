@@ -29,3 +29,14 @@ test('isValidOrgName needs 1 to 80 characters', () => {
   assert.equal(isValidOrgName('a'.repeat(81)), false)
   assert.equal(isValidOrgName(null), false)
 })
+
+test('isValidOrgName rejects control, zero-width and bidi override characters', () => {
+  assert.equal(isValidOrgName('Acme\u0000Co'), false, 'null byte')
+  assert.equal(isValidOrgName('Acme\tCo'), false, 'tab')
+  assert.equal(isValidOrgName('Acme​Co'), false, 'zero-width space')
+  assert.equal(isValidOrgName('Acme‎Co'), false, 'left-to-right mark')
+  assert.equal(isValidOrgName('Acme‮Co'), false, 'right-to-left override')
+  assert.equal(isValidOrgName('Acme⁦Co'), false, 'left-to-right isolate')
+  assert.equal(isValidOrgName('Acme﻿Co'), false, 'byte order mark')
+  assert.equal(isValidOrgName('Acme Co'), true, 'plain space is still fine')
+})

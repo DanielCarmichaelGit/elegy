@@ -81,10 +81,13 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return u ? { email: u.email || '', confirmed: !!u.email_confirmed_at } : null
     },
 
-    // Orgs. create_org makes the org, its three built-in roles and its owner in one transaction.
-    async createOrg ({ name, slug, ownerId, grants }) {
+    // Orgs. create_org makes the org, its three built-in roles and its owner in one
+    // transaction. first: true is for "a team" sign-ups, where two tabs (or a double
+    // click) can both see no org yet; create_org locks on the owner and hands back
+    // whichever org they end up in rather than making a second one.
+    async createOrg ({ name, slug, ownerId, grants, first = false }) {
       return rowFrom(await one(db.rpc('create_org', {
-        p_name: name, p_slug: slug, p_owner: ownerId, p_owner_grants: grants.owner, p_admin_grants: grants.admin, p_member_grants: grants.member
+        p_name: name, p_slug: slug, p_owner: ownerId, p_owner_grants: grants.owner, p_admin_grants: grants.admin, p_member_grants: grants.member, p_first: first
       })))
     },
     async orgBySlug (slug) { return rowFrom(await one(db.from('orgs').select(ORG).eq('slug', slug).maybeSingle())) },

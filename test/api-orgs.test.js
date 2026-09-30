@@ -24,6 +24,25 @@ test('creating an org makes you its owner, with a slug from the name', async () 
   assert.equal((await t.call('POST', '/v1/orgs', { name: 'X' })).status, 401)
 })
 
+test('first:true creates the org only once, even called twice (two tabs, or a double click)', async () => {
+  const a = await t.call('POST', '/v1/orgs', { name: 'Race Co', first: true }, 'racer')
+  assert.equal(a.status, 200)
+  const b = await t.call('POST', '/v1/orgs', { name: 'Race Co Two', first: true }, 'racer')
+  assert.equal(b.status, 200)
+  assert.equal(b.body.org.slug, a.body.org.slug, 'the second call gets the same org back, not a new one')
+  const org = await t.store.orgBySlug(a.body.org.slug)
+  const members = await t.store.listMembers(org.id)
+  assert.equal(members.filter((m) => m.userId === 'racer').length, 1, 'racer ends up with exactly one membership')
+})
+
+test('first:true hands back an org you already belong to (e.g. you accepted an invite first)', async () => {
+  const o = await makeOrg(t, 'Existing Co')
+  await t.store.addMember({ orgId: o.org.id, userId: 'already', roleId: o.role('member').id })
+  const r = await t.call('POST', '/v1/orgs', { name: 'New Co', first: true }, 'already')
+  assert.equal(r.status, 200)
+  assert.equal(r.body.org.slug, o.slug, 'gets the org they are already in, not a new one')
+})
+
 test('people outside an org get a 404 for it, the same as a missing org', async () => {
   const o = await makeOrg(t)
   assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/me`, null, 'out')).status, 404)

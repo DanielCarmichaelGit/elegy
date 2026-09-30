@@ -196,13 +196,29 @@ grant all on public.orgs, public.roles, public.org_members, public.teams, public
 
 -- A new org with its three built-in roles and its owner, in one transaction.
 -- The grids come from the API (src/api/permissions.js BUILTIN) so there's one source.
-create function public.create_org (p_name text, p_slug text, p_owner uuid, p_owner_grants jsonb, p_admin_grants jsonb, p_member_grants jsonb)
+-- p_first: for "a team" sign-ups, where the account may not have an org yet.
+-- An advisory lock on the owner serializes two concurrent first-org calls (two
+-- tabs, a double click) for the same person, and if they already belong to an
+-- org by the time the lock is held (this call or an accepted invite), that org
+-- is returned instead of making a second one.
+create function public.create_org (p_name text, p_slug text, p_owner uuid, p_owner_grants jsonb, p_admin_grants jsonb, p_member_grants jsonb, p_first boolean default false)
 returns public.orgs
 language plpgsql security invoker set search_path = '' as $$
 declare
   o public.orgs;
   owner_role uuid;
 begin
+  if p_first then
+    perform pg_advisory_xact_lock(hashtextextended(p_owner::text, 0));
+    select orgs.* into o from public.orgs
+      join public.org_members on org_members.org_id = orgs.id
+      where org_members.user_id = p_owner
+      limit 1;
+    if found then
+      return o;
+    end if;
+  end if;
+
   insert into public.orgs (name, slug, owner_id) values (p_name, p_slug, p_owner) returning * into o;
   insert into public.roles (org_id, name, builtin, grants) values (o.id, 'Owner', 'owner', p_owner_grants) returning id into owner_role;
   insert into public.roles (org_id, name, builtin, grants) values (o.id, 'Admin', 'admin', p_admin_grants), (o.id, 'Member', 'member', p_member_grants);
@@ -238,8 +254,8 @@ begin
 end $$;
 
 -- These aren't meant to be called over the API by anyone but the service role.
-revoke execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb), public.transfer_org(uuid, uuid) from public, anon, authenticated;
-grant execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb), public.transfer_org(uuid, uuid) to service_role;
+revoke execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb, boolean), public.transfer_org(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb, boolean), public.transfer_org(uuid, uuid) to service_role;
 
 -- Signed-in helpers used only by RLS policies: never anonymous, and pointless
 -- to call outside a policy (they only report the caller's own rights).

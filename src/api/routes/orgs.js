@@ -14,11 +14,14 @@ export function orgRoutes ({ store, user }) {
   const orgFor = async (req, slug) => { const u = await user(req); return { u, ...(await orgAccess(store, u.userId, slug)) } }
 
   // Two orgs made at once can pick the same slug; the unique index decides and we try the next.
-  async function createOrg (name, ownerId) {
+  // first: true (a team sign-up's first dashboard visit) asks the store to
+  // hand back an org the owner is already in, rather than making a second one
+  // when two tabs (or a double click) both raced here with no org yet.
+  async function createOrg (name, ownerId, first = false) {
     for (let attempt = 0; ; attempt++) {
       const slug = await uniqueSlug(name, async (s) => !!await store.orgBySlug(s))
       try {
-        return await store.createOrg({ name, slug, ownerId, grants: BUILTIN })
+        return await store.createOrg({ name, slug, ownerId, grants: BUILTIN, first })
       } catch (err) {
         if (err?.code !== '23505' || attempt >= 2) throw err
       }
@@ -53,7 +56,7 @@ export function orgRoutes ({ store, user }) {
 
     ['POST', /^\/v1\/orgs$/, async (req, body) => {
       const u = await user(req)
-      return { org: orgView(await createOrg(cleanName(body.name, 80, 'give the org a name'), u.userId)) }
+      return { org: orgView(await createOrg(cleanName(body.name, 80, 'give the org a name'), u.userId, body.first === true)) }
     }],
 
     ['GET', /^\/v1\/orgs\/([^/]+)\/me$/, async (req, body, [slug]) => {
