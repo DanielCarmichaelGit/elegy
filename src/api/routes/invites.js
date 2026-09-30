@@ -11,8 +11,12 @@ const GONE = {
   cancelled: 'this invite was cancelled',
   expired: 'this invite has expired; ask for a new one'
 }
+// One address, no separators or angle brackets/quotes/parens a mail header could
+// smuggle through, and exactly one '@' (so "a@x.com,b@y.com" can't sneak a second
+// recipient past nodemailer). `emailDomain` still checks the part after '@' is a real domain.
+const STRICT_EMAIL = /^[^\s@,;<>"()\\]+@[^\s@,;<>"()\\]+$/
 
-export function inviteRoutes ({ store, user, now, site, mailer, log, limit }) {
+export function inviteRoutes ({ store, user, now, site, mailer, log, limit, limitSend }) {
   const orgFor = async (req, slug) => { const u = await user(req); return { u, ...(await orgAccess(store, u.userId, slug)) } }
   const statusOf = (i) => (i.acceptedAt ? 'accepted' : i.cancelledAt ? 'cancelled' : i.expiresAt < now() ? 'expired' : 'pending')
   const inviteView = (i, role) => ({ id: i.id, email: i.email, roleId: i.roleId, role, expiresAt: i.expiresAt, createdAt: i.createdAt, expired: i.expiresAt < now() })
@@ -22,6 +26,23 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit }) {
     const mine = await store.userEmail(userId)
     const d = mine?.confirmed ? emailDomain(mine.email) : ''
     return d && !isPublicDomain(d) ? d : null
+  }
+
+  // A single, real-looking address; never a list, and never one a mail header could split.
+  function cleanEmail (raw) {
+    const email = String(raw || '').trim().toLowerCase()
+    if (!email || email.length > 254 || !STRICT_EMAIL.test(email) || !emailDomain(email)) throw new HttpError(400, "that email doesn't look right")
+    return email
+  }
+
+  // Someone already in the org, by their signed-in email — so an invite (or its
+  // acceptance) can't hand a second membership, or a second role, to the same person.
+  async function memberWithEmail (orgId, email) {
+    for (const m of await store.listMembers(orgId)) {
+      const e = await store.userEmail(m.userId)
+      if (String(e?.email || '').toLowerCase() === email) return m
+    }
+    return null
   }
 
   // The link only ever travels by email; only its hash is stored.
@@ -57,9 +78,10 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit }) {
     ['POST', /^\/v1\/orgs\/([^/]+)\/invites$/, async (req, body, [slug]) => {
       const a = await orgFor(req, slug)
       a.need('invites', 'c')
-      const email = String(body.email || '').trim().toLowerCase()
-      if (!emailDomain(email) || /\s/.test(email)) throw new HttpError(400, "that email doesn't look right")
+      limitSend(a.u.userId)
+      const email = cleanEmail(body.email)
       const role = await a.assignable(body.roleId)
+      if (await memberWithEmail(a.org.id, email)) throw new HttpError(409, 'that person is already a member')
       // One open invite per address: a new one replaces the old.
       for (const old of await store.listInvites(a.org.id)) if (old.email === email) await store.updateInvite(old.id, { cancelledAt: now() })
       const token = newToken('qi_')
@@ -71,8 +93,11 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit }) {
     ['POST', /^\/v1\/orgs\/([^/]+)\/invites\/([^/]+)\/resend$/, async (req, body, [slug, id]) => {
       const a = await orgFor(req, slug)
       a.need('invites', 'u')
+      limitSend(a.u.userId)
       const invite = await openInvite(a, id)
       const role = await store.roleById(a.org.id, invite.roleId)
+      if (!role) throw new HttpError(404, 'no such role')
+      if (!a.covers(role.grants)) throw new HttpError(403, 'you can only resend invites within your own permissions')
       const token = newToken('qi_')
       const fresh = await store.updateInvite(invite.id, { tokenHash: hashToken(token), expiresAt: now() + INVITE_TTL_MS })
       await mail(a, fresh, role, token)
@@ -107,6 +132,7 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit }) {
       const mine = await store.userEmail(u.userId)
       if (String(mine?.email || '').toLowerCase() !== invite.email) throw new HttpError(403, `this invite is for ${invite.email}; sign in with that address`)
       if (!mine.confirmed) throw new HttpError(403, 'confirm your email address first, then open the invite again')
+      if (await store.memberOf(invite.orgId, u.userId)) throw new HttpError(409, "You're already in this org.")
       if (!await store.claimInvite(invite.id)) throw new HttpError(410, GONE.accepted)
       const org = await store.orgById(invite.orgId)
       await store.addMember({ orgId: org.id, userId: u.userId, roleId: invite.roleId })
@@ -138,7 +164,8 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit }) {
 
     ['POST', /^\/v1\/orgs\/([^/]+)\/requests\/([^/]+)$/, async (req, body, [slug, id]) => {
       const a = await orgFor(req, slug)
-      const approve = body.approve === true
+      if (typeof body.approve !== 'boolean') throw new HttpError(400, 'approve must be true or false')
+      const approve = body.approve
       // Approving is User invites: Create; denying is User invites: Delete.
       a.need('invites', approve ? 'c' : 'd')
       const r = await store.joinRequestById(a.org.id, needId(id, 'request'))

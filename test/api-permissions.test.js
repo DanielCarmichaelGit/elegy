@@ -77,6 +77,7 @@ test('slugify makes URL-safe slugs and avoids reserved words', () => {
   assert.equal(slugify('---'), 'org')
   assert.equal(slugify('Personal'), 'personal-org')
   assert.equal(slugify('New'), 'new-org')
+  assert.equal(slugify('Discover'), 'discover-org', '/v1/orgs/discover must never collide with an org slug')
   const long = slugify('a'.repeat(39) + ' b c')
   assert.ok(long.length <= 40 && !long.endsWith('-'), long)
   assert.match(slugify('Ω Rockets!! 2026'), /^[a-z0-9]+(-[a-z0-9]+)*$/)

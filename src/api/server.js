@@ -17,7 +17,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, trustProxy = false, maxStartKeys = 10_000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, trustProxy = false, maxStartKeys = 10_000 }) {
   const site = String(siteUrl || '').replace(/\/+$/, '')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
@@ -37,21 +37,26 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // A few tries per minute per address is plenty for a person. Behind Fly,
   // Fly-Client-IP is the real peer; X-Forwarded-For isn't used because Fly appends
   // to whatever the client sent, so its first entry is client-controlled.
-  function makeLimiter (limit, message) {
+  // `keyOf` lets a limiter key on something other than the caller's IP (e.g. a
+  // signed-in user id for invite sending) and `windowMs` lets it use a longer window.
+  function makeLimiter (limit, message, { windowMs = 60_000, keyOf } = {}) {
     const hits = new Map()
+    const byIp = (req) => (trustProxy && String(req.headers['fly-client-ip'] || '').trim()) || req.socket.remoteAddress
     const check = (req) => {
-      const ip = (trustProxy && String(req.headers['fly-client-ip'] || '').trim()) || req.socket.remoteAddress
-      const recent = (hits.get(ip) || []).filter((t) => now() - t < 60_000)
+      const key = (keyOf || byIp)(req)
+      const recent = (hits.get(key) || []).filter((t) => now() - t < windowMs)
       if (recent.length >= limit) throw new HttpError(429, message)
-      hits.set(ip, [...recent, now()])
-      // Keep the map bounded: forget addresses with nothing in the last minute.
-      if (hits.size > maxStartKeys) for (const [k, ts] of hits) if (ts.every((t) => now() - t >= 60_000)) hits.delete(k)
+      hits.set(key, [...recent, now()])
+      // Keep the map bounded: forget keys with nothing in the last window.
+      if (hits.size > maxStartKeys) for (const [k, ts] of hits) if (ts.every((t) => now() - t >= windowMs)) hits.delete(k)
     }
     check.size = () => hits.size
     return check
   }
   const limitStarts = makeLimiter(startLimit, 'too many sign-in attempts; try again in a minute')
   const limitInvites = makeLimiter(inviteLimit, 'too many tries; wait a minute and try again')
+  // Sending (or resending) an email invite, capped per signed-in user rather than per IP.
+  const limitInviteSend = makeLimiter(inviteSendLimit, 'too many invites sent; wait a bit and try again', { windowMs: 60 * 60_000, keyOf: (userId) => userId })
 
   const COLOR = /^#[0-9a-fA-F]{6}$/
   function cleanProfile (b) {
@@ -175,7 +180,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, now, site, mailer, log, limit: limitInvites }
+  const ctx = { store, user, now, site, mailer, log, limit: limitInvites, limitSend: limitInviteSend }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx))
 
   async function openLink (code) {

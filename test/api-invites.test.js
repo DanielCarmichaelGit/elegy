@@ -171,6 +171,62 @@ test('denying a request needs User invites: Delete, and adds no one', async () =
   assert.equal((await decide('admin', true)).status, 404, 'already decided')
 })
 
+test('an invite address must be exactly one recipient, never a list', async () => {
+  const o = await makeOrg(t, 'Strict Co')
+  assert.equal((await invite(o, 'a@x.com,b@y.com')).status, 400, 'comma-joined addresses are refused')
+  assert.equal((await invite(o, 'a@x.com;b@y.com')).status, 400, 'semicolon-joined addresses are refused')
+  assert.equal((await invite(o, '<a@x.com>')).status, 400, 'angle brackets are refused')
+  assert.equal((await invite(o, 'a@x.com@y.com')).status, 400, 'two @ signs are refused')
+})
+
+test('inviting or accepting into a membership you already hold is refused', async () => {
+  const o = await makeOrg(t, 'Belong Co')
+  // mem is already a member, under mo@acme.com: inviting that address again is refused.
+  assert.equal((await invite(o, 'Mo@Acme.com')).status, 409)
+  // A pending invite still can't be accepted by someone who joined the org some other way first.
+  const made = await invite(o, 'joined@acme.com')
+  const token = tokenIn(t.sent.at(-1))
+  t.store.addUser('joined', { name: 'Joined', email: 'joined@acme.com' })
+  await t.store.addMember({ orgId: o.org.id, userId: 'joined', roleId: o.role('member').id })
+  assert.equal((await t.call('POST', '/v1/invites/accept', { token }, 'joined')).status, 409)
+})
+
+test('resending needs the invite\'s role to still exist and to be within the caller\'s own grants', async () => {
+  const o = await makeOrg(t, 'Cover Co')
+  const inviter = await t.store.createRole({ orgId: o.org.id, name: 'Inviter3', grants: { invites: { c: true, r: true, u: true, d: true } } })
+  await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: inviter.id })
+  const made = await t.call('POST', `/v1/orgs/${o.slug}/invites`, { email: 'cover@acme.com', roleId: o.role('admin').id }, 'owner')
+  const resend = (who) => t.call('POST', `/v1/orgs/${o.slug}/invites/${made.body.invite.id}/resend`, {}, who)
+  assert.equal((await resend('lim')).status, 403, 'lim cannot resend an invite for a role bigger than their own')
+  await t.store.updateInvite(made.body.invite.id, { roleId: '00000000-0000-0000-0000-000000000000' })
+  assert.equal((await resend('admin')).status, 404, 'the role behind the invite is gone')
+})
+
+test('approving or denying a join request needs an explicit true or false', async () => {
+  const o = await makeOrg(t, 'Bool Co')
+  await t.call('PUT', `/v1/orgs/${o.slug}`, { domain: 'acme.com', domainRequests: true }, 'owner')
+  t.store.addUser('boolguy', { name: 'Bool', email: 'boolguy@acme.com' })
+  const asked = await t.call('POST', `/v1/orgs/${o.slug}/requests`, {}, 'boolguy')
+  const decide = (body) => t.call('POST', `/v1/orgs/${o.slug}/requests/${asked.body.request.id}`, body, 'admin')
+  assert.equal((await decide({})).status, 400)
+  assert.equal((await decide({ approve: 'yes' })).status, 400)
+  assert.equal((await decide({ approve: 1 })).status, 400)
+})
+
+test('sending or resending invites is rate-limited per caller, not per org', async () => {
+  const c = await startTestApi({ inviteSendLimit: 2 })
+  try {
+    const o = await makeOrg(c, 'Rate Co')
+    const send = (email) => c.call('POST', `/v1/orgs/${o.slug}/invites`, { email }, 'admin')
+    assert.equal((await send('one@acme.com')).status, 200)
+    assert.equal((await send('two@acme.com')).status, 200)
+    assert.equal((await send('three@acme.com')).status, 429)
+    // A different org, same caller: still the same per-caller budget.
+    const o2 = await makeOrg(c, 'Rate Co Two')
+    assert.equal((await c.call('POST', `/v1/orgs/${o2.slug}/invites`, { email: 'four@acme.com' }, 'admin')).status, 429)
+  } finally { await c.close() }
+})
+
 test('invite lookups and acceptances are rate-limited per address', async () => {
   const c = await startTestApi({ inviteLimit: 2, trustProxy: true })
   try {

@@ -212,6 +212,17 @@ test('invites: stored by hash, listed while open, claimed once, never after canc
   assert.equal(await s.claimInvite(j.id), false)
 })
 
+test('claimInvite refuses an invite once it has expired, even if it was never cancelled', async () => {
+  let clock = Date.now()
+  const s = createMemoryStore({ now: () => clock })
+  s.addUser('u1', { name: 'Dana', email: 'dana@acme.com' })
+  const org = await newOrg(s)
+  const memberRole = (await s.listRoles(org.id)).find((r) => r.builtin === 'member').id
+  const i = await s.createInvite({ orgId: org.id, email: 'late@acme.com', roleId: memberRole, tokenHash: 'hlate', invitedBy: 'u1', expiresAt: clock + 1000 })
+  clock += 1001
+  assert.equal(await s.claimInvite(i.id), false, 'an expired invite cannot be claimed, even though it was neither accepted nor cancelled')
+})
+
 test('join requests: one pending per person per org, decided once', async () => {
   const s = setup()
   const org = await newOrg(s)

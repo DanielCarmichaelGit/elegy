@@ -188,9 +188,11 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async updateInvite (id, patch) {
       return rowFrom(await one(db.from('org_invites').update(toSnake({ ...patch, expiresAt: ts(patch.expiresAt), cancelledAt: ts(patch.cancelledAt) })).eq('id', id).select(INVITE).single()))
     },
-    // Check-and-set, so one invite can't be accepted twice (or after it was cancelled).
+    // Check-and-set, so one invite can't be accepted twice, after it was
+    // cancelled, or once it's expired — mirrors roleInUse's open-invite definition.
     async claimInvite (id) {
-      const rows = await one(db.from('org_invites').update({ accepted_at: new Date().toISOString() }).eq('id', id).is('accepted_at', null).is('cancelled_at', null).select('id'))
+      const rows = await one(db.from('org_invites').update({ accepted_at: new Date().toISOString() }).eq('id', id)
+        .is('accepted_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).select('id'))
       return rows.length > 0
     },
 

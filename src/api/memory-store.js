@@ -241,10 +241,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async inviteById (orgId, id) { const i = invites.get(id); return i && i.orgId === orgId ? copy(i) : null },
     async listInvites (orgId) { return all(invites, (i) => i.orgId === orgId && !i.acceptedAt && !i.cancelledAt).map(copy) },
     async updateInvite (id, patch) { const i = invites.get(id); Object.assign(i, patch); return copy(i) },
-    // Check-and-set, so one invite can't be accepted twice (or after it was cancelled).
+    // Check-and-set, so one invite can't be accepted twice, after it was
+    // cancelled, or once it's expired — the same "open invite" definition inviteOpen uses.
     async claimInvite (id) {
       const i = invites.get(id)
-      if (!i || i.acceptedAt || i.cancelledAt) return false
+      if (!i || !inviteOpen(i)) return false
       i.acceptedAt = now(); return true
     },
 
