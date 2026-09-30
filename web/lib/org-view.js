@@ -1,5 +1,5 @@
 // Pure helpers for the Org area, no Next imports, so they're unit-tested directly.
-import { can } from './permissions.js'
+import { can, isSubset } from './permissions.js'
 
 /** Whether the viewer may do `op` on `resource` in this org (the owner may do everything). */
 export function allowed (me, resource, op) {
@@ -32,4 +32,9 @@ const WHEN = { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric',
 /** A date for server-rendered pages: epoch ms (API) or an ISO string (Supabase). */
 export function when (t) {
   return t ? new Date(t).toLocaleString('en', WHEN) : 'never'
+}
+
+/** Roles the viewer may hand out: never Owner, and only within their own grid. */
+export function assignableRoles (roles, me) {
+  return (roles || []).filter((r) => r.builtin !== 'owner' && (me.isOwner || isSubset(r.grants, me.grants)))
 }

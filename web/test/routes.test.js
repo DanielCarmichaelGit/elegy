@@ -33,7 +33,7 @@ test('public pages render', async () => {
 })
 
 test('private pages send signed-out people to sign in, and come back after', async () => {
-  for (const path of ['/dashboard', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/orgs/new', '/invite/qi_test']) {
+  for (const path of ['/dashboard', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/orgs/new', '/invite/qi_test']) {
     const res = await get(path)
     assert.equal(res.status, 307, path)
     const to = new URL(res.headers.get('location'), base)
