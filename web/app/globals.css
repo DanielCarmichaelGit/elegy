@@ -277,3 +277,8 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .auth-secondary { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
 .auth-secondary .btn.small { height: 34px; font-size: 13px; font-weight: 500; width: 100%; }
 .auth-secondary a.muted { color: var(--muted); }
+
+/* Work-address hint on the personal sign-up */
+.org-hint { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.org-hint p { margin: 0; }
+.org-hint .btn.small { height: 34px; font-size: 13px; align-self: flex-start; }

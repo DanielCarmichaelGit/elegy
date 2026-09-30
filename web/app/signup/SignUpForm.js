@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client.js'
 import { isValidEmail, isValidPassword } from '@/lib/validate.js'
 import { safeNext } from '@/lib/safe-next.js'
 import { signUpData } from '@/lib/signup.js'
+import { emailDomain, isPublicDomain } from '@/lib/domains.js'
 
 const ERRORS = {
   name: 'Enter your name.',
@@ -17,6 +18,9 @@ const ERRORS = {
 }
 
 export default function SignUpForm ({ next }) {
+  // A company address (not gmail.com and the like) hints they meant the org sign-up.
+  const [workDomain, setWorkDomain] = useState('')
+  const checkDomain = (e) => { const d = emailDomain(e.target.value); setWorkDomain(d && !isPublicDomain(d) ? d : '') }
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
@@ -58,8 +62,14 @@ export default function SignUpForm ({ next }) {
       </div>
       <div className='field'>
         <label htmlFor='email'>Email</label>
-        <input className='input' id='email' name='email' type='email' autoComplete='email' required />
+        <input className='input' id='email' name='email' type='email' autoComplete='email' required onBlur={checkDomain} onChange={(e) => { if (workDomain) checkDomain(e) }} />
       </div>
+      {workDomain && (
+        <div className='notice org-hint'>
+          <p>It looks like you're signing up with a work address at <b>{workDomain}</b>. Want to create an org account for your team instead?</p>
+          <a className='btn small' href={`/signup/org?next=${encodeURIComponent(next)}`}>Create an org account</a>
+        </div>
+      )}
       <div className='field'>
         <label htmlFor='password'>Password</label>
         <input className='input' id='password' name='password' type='password' autoComplete='new-password' minLength={8} maxLength={72} required />
