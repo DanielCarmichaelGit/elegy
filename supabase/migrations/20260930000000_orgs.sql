@@ -228,12 +228,19 @@ end $$;
 
 -- Ownership moves in one step, so there is always exactly one owner: the old
 -- owner becomes an Admin and the new one takes the Owner role.
-create function public.transfer_org (p_org uuid, p_to uuid) returns void
+create function public.transfer_org (p_org uuid, p_from uuid, p_to uuid) returns void
 language plpgsql security invoker set search_path = '' as $$
 declare
   old_owner uuid;
 begin
   select owner_id into old_owner from public.orgs where id = p_org for update;
+
+  -- p_from is the owner the caller saw when they clicked transfer; if someone else
+  -- already took ownership in the meantime, refuse rather than transfer it out from
+  -- under them a second time.
+  if old_owner is distinct from p_from then
+    raise exception 'not the owner' using errcode = 'QO003';
+  end if;
 
   -- Lock the target's membership row so a concurrent removal can't race the transfer.
   perform 1 from public.org_members where org_id = p_org and user_id = p_to for update;
@@ -254,8 +261,8 @@ begin
 end $$;
 
 -- These aren't meant to be called over the API by anyone but the service role.
-revoke execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb, boolean), public.transfer_org(uuid, uuid) from public, anon, authenticated;
-grant execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb, boolean), public.transfer_org(uuid, uuid) to service_role;
+revoke execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb, boolean), public.transfer_org(uuid, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.create_org(text, text, uuid, jsonb, jsonb, jsonb, boolean), public.transfer_org(uuid, uuid, uuid) to service_role;
 
 -- Signed-in helpers used only by RLS policies: never anonymous, and pointless
 -- to call outside a policy (they only report the caller's own rights).

@@ -96,6 +96,23 @@ test('only the owner transfers or deletes the org, and there is always exactly o
   assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/me`, null, 'admin')).status, 404)
 })
 
+test('a transfer refuses once ownership already moved, instead of moving it again', async () => {
+  const o = await makeOrg(t, 'Race Transfer Co')
+  // Simulate a second transfer landing between this request's org lookup (which
+  // still sees "owner" as the owner, so needOwner passes) and its own write.
+  const real = t.store.transferOrg.bind(t.store)
+  t.store.transferOrg = async (orgId, fromUserId, toUserId) => {
+    await real(orgId, fromUserId, 'mem')
+    return real(orgId, fromUserId, toUserId)
+  }
+  try {
+    const r = await t.call('POST', `/v1/orgs/${o.slug}/transfer`, { memberId: o.admin.id }, 'owner')
+    assert.equal(r.status, 409)
+    assert.match(r.body.error, /Ownership already changed/)
+  } finally { t.store.transferOrg = real }
+  assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/me`, null, 'mem')).body.role.builtin, 'owner', 'the transfer that landed first still stands')
+})
+
 test('roles: listing is ordered, and people who hand out roles can list them', async () => {
   const o = await makeOrg(t)
   await t.store.createRole({ orgId: o.org.id, name: 'Zed', grants: {} })
@@ -139,6 +156,19 @@ test('roles: Owner is fixed, built-ins keep their names, and assigned roles are 
   assert.equal((await del(spare.id)).status, 200)
   assert.equal((await del(spare.id)).status, 404)
   assert.equal((await put('not-a-uuid', { grants: {} })).status, 404)
+})
+
+test('roles: a custom role cannot be named or renamed after a built-in role', async () => {
+  const o = await makeOrg(t)
+  const made = await t.call('POST', `/v1/orgs/${o.slug}/roles`, { name: 'Owner', grants: {} }, 'admin')
+  assert.equal(made.status, 400)
+  assert.match(made.body.error, /reserved for a built-in role/)
+  // Case-insensitive, and after trimming/cleaning the name.
+  assert.equal((await t.call('POST', `/v1/orgs/${o.slug}/roles`, { name: '  ADMIN  ', grants: {} }, 'admin')).status, 400)
+  assert.equal((await t.call('POST', `/v1/orgs/${o.slug}/roles`, { name: 'member', grants: {} }, 'admin')).status, 400)
+  const lead = await t.store.createRole({ orgId: o.org.id, name: 'Lead', grants: {} })
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/roles/${lead.id}`, { name: 'Owner' }, 'admin')).status, 400)
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/roles/${lead.id}`, { name: 'Still Lead' }, 'admin')).status, 200)
 })
 
 test('roles: nobody edits a role with checkboxes they do not have', async () => {

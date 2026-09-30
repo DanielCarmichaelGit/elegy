@@ -19,7 +19,15 @@ function parseSmtpUrl (raw) {
     throw new Error('SMTP_URL must start with smtp:// or smtps://')
   }
   const secure = u.protocol === 'smtps:'
-  const options = { host: u.hostname, port: u.port ? Number(u.port) : (secure ? 465 : 587), secure }
+  // A hung SMTP connection would otherwise hold the invite request open forever.
+  const options = {
+    host: u.hostname,
+    port: u.port ? Number(u.port) : (secure ? 465 : 587),
+    secure,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000
+  }
   if (u.username || u.password) {
     options.auth = { user: decodeURIComponent(u.username), pass: decodeURIComponent(u.password) }
   }

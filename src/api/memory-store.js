@@ -135,9 +135,12 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [k, r] of requests) if (r.orgId === id) requests.delete(k)
     },
     // Ownership moves in one step: the old owner becomes an Admin. Mirrors
-    // transfer_org's own errcodes (QO002/QO001) for the same two checks.
-    async transferOrg (orgId, toUserId) {
+    // transfer_org's own errcodes (QO003/QO002/QO001) for the same checks.
+    async transferOrg (orgId, fromUserId, toUserId) {
       const o = orgs.get(orgId)
+      // fromUserId is the owner the caller saw when they clicked transfer; if
+      // ownership already moved, refuse instead of transferring it a second time.
+      if (o.ownerId !== fromUserId) throw Object.assign(new Error('not the owner'), { code: 'QO003' })
       const to = findMember(orgId, toUserId)
       if (!to) throw Object.assign(new Error('target is not a member of this org'), { code: 'QO002' })
       const from = findMember(orgId, o.ownerId)

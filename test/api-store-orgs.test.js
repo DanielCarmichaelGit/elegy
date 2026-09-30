@@ -60,7 +60,7 @@ test('transferring an org: the new owner takes Owner and the old owner becomes A
   const roles = await s.listRoles(org.id)
   const role = (b) => roles.find((r) => r.builtin === b).id
   await s.addMember({ orgId: org.id, userId: 'u2', roleId: role('member') })
-  await s.transferOrg(org.id, 'u2')
+  await s.transferOrg(org.id, 'u1', 'u2')
   assert.equal((await s.orgById(org.id)).ownerId, 'u2')
   assert.equal((await s.memberOf(org.id, 'u2')).roleId, role('owner'))
   assert.equal((await s.memberOf(org.id, 'u1')).roleId, role('admin'))
@@ -131,14 +131,15 @@ test('deleting a role clears its closed invites first, and refuses while one is 
   assert.ok(await s.roleById(org.id, lead2.id), 'the role survives the refused delete')
 })
 
-test('transferOrg reports QO002/QO001 like transfer_org, instead of throwing a plain error', async () => {
+test('transferOrg reports QO003/QO002/QO001 like transfer_org, instead of throwing a plain error', async () => {
   const s = setup()
   const org = await newOrg(s)
-  await assert.rejects(s.transferOrg(org.id, 'u2'), (err) => err.code === 'QO002', 'target not a member')
+  await assert.rejects(s.transferOrg(org.id, 'u2', 'u1'), (err) => err.code === 'QO003', 'caller is not the current owner')
+  await assert.rejects(s.transferOrg(org.id, 'u1', 'u2'), (err) => err.code === 'QO002', 'target not a member')
   const memberRole = (await s.listRoles(org.id)).find((r) => r.builtin === 'member').id
   await s.addMember({ orgId: org.id, userId: 'u2', roleId: memberRole })
   await s.removeMember((await s.memberOf(org.id, 'u1')).id)
-  await assert.rejects(s.transferOrg(org.id, 'u2'), (err) => err.code === 'QO001', 'current owner no longer a member')
+  await assert.rejects(s.transferOrg(org.id, 'u1', 'u2'), (err) => err.code === 'QO001', 'current owner no longer a member')
 })
 
 test('a role from another org cannot be attached to a member (composite FK)', async () => {

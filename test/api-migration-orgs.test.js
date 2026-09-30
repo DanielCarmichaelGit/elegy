@@ -47,8 +47,8 @@ test('org_invites has no row-level-security policy of its own', () => {
 
 test('the org functions run only as the API; the RLS helpers only for signed-in people', () => {
   const s = sql()
-  assert.match(s, /revoke execute on function public\.create_org\(text, text, uuid, jsonb, jsonb, jsonb, boolean\), public\.transfer_org\(uuid, uuid\) from public, anon, authenticated;/)
-  assert.match(s, /grant execute on function public\.create_org\(text, text, uuid, jsonb, jsonb, jsonb, boolean\), public\.transfer_org\(uuid, uuid\) to service_role;/)
+  assert.match(s, /revoke execute on function public\.create_org\(text, text, uuid, jsonb, jsonb, jsonb, boolean\), public\.transfer_org\(uuid, uuid, uuid\) from public, anon, authenticated;/)
+  assert.match(s, /grant execute on function public\.create_org\(text, text, uuid, jsonb, jsonb, jsonb, boolean\), public\.transfer_org\(uuid, uuid, uuid\) to service_role;/)
   assert.match(s, /revoke execute on function public\.my_org_ids\(\) from public, anon;/)
   assert.match(s, /revoke execute on function public\.my_team_ids\(\) from public, anon;/)
   assert.match(s, /revoke execute on function public\.has_org_grant\(uuid, text, text\) from public, anon;/)
@@ -133,9 +133,12 @@ test('transfer_org locks the target membership and raises distinct errcodes', ()
   const s = sql()
   const f = fn(s, 'transfer_org')
   assert.ok(f, 'transfer_org exists')
+  assert.match(f, /p_from uuid/)
   assert.match(f, /for update/)
   assert.match(f, /errcode = 'QO001'/)
   assert.match(f, /errcode = 'QO002'/)
+  assert.match(f, /errcode = 'QO003'/)
+  assert.match(f, /old_owner is distinct from p_from/)
 })
 
 test('create_org p_first locks on the owner and returns an existing org instead of a second one', () => {

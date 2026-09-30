@@ -47,8 +47,8 @@ test('supabase createOrg and transferOrg go through the one-transaction function
   const org = await s.createOrg({ name: 'Acme', slug: 'acme', ownerId: 'u1', grants: BUILTIN })
   assert.deepEqual(calls[0].args, { p_name: 'Acme', p_slug: 'acme', p_owner: 'u1', p_owner_grants: BUILTIN.owner, p_admin_grants: BUILTIN.admin, p_member_grants: BUILTIN.member, p_first: false })
   assert.deepEqual([org.id, org.ownerId, org.domainRequests, org.createdAt], ['o1', 'u1', false, Date.parse(ISO)])
-  await s.transferOrg('o1', 'u2')
-  assert.deepEqual([calls[1].rpc, calls[1].args], ['transfer_org', { p_org: 'o1', p_to: 'u2' }])
+  await s.transferOrg('o1', 'u1', 'u2')
+  assert.deepEqual([calls[1].rpc, calls[1].args], ['transfer_org', { p_org: 'o1', p_from: 'u1', p_to: 'u2' }])
 })
 
 test('supabase createOrg passes p_first through for first-org sign-ups', async () => {
@@ -132,7 +132,7 @@ test('supabase transferOrg lets the RPC\'s errcode propagate (QO001/QO002)', asy
     }
   })
   const client = { rpc (fn, args) { const q = { rpc: fn, args, ops: [] }; return chain(q) } }
-  await assert.rejects(createSupabaseStore({ client }).transferOrg('o1', 'u2'), (err) => err.code === 'QO002')
+  await assert.rejects(createSupabaseStore({ client }).transferOrg('o1', 'u1', 'u2'), (err) => err.code === 'QO002')
 })
 
 test('supabase claimInvite only claims an open invite', async () => {

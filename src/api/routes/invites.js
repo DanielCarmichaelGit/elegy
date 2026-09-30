@@ -1,5 +1,5 @@
 // Joining an org: email invites (the API sends them) and domain join requests.
-import { HttpError, needId } from '../http.js'
+import { HttpError, needId, stripInvisible } from '../http.js'
 import { orgAccess } from '../org-access.js'
 import { newToken, hashToken } from '../tokens.js'
 import { emailDomain, isPublicDomain } from '../domains.js'
@@ -39,6 +39,8 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit, limi
   // acceptance) can't hand a second membership, or a second role, to the same person.
   async function memberWithEmail (orgId, email) {
     for (const m of await store.listMembers(orgId)) {
+      // Agent members have no userId (and so no signed-in email) to collide with.
+      if (!m.userId) continue
       const e = await store.userEmail(m.userId)
       if (String(e?.email || '').toLowerCase() === email) return m
     }
@@ -48,7 +50,10 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit, limi
   // The link only ever travels by email; only its hash is stored.
   async function mail (a, invite, role, token) {
     const inviter = await store.profile(a.u.userId)
-    const msg = inviteEmail({ orgName: a.org.name, inviterName: inviter?.name, roleName: role.name, link: `${site}/invite/${token}` })
+    // A profile name is free text; strip anything that could hide or reorder
+    // characters before it lands in the invite email's subject line.
+    const inviterName = stripInvisible(inviter?.name || '').join('').trim() || undefined
+    const msg = inviteEmail({ orgName: a.org.name, inviterName, roleName: role.name, link: `${site}/invite/${token}` })
     try {
       await mailer.send({ to: invite.email, ...msg })
     } catch (err) {
@@ -82,8 +87,12 @@ export function inviteRoutes ({ store, user, now, site, mailer, log, limit, limi
       const email = cleanEmail(body.email)
       const role = await a.assignable(body.roleId)
       if (await memberWithEmail(a.org.id, email)) throw new HttpError(409, 'that person is already a member')
-      // One open invite per address: a new one replaces the old.
-      for (const old of await store.listInvites(a.org.id)) if (old.email === email) await store.updateInvite(old.id, { cancelledAt: now() })
+      // Never cancel someone else's invite just by sending a new one to the same
+      // address: a narrow inviter (User invites: Create only) could otherwise
+      // swap out an owner's pending Admin invite for a Member one.
+      if ((await store.listInvites(a.org.id)).some((old) => old.email === email && statusOf(old) === 'pending')) {
+        throw new HttpError(409, 'That address already has an open invite. Resend or cancel it.')
+      }
       const token = newToken('qi_')
       const invite = await store.createInvite({ orgId: a.org.id, email, roleId: role.id, tokenHash: hashToken(token), invitedBy: a.u.userId, expiresAt: now() + INVITE_TTL_MS })
       await mail(a, invite, role, token)

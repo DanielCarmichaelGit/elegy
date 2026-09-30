@@ -34,3 +34,16 @@ test('an unreachable API is a failed result, not a crash', async () => {
   process.env.QUILT_API_URL = 'http://127.0.0.1:9'
   try { assert.deepEqual(await apiCall({ accessToken: 't' }, 'GET', '/v1/agents'), { ok: false, status: 0, data: null }) } finally { process.env.QUILT_API_URL = saved }
 })
+
+test('a request that never gets a response times out to the same failed shape', async () => {
+  const { apiCall } = await import('../lib/api.js')
+  // Standing in for the real 15s timeout firing, so the test doesn't have to wait 15s:
+  // this only proves apiCall wires `signal` into fetch, since our test server never
+  // responds and only an honored abort signal would make the call fail this fast.
+  const realTimeout = AbortSignal.timeout
+  AbortSignal.timeout = () => AbortSignal.abort()
+  try {
+    const r = await apiCall({ accessToken: 'tok' }, 'GET', '/v1/hang')
+    assert.deepEqual(r, { ok: false, status: 0, data: null })
+  } finally { AbortSignal.timeout = realTimeout }
+})

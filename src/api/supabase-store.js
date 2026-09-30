@@ -102,7 +102,7 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     // Cascades to roles, members, teams, invites and requests.
     async deleteOrg (id) { await one(db.from('orgs').delete().eq('id', id)) },
-    async transferOrg (orgId, toUserId) { await one(db.rpc('transfer_org', { p_org: orgId, p_to: toUserId })) },
+    async transferOrg (orgId, fromUserId, toUserId) { await one(db.rpc('transfer_org', { p_org: orgId, p_from: fromUserId, p_to: toUserId })) },
 
     // Roles.
     async listRoles (orgId) { return (await one(db.from('roles').select(ROLE).eq('org_id', orgId))).map(rowFrom) },

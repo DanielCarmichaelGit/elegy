@@ -6,6 +6,10 @@ import { emailDomain, isDomain, isPublicDomain } from '../domains.js'
 import { uniqueSlug } from '../slugs.js'
 
 const ROLE_ORDER = { owner: 0, admin: 1, member: 2 }
+const RESERVED_ROLE_NAMES = new Set(['owner', 'admin', 'member'])
+const checkNotReserved = (name) => {
+  if (RESERVED_ROLE_NAMES.has(name.toLowerCase())) throw new HttpError(400, 'That name is reserved for a built-in role.')
+}
 const sortRoles = (roles) => [...roles].sort((a, b) => (ROLE_ORDER[a.builtin] ?? 3) - (ROLE_ORDER[b.builtin] ?? 3) || a.name.localeCompare(b.name))
 const orgView = (o) => ({ id: o.id, name: o.name, slug: o.slug, domain: o.domain, domainRequests: o.domainRequests, createdAt: o.createdAt })
 const roleView = (r) => ({ id: r.id, name: r.name, builtin: r.builtin, grants: normalizeGrants(r.grants), createdAt: r.createdAt })
@@ -102,12 +106,14 @@ export function orgRoutes ({ store, user }) {
       if (!to?.userId) throw new HttpError(404, 'no such member')
       if (to.userId === a.u.userId) throw new HttpError(400, 'you already own this org')
       try {
-        await store.transferOrg(a.org.id, to.userId)
+        await store.transferOrg(a.org.id, a.u.userId, to.userId)
       } catch (err) {
         // Defensive: the checks above should make these unreachable, but a store
         // that finds otherwise should answer cleanly rather than with a 500.
         if (err?.code === 'QO001') throw new HttpError(404, 'the current owner is no longer a member of this org')
         if (err?.code === 'QO002') throw new HttpError(400, 'that member is not part of this org')
+        // Someone else already became owner between this page loading and the click.
+        if (err?.code === 'QO003') throw new HttpError(409, 'Ownership already changed. Reload and try again.')
         throw err
       }
       return { ok: true }
@@ -125,7 +131,9 @@ export function orgRoutes ({ store, user }) {
       a.need('roles', 'c')
       const grants = normalizeGrants(body.grants)
       if (!a.covers(grants)) throw new HttpError(403, 'a role can only have permissions you have')
-      return { role: roleView(await store.createRole({ orgId: a.org.id, name: cleanName(body.name, 40, 'give the role a name'), grants })) }
+      const name = cleanName(body.name, 40, 'give the role a name')
+      checkNotReserved(name)
+      return { role: roleView(await store.createRole({ orgId: a.org.id, name, grants })) }
     }],
 
     ['PUT', /^\/v1\/orgs\/([^/]+)\/roles\/([^/]+)$/, async (req, body, [slug, id]) => {
@@ -138,6 +146,7 @@ export function orgRoutes ({ store, user }) {
       if (body.name !== undefined) {
         const name = cleanName(body.name, 40, 'give the role a name')
         if (role.builtin && name !== role.name) throw new HttpError(400, 'built-in roles keep their names')
+        if (!role.builtin) checkNotReserved(name)
         patch.name = name
       }
       if (body.grants !== undefined) {

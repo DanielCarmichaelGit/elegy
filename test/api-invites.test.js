@@ -96,16 +96,32 @@ test('invites expire after 7 days; resending sends a fresh link and retires the 
   } finally { await c.close() }
 })
 
-test('a new invite to the same address replaces the open one', async () => {
+test('a second invite to an address that already has an open one is refused, not a replacement', async () => {
   const o = await makeOrg(t, 'Twice Co')
   await invite(o, 'twice@acme.com')
   const first = tokenIn(t.sent.at(-1))
-  await invite(o, 'twice@acme.com')
+  const again = await invite(o, 'twice@acme.com')
+  assert.equal(again.status, 409)
+  assert.match(again.body.error, /already has an open invite/)
   const list = await t.call('GET', `/v1/orgs/${o.slug}/invites`, null, 'admin')
   assert.equal(list.body.invites.filter((i) => i.email === 'twice@acme.com').length, 1)
   t.store.addUser('twice', { name: 'Twice', email: 'twice@acme.com' })
-  assert.equal((await t.call('POST', '/v1/invites/accept', { token: first }, 'twice')).status, 410)
+  assert.equal((await t.call('POST', '/v1/invites/accept', { token: first }, 'twice')).status, 200, 'the first invite is still open')
   assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/invites`, null, 'mem')).status, 403)
+})
+
+test('a narrow inviter cannot replace someone else\'s pending invite by sending a new one', async () => {
+  const o = await makeOrg(t, 'Guard Co')
+  // A Member who can also send invites (create only, no update/delete on invites).
+  const inviter = await t.store.createRole({ orgId: o.org.id, name: 'Narrow Inviter', grants: { invites: { c: true }, teams: { r: true } } })
+  await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: inviter.id })
+  const owner = await invite(o, 'target@acme.com', 'owner', o.role('admin').id)
+  assert.equal(owner.status, 200)
+  const narrow = await invite(o, 'target@acme.com', 'lim')
+  assert.equal(narrow.status, 409)
+  const list = await t.call('GET', `/v1/orgs/${o.slug}/invites`, null, 'admin')
+  const stillOpen = list.body.invites.find((i) => i.email === 'target@acme.com')
+  assert.deepEqual([stillOpen.id, stillOpen.role, stillOpen.expired], [owner.body.invite.id, 'Admin', false], 'the owner\'s Admin invite was never touched')
 })
 
 test('when the email fails to send, the invite is kept and the caller is told', async () => {

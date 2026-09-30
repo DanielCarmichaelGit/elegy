@@ -31,6 +31,17 @@ test('smtp:// requires TLS explicitly, so a stripped STARTTLS reply cannot expos
   assert.deepEqual(seen.auth, { user: 'user', pass: 'pass' })
 })
 
+test('SMTP connections give up rather than hang forever', () => {
+  let seen
+  createSmtpMailer({
+    url: 'smtp://user:pass@127.0.0.1:2525', from: 'x@quilt.test',
+    createTransport: (opts) => { seen = opts; return { sendMail: async () => {} } }
+  })
+  assert.equal(seen.connectionTimeout, 10000)
+  assert.equal(seen.greetingTimeout, 10000)
+  assert.equal(seen.socketTimeout, 15000)
+})
+
 test('smtps:// connects secure from the start', () => {
   let seen
   createSmtpMailer({
