@@ -1,5 +1,6 @@
 {
   "name": "Quilt",
+  "short_name": "Quilt",
   "icons": [
     {
       "src": "/icon-192.png",
@@ -18,8 +19,7 @@
       "purpose": "maskable"
     }
   ],
-  "theme_color": "#F6F2EA",
-  "background_color": "#F6F2EA",
-  "display": "standalone",
-  "short_name": "Quilt"
+  "theme_color": "#FFF8F3",
+  "background_color": "#FFF8F3",
+  "display": "standalone"
 }

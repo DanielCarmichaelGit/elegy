@@ -6,26 +6,26 @@
 @font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(/fonts/ibm-plex-mono/ibm-plex-mono-latin-400-normal.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-weight: 500 700; font-display: swap; src: url(/fonts/ibm-plex-mono/ibm-plex-mono-latin-500-normal.woff2) format("woff2"); }
 
-/* Warm paper: cream paper, dark ink, one coral accent. Always light, to match the chosen mockup. */
+/* Sherbet: pastel patches on a warm white, with a soft charcoal ink. Always light. */
 :root {
-  --bg: #f4efe6;
-  --panel: #fffdf8;
-  --panel-2: #f1ebe0;
-  --text: #211d18;
-  --muted: #6b6356;
-  --faint: #978d7e;
-  --border: #e2d9c9;
-  --border-strong: #cfc3ae;
-  --accent: #b9432b;
-  --coral: #c4472f;
+  --bg: #fff8f3;
+  --panel: #ffffff;
+  --panel-2: #fdeee6;
+  --text: #2b2a38;
+  --muted: #6e6c7e;
+  --faint: #9d9aae;
+  --border: #f3dfd4;
+  --border-strong: #e6cbbd;
+  --accent: #c24f33;
+  --coral: #c24f33;
   --violet: #7b4f9e;
   --edit: #b5621b;
   --ok: #3d7a4c;
   --warn: #a8701c;
   --bad: #b3372e;
-  --mine: #efe5d3;
+  --mine: #fdeee6;
   --shadow: 3px 3px 0 var(--border);
-  --shadow-pop: 0 1px 0 var(--border-strong), 0 14px 36px rgba(58, 40, 20, .14);
+  --shadow-pop: 0 1px 0 var(--border-strong), 0 14px 36px rgba(43, 42, 56, .14);
   --radius: 6px;
   --sans: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --serif: var(--sans); /* one family throughout */
@@ -216,7 +216,7 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .log-line { font-size: 12.5px; color: var(--muted); padding: 4px 0; }
 
 /* modal */
-.modal-back { position: fixed; inset: 0; background: rgba(33, 24, 14, .4); backdrop-filter: blur(2px); display: grid; place-items: center; z-index: 20; padding: 16px; }
+.modal-back { position: fixed; inset: 0; background: rgba(43, 42, 56, .4); backdrop-filter: blur(2px); display: grid; place-items: center; z-index: 20; padding: 16px; }
 .modal { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow: auto; padding: 24px; }
 .modal h3 { margin: 0 0 4px; font-size: 19px; }
 .modal .lead { color: var(--muted); margin: 0 0 18px; }
@@ -436,14 +436,14 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
   .wide-only { display: none !important; }
   .ws-top { gap: 6px; padding: 0 10px; }
   .ws-top .brand { font-size: 0; gap: 0; }
-  .ws-top .brand .qm-word { height: 22px; }
+  .ws-top .brand .qm-word { height: 30px; }
   .ws-top .tabs { display: none; }
   .ws-body { grid-template-columns: minmax(0, 1fr); }
   .ws-tree, .ws-chat { position: absolute; top: 0; bottom: 0; z-index: 5; width: min(340px, 88vw); display: none; box-shadow: var(--shadow-pop); }
   .ws-tree { left: 0; }
   .ws-chat { right: 0; }
   .ws-body[data-drawer="tree"] .ws-tree, .ws-body[data-drawer="chat"] .ws-chat { display: flex; }
-  .ws-body[data-drawer="tree"] .scrim, .ws-body[data-drawer="chat"] .scrim { display: block; position: absolute; inset: 0; z-index: 4; background: rgba(33, 24, 14, .35); }
+  .ws-body[data-drawer="tree"] .scrim, .ws-body[data-drawer="chat"] .scrim { display: block; position: absolute; inset: 0; z-index: 4; background: rgba(43, 42, 56, .35); }
   .ws-mainbar { flex-wrap: wrap; }
   .feed { padding: 16px 14px 32px; }
   .f-reply, .f-actions, .f-working { padding-left: 0; }
@@ -726,29 +726,34 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .open-in [data-open-in] + #open-in-more { margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .open-in .btn:has(+ #open-in-more) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 
-/* ---- The Quilt mark (mark.js): fabrics, sewing in once, and the loading animation ---- */
-:root { --qm-a: #C4472F; --qm-b: #8F2F22; --qm-c: #2F5D62; --qm-g: #EADFCD; }
+/* ---- The Quilt mark (mark.js): patches, thread, sewing in once, and the loading animation ---- */
+:root { --qm-a: #ffb8a3; --qm-b: #ffe08a; --qm-c: #a8e6cf; --qm-d: #c9b8ff; --qm-thread: var(--text); }
 .qm { display: block; overflow: visible; }
-.qm-a { fill: var(--qm-a); } .qm-b { fill: var(--qm-b); } .qm-c { fill: var(--qm-c); } .qm-g { fill: var(--qm-g); }
+.qm-p { fill: none; stroke-width: 15; transform-box: fill-box; transform-origin: center; }
+.qm-1 { stroke: var(--qm-a); } .qm-2 { stroke: var(--qm-b); } .qm-3 { stroke: var(--qm-c); } .qm-4 { stroke: var(--qm-d); }
+.qm-t { fill: none; stroke: var(--qm-thread); stroke-width: 5; stroke-linecap: round; }
+.qm-tip { fill: var(--qm-thread); }
 .qm-w { fill: var(--text); }
-.qm-p { transform-box: fill-box; transform-origin: center; }
-/* Sewn in once: each patch drops into place round the Q, then the tail, then "uilt" appears. */
-.qm-sew .qm-p { opacity: 0; transform: scale(.35) rotate(-10deg); animation: qm-sew .42s cubic-bezier(.2, .9, .3, 1.25) forwards; animation-delay: calc(var(--o) * 34ms + 80ms); }
-.qm-sew .qm-w { opacity: 0; animation: qm-fade .45s ease-out .78s forwards; }
+/* Sewn in once: each patch drops into place round the Q, then the thread runs out and "uilt" appears. */
+.qm-sew .qm-p { opacity: 0; transform: scale(.35) rotate(-10deg); animation: qm-sew .42s cubic-bezier(.2, .9, .3, 1.25) forwards; animation-delay: calc(var(--o) * 70ms + 80ms); }
+.qm-sew .qm-t { stroke-dasharray: 1; stroke-dashoffset: 1; animation: qm-thread .5s ease-out .45s forwards; }
+.qm-sew .qm-tip, .qm-sew .qm-w { opacity: 0; animation: qm-fade .35s ease-out .85s forwards; }
 @keyframes qm-sew { to { opacity: 1; transform: none; } }
+@keyframes qm-thread { to { stroke-dashoffset: 0; } }
 @keyframes qm-fade { to { opacity: 1; } }
 /* Loading: the Q pieces itself together patch by patch, holds, then unpicks in the same order. */
-.qm-loop .qm-p { opacity: 0; animation: qm-loop 2.6s ease-in-out infinite; animation-delay: calc(var(--o) * 48ms); }
+.qm-loop .qm-p { opacity: 0; animation: qm-loop 2.6s ease-in-out infinite; animation-delay: calc(var(--o) * 90ms); }
 @keyframes qm-loop { 0% { opacity: 0; transform: scale(.35); } 12%, 58% { opacity: 1; transform: none; } 74%, 100% { opacity: 0; transform: scale(.55); } }
 @media (prefers-reduced-motion: reduce) {
-  .qm-sew .qm-p, .qm-sew .qm-w { animation: none; opacity: 1; transform: none; }
+  .qm-sew .qm-p, .qm-sew .qm-w, .qm-sew .qm-tip { animation: none; opacity: 1; transform: none; }
+  .qm-sew .qm-t { animation: none; stroke-dashoffset: 0; }
   .qm-loop .qm-p { animation: qm-fade-pulse 1.6s ease-in-out infinite; opacity: 1; transform: none; }
   @keyframes qm-fade-pulse { 50% { opacity: .45; } }
 }
-.brand .qm-word { height: 26px; width: auto; }
-.side .brand .qm-word { height: 30px; }
+.brand .qm-word { height: 34px; width: auto; }
+.side .brand .qm-word { height: 38px; }
 .wordmark .qm-word { height: 72px; width: auto; margin: 0 auto; }
 .booting { min-height: 100vh; display: grid; place-items: center; }
 .booting .qm-sym { width: 56px; height: 56px; }
-.qm-inline { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; margin-right: 8px; }
+.qm-inline { width: 18px; height: 18px; display: inline-block; vertical-align: -3px; margin-right: 8px; }
 .btn .qm-inline { margin-right: 6px; }
