@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { allowed, assignableRoles, orgTabs, safeMessage, when } from '../lib/org-view.js'
+import { allowed, assignableRoles, orgTabs, peopleNotIn, safeMessage, when } from '../lib/org-view.js'
 
 const owner = { isOwner: true, grants: {} }
 const member = { isOwner: false, grants: { teams: { r: true } } }
@@ -45,4 +45,11 @@ test('assignableRoles: never Owner, and only roles within your own grid', () => 
   const lead = { isOwner: false, grants: { teams: { r: true, c: true }, roles: { r: true, u: true } } }
   assert.deepEqual(assignableRoles(roles, lead).map((r) => r.id), ['m', 'l'])
   assert.deepEqual(assignableRoles(undefined, lead), [])
+})
+
+test('peopleNotIn leaves out people already in the team', () => {
+  const people = [{ memberId: 'a', name: 'Ada' }, { memberId: 'b', name: 'Bo' }]
+  assert.deepEqual(peopleNotIn(people, [{ memberId: 'a', access: 'editor' }]), [{ memberId: 'b', name: 'Bo' }])
+  assert.deepEqual(peopleNotIn(people, null), people)
+  assert.deepEqual(peopleNotIn(null, []), [])
 })

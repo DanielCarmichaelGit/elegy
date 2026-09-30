@@ -38,3 +38,9 @@ export function when (t) {
 export function assignableRoles (roles, me) {
   return (roles || []).filter((r) => r.builtin !== 'owner' && (me.isOwner || isSubset(r.grants, me.grants)))
 }
+
+/** The org's people who aren't in this team yet, for the "add" picker. */
+export function peopleNotIn (people, members) {
+  const inTeam = new Set((members || []).map((m) => m.memberId))
+  return (people || []).filter((p) => !inTeam.has(p.memberId))
+}
