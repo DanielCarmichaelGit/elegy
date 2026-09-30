@@ -127,3 +127,38 @@ test('supabase transferOrg lets the RPC\'s errcode propagate (QO001/QO002)', asy
   const client = { rpc (fn, args) { const q = { rpc: fn, args, ops: [] }; return chain(q) } }
   await assert.rejects(createSupabaseStore({ client }).transferOrg('o1', 'u2'), (err) => err.code === 'QO002')
 })
+
+test('supabase claimInvite only claims an open invite', async () => {
+  const { client, calls } = fakeDb(() => [{ id: 'i1' }])
+  assert.equal(await createSupabaseStore({ client }).claimInvite('i1'), true)
+  assert.ok(has(calls[0], 'is', 'accepted_at', null) && has(calls[0], 'is', 'cancelled_at', null))
+  const none = fakeDb(() => [])
+  assert.equal(await createSupabaseStore({ client: none.client }).claimInvite('i1'), false)
+})
+
+test('supabase createInvite sends timestamps as ISO strings', async () => {
+  const { client, calls } = fakeDb(() => ({ id: 'i1', expires_at: ISO }))
+  const i = await createSupabaseStore({ client }).createInvite({ orgId: 'o1', email: 'a@acme.com', roleId: 'r1', tokenHash: 'h', invitedBy: 'u1', expiresAt: Date.parse(ISO) })
+  const insert = calls[0].ops.find(([op]) => op === 'insert')[1]
+  assert.deepEqual(insert, { org_id: 'o1', email: 'a@acme.com', role_id: 'r1', token_hash: 'h', invited_by: 'u1', expires_at: ISO })
+  assert.equal(i.expiresAt, Date.parse(ISO))
+})
+
+test('supabase decideJoinRequest only decides a pending request', async () => {
+  const { client, calls } = fakeDb(() => [{ id: 'j1' }])
+  assert.equal(await createSupabaseStore({ client }).decideJoinRequest('j1', { status: 'approved', decidedBy: 'u1' }), true)
+  assert.ok(has(calls[0], 'eq', 'status', 'pending'))
+  const update = calls[0].ops.find(([op]) => op === 'update')[1]
+  assert.deepEqual([update.status, update.decided_by], ['approved', 'u1'])
+})
+
+test('supabase listTeamMembers flattens the nested member name; addTeamMember upserts', async () => {
+  const { client, calls } = fakeDb((q) => (q.ops.some(([op]) => op === 'upsert')
+    ? { team_id: 't1', member_id: 'm1', access: 'editor', scopes: [], added_at: ISO }
+    : [{ team_id: 't1', member_id: 'm1', access: 'viewer', scopes: [], added_at: ISO, org_members: { user_id: 'u1', profiles: { name: 'Dana' } } }]))
+  const s = createSupabaseStore({ client })
+  const [m] = await s.listTeamMembers('t1')
+  assert.deepEqual([m.memberId, m.access, m.name, 'orgMembers' in m], ['m1', 'viewer', 'Dana', false])
+  await s.addTeamMember({ teamId: 't1', memberId: 'm1', access: 'editor' })
+  assert.deepEqual(calls[1].ops.find(([op]) => op === 'upsert')[2], { onConflict: 'team_id,member_id' })
+})

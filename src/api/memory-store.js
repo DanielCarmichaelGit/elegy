@@ -168,12 +168,6 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return all(members, (m) => m.roleId === id).length > 0 ||
         all(invites, (i) => i.roleId === id && inviteOpen(i)).length > 0
     },
-    // A seam for tests only until the full invites API lands (Task 4's createInvite).
-    async createInvite ({ orgId, email, roleId, tokenHash, invitedBy, expiresAt }) {
-      const i = { id: uuid(), orgId, email, roleId, tokenHash, invitedBy, expiresAt, acceptedAt: null, cancelledAt: null, createdAt: now() }
-      invites.set(i.id, i); return copy(i)
-    },
-
     // Members.
     async memberOf (orgId, userId) { return copy(findMember(orgId, userId)) },
     async memberById (orgId, id) { const m = members.get(id); return m && m.orgId === orgId ? copy(m) : null },
@@ -190,6 +184,82 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (!roleInOrg(roleId, m.orgId)) throw fkViolation('role')
       m.roleId = roleId; return copy(m)
     },
-    async removeMember (id) { dropMember(id) }
+    async removeMember (id) { dropMember(id) },
+
+    // Teams.
+    async listTeams (orgId) { return all(teams, (t) => t.orgId === orgId).sort((a, b) => a.name.localeCompare(b.name)).map(copy) },
+    async teamById (orgId, id) { const t = teams.get(id); return t && t.orgId === orgId ? copy(t) : null },
+    async createTeam ({ orgId, name }) {
+      if (all(teams, (t) => t.orgId === orgId && t.name === name).length) throw duplicate('team')
+      const t = { id: uuid(), orgId, name, createdAt: now() }
+      teams.set(t.id, t); return copy(t)
+    },
+    async renameTeam (id, name) {
+      const t = teams.get(id)
+      if (all(teams, (x) => x.orgId === t.orgId && x.name === name && x.id !== id).length) throw duplicate('team')
+      t.name = name; return copy(t)
+    },
+    async deleteTeam (id) {
+      teams.delete(id)
+      for (const [k, tm] of teamMembers) if (tm.teamId === id) teamMembers.delete(k)
+    },
+    async listTeamMembers (teamId) {
+      return all(teamMembers, (tm) => tm.teamId === teamId).map((tm) => ({ ...copy(tm), name: nameOf(members.get(tm.memberId)?.userId) }))
+    },
+    async teamsOfMember (memberId) {
+      return all(teamMembers, (tm) => tm.memberId === memberId).map((tm) => ({ teamId: tm.teamId, access: tm.access }))
+    },
+    // Mirrors the composite (team_id, org_id) / (member_id, org_id) foreign
+    // keys: a team and the member it holds must be in the same org.
+    async addTeamMember ({ teamId, memberId, access }) {
+      const team = teams.get(teamId)
+      const member = members.get(memberId)
+      if (!team || !member || team.orgId !== member.orgId) throw fkViolation('team or member')
+      const key = `${teamId}:${memberId}`
+      const tm = teamMembers.get(key) || { teamId, memberId, scopes: [], addedAt: now() }
+      tm.access = access
+      teamMembers.set(key, tm); return copy(tm)
+    },
+    async setTeamAccess (teamId, memberId, access) {
+      const tm = teamMembers.get(`${teamId}:${memberId}`)
+      if (!tm) return null
+      tm.access = access; return copy(tm)
+    },
+    async removeTeamMember (teamId, memberId) { return teamMembers.delete(`${teamId}:${memberId}`) },
+
+    // Invites: only the token's hash is kept.
+    async createInvite (i) {
+      const row = { id: uuid(), acceptedAt: null, cancelledAt: null, createdAt: now(), ...i }
+      invites.set(row.id, row); return copy(row)
+    },
+    async inviteByToken (h) { return copy(all(invites, (i) => i.tokenHash === h)[0]) },
+    async inviteById (orgId, id) { const i = invites.get(id); return i && i.orgId === orgId ? copy(i) : null },
+    async listInvites (orgId) { return all(invites, (i) => i.orgId === orgId && !i.acceptedAt && !i.cancelledAt).map(copy) },
+    async updateInvite (id, patch) { const i = invites.get(id); Object.assign(i, patch); return copy(i) },
+    // Check-and-set, so one invite can't be accepted twice (or after it was cancelled).
+    async claimInvite (id) {
+      const i = invites.get(id)
+      if (!i || i.acceptedAt || i.cancelledAt) return false
+      i.acceptedAt = now(); return true
+    },
+
+    // Domain join requests: at most one pending per person per org.
+    async createJoinRequest ({ orgId, userId, email }) {
+      const pending = all(requests, (r) => r.orgId === orgId && r.userId === userId && r.status === 'pending')[0]
+      if (pending) return copy(pending)
+      const r = { id: uuid(), orgId, userId, email, status: 'pending', decidedBy: null, decidedAt: null, createdAt: now() }
+      requests.set(r.id, r); return copy(r)
+    },
+    async joinRequestById (orgId, id) { const r = requests.get(id); return r && r.orgId === orgId ? copy(r) : null },
+    async listJoinRequests (orgId) {
+      return all(requests, (r) => r.orgId === orgId && r.status === 'pending').map((r) => ({ ...copy(r), name: nameOf(r.userId) }))
+    },
+    async joinRequestsForUser (userId) { return all(requests, (r) => r.userId === userId).map(copy) },
+    // Check-and-set: a request is decided once.
+    async decideJoinRequest (id, { status, decidedBy }) {
+      const r = requests.get(id)
+      if (!r || r.status !== 'pending') return false
+      Object.assign(r, { status, decidedBy, decidedAt: now() }); return true
+    }
   }
 }

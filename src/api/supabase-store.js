@@ -11,6 +11,10 @@ const SAFE_AGENT = 'id, owner_id, name, key_prefix, public_key, created_at, last
 const ORG = 'id, name, slug, owner_id, domain, domain_requests, created_at'
 const ROLE = 'id, org_id, name, builtin, grants, created_at'
 const MEMBER = 'id, org_id, user_id, agent_id, role_id, joined_at'
+const TEAM = 'id, org_id, name, created_at'
+const TEAM_MEMBER = 'team_id, member_id, access, scopes, added_at'
+const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, accepted_at, cancelled_at, created_at'
+const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
 
 // One mapper for every table: camelCases the columns and turns every `*At` field
 // (createdAt, updatedAt, lastSeenAt, lastUsedAt, revokedAt, expiresAt, joinedAt,
@@ -136,6 +140,65 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     async setMemberRole (id, roleId) { return rowFrom(await one(db.from('org_members').update({ role_id: roleId }).eq('id', id).select(MEMBER).single())) },
     // Cascades to the member's team memberships.
-    async removeMember (id) { await one(db.from('org_members').delete().eq('id', id)) }
+    async removeMember (id) { await one(db.from('org_members').delete().eq('id', id)) },
+
+    // Teams.
+    async listTeams (orgId) { return (await one(db.from('teams').select(TEAM).eq('org_id', orgId).order('name'))).map(rowFrom) },
+    async teamById (orgId, id) { return rowFrom(await one(db.from('teams').select(TEAM).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async createTeam ({ orgId, name }) { return rowFrom(await one(db.from('teams').insert({ org_id: orgId, name }).select(TEAM).single())) },
+    async renameTeam (id, name) { return rowFrom(await one(db.from('teams').update({ name }).eq('id', id).select(TEAM).single())) },
+    async deleteTeam (id) { await one(db.from('teams').delete().eq('id', id)) },
+    async listTeamMembers (teamId) {
+      const rows = await one(db.from('team_members').select(`${TEAM_MEMBER}, org_members (user_id, profiles (name))`).eq('team_id', teamId).order('added_at'))
+      return rows.map(({ org_members: m, ...r }) => ({ ...rowFrom(r), name: m?.profiles?.name || '' }))
+    },
+    async teamsOfMember (memberId) {
+      return (await one(db.from('team_members').select('team_id, access').eq('member_id', memberId))).map((r) => ({ teamId: r.team_id, access: r.access }))
+    },
+    async addTeamMember ({ teamId, memberId, access }) {
+      return rowFrom(await one(db.from('team_members').upsert({ team_id: teamId, member_id: memberId, access }, { onConflict: 'team_id,member_id' }).select(TEAM_MEMBER).single()))
+    },
+    async setTeamAccess (teamId, memberId, access) {
+      return rowFrom(await one(db.from('team_members').update({ access }).eq('team_id', teamId).eq('member_id', memberId).select(TEAM_MEMBER).maybeSingle()))
+    },
+    async removeTeamMember (teamId, memberId) {
+      return (await one(db.from('team_members').delete().eq('team_id', teamId).eq('member_id', memberId).select('team_id'))).length > 0
+    },
+
+    // Invites: only the token's hash is stored.
+    async createInvite (i) {
+      return rowFrom(await one(db.from('org_invites').insert(toSnake({ ...i, expiresAt: ts(i.expiresAt) })).select(INVITE).single()))
+    },
+    async inviteByToken (h) { return rowFrom(await one(db.from('org_invites').select(INVITE).eq('token_hash', h).maybeSingle())) },
+    async inviteById (orgId, id) { return rowFrom(await one(db.from('org_invites').select(INVITE).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async listInvites (orgId) {
+      return (await one(db.from('org_invites').select(INVITE).eq('org_id', orgId).is('accepted_at', null).is('cancelled_at', null).order('created_at'))).map(rowFrom)
+    },
+    async updateInvite (id, patch) {
+      return rowFrom(await one(db.from('org_invites').update(toSnake({ ...patch, expiresAt: ts(patch.expiresAt), cancelledAt: ts(patch.cancelledAt) })).eq('id', id).select(INVITE).single()))
+    },
+    // Check-and-set, so one invite can't be accepted twice (or after it was cancelled).
+    async claimInvite (id) {
+      const rows = await one(db.from('org_invites').update({ accepted_at: new Date().toISOString() }).eq('id', id).is('accepted_at', null).is('cancelled_at', null).select('id'))
+      return rows.length > 0
+    },
+
+    // Domain join requests: the partial unique index keeps one pending per person per org.
+    async createJoinRequest ({ orgId, userId, email }) {
+      const pending = await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('user_id', userId).eq('status', 'pending').maybeSingle())
+      if (pending) return rowFrom(pending)
+      return rowFrom(await one(db.from('join_requests').insert({ org_id: orgId, user_id: userId, email }).select(REQUEST).single()))
+    },
+    async joinRequestById (orgId, id) { return rowFrom(await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    async listJoinRequests (orgId) {
+      const rows = await one(db.from('join_requests').select(`${REQUEST}, profiles (name)`).eq('org_id', orgId).eq('status', 'pending').order('created_at'))
+      return rows.map(({ profiles, ...r }) => ({ ...rowFrom(r), name: profiles?.name || '' }))
+    },
+    async joinRequestsForUser (userId) { return (await one(db.from('join_requests').select(REQUEST).eq('user_id', userId))).map(rowFrom) },
+    // Check-and-set: a request is decided once.
+    async decideJoinRequest (id, { status, decidedBy }) {
+      const rows = await one(db.from('join_requests').update({ status, decided_by: decidedBy, decided_at: new Date().toISOString() }).eq('id', id).eq('status', 'pending').select('id'))
+      return rows.length > 0
+    }
   }
 }
