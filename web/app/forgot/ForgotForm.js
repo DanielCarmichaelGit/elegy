@@ -13,7 +13,7 @@ export default function ForgotForm () {
     e.preventDefault()
     const email = e.currentTarget.email.value.trim()
     setBusy(true)
-    // Don't reveal whether the email has an account either way — always land on the same notice.
+    // Don't reveal whether the email has an account either way: always land on the same notice.
     if (isValidEmail(email)) {
       await createClient().auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/auth/callback?next=/reset` })
     }

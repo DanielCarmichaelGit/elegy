@@ -3,7 +3,7 @@ import { requireUser } from '@/lib/session.js'
 import { updatePassword } from './actions.js'
 
 export const metadata = { title: 'Set a new password' }
-const ERRORS = { password: 'Password must be 8–72 characters.', match: 'Passwords don’t match.', same_password: 'That’s your current password. Pick a new one.', weak_password: 'Choose a stronger password — longer, or mix in numbers and symbols.', generic: 'Something went wrong. Try again.' }
+const ERRORS = { password: 'Password must be 8–72 characters.', match: 'Passwords don’t match.', same_password: 'That’s your current password. Pick a new one.', weak_password: 'Choose a stronger password: longer, or mix in numbers and symbols.', generic: 'Something went wrong. Try again.' }
 
 export default async function Reset ({ searchParams }) {
   const q = await searchParams

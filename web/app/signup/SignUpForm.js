@@ -10,7 +10,7 @@ const ERRORS = {
   name: 'Enter your name.',
   email: 'That email doesn’t look right.',
   password: 'Password must be 8–72 characters.',
-  weak_password: 'Choose a stronger password — longer, or mix in numbers and symbols.',
+  weak_password: 'Choose a stronger password: longer, or mix in numbers and symbols.',
   taken: 'That email already has an account. Sign in instead.',
   generic: 'Something went wrong. Try again.'
 }
@@ -37,7 +37,7 @@ export default function SignUpForm ({ next }) {
     })
     setBusy(false)
     if (err) { setError(err.code === 'user_already_exists' ? 'taken' : err.code === 'weak_password' ? 'weak_password' : 'generic'); return }
-    // Supabase doesn't return a clean "already registered" error — a repeat signup
+    // Supabase doesn't return a clean "already registered" error: a repeat signup
     // comes back as a user with no identities instead.
     if (data.user && (data.user.identities || []).length === 0) { setError('taken'); return }
     if (data.session) { window.location.assign(safeNext(next)); return }

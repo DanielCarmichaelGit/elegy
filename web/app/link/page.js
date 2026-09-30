@@ -12,7 +12,7 @@ export default async function LinkPage ({ searchParams }) {
   const code = String(q.code || '')
   const user = await requireUser(`/link?code=${encodeURIComponent(code)}`)
   let body
-  if (q.done === 'approved') body = <><h2>Computer linked</h2><p className='muted'>You can go back to the Quilt app — it's signed in now.</p></>
+  if (q.done === 'approved') body = <><h2>Computer linked</h2><p className='muted'>You can go back to the Quilt app, it's signed in now.</p></>
   else if (q.done === 'denied') body = <><h2>Not linked</h2><p className='muted'>That computer won't be signed in.</p></>
   else {
     const r = code ? await apiCall(user, 'GET', `/v1/device/link/${encodeURIComponent(code)}`) : { ok: false, status: 404 }
