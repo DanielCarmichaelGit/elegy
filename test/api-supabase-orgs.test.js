@@ -183,3 +183,29 @@ test('supabase createInvite and createJoinRequest lowercase the stored email', a
   await createSupabaseStore({ client: c2 }).createJoinRequest({ orgId: 'o1', userId: 'u2', email: 'B@Acme.com' })
   assert.equal(i2[1].ops.find(([op]) => op === 'insert')[1].email, 'b@acme.com')
 })
+
+test('supabase createJoinRequest is race-safe: a 23505 on insert means someone else already won, so it re-selects their row', async () => {
+  const existing = { id: 'j1', org_id: 'o1', user_id: 'u2', email: 'eli@acme.com', status: 'pending', decided_by: null, decided_at: null, created_at: ISO }
+  let selects = 0
+  const chain = (q) => new Proxy({}, {
+    get (_, op) {
+      if (op === 'then') {
+        if (q.ops.some(([o]) => o === 'insert')) {
+          const error = { code: '23505', message: 'duplicate key value violates unique constraint "join_requests_one_pending"' }
+          return (res, rej) => Promise.resolve({ data: null, error }).then(res, rej)
+        }
+        // Both the fast-path select (before the insert) and the re-select
+        // (after losing the race) land here; only the second sees the row
+        // the other concurrent caller just inserted.
+        selects += 1
+        return (res, rej) => Promise.resolve({ data: selects === 1 ? null : existing, error: null }).then(res, rej)
+      }
+      return (...args) => { q.ops.push([op, ...args]); return chain(q) }
+    }
+  })
+  const calls = []
+  const client = { from (table) { const q = { table, ops: [] }; calls.push(q); return chain(q) } }
+  const r = await createSupabaseStore({ client }).createJoinRequest({ orgId: 'o1', userId: 'u2', email: 'Eli@Acme.com' })
+  assert.equal(r.id, 'j1')
+  assert.equal(calls.length, 3, 'fast-path select, the losing insert, then the re-select')
+})

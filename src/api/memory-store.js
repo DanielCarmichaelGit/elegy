@@ -7,8 +7,11 @@ const pick = (o, drop) => Object.fromEntries(Object.entries(o).filter(([k]) => !
 const copy = (o) => (o ? structuredClone(o) : null)
 // Postgres's unique-violation code, which the API turns into a 409.
 const duplicate = (what) => Object.assign(new Error(`${what} already exists`), { code: '23505' })
-// Postgres's foreign-key-violation code, mirrored for the checks the schema enforces with NO ACTION.
-const fkViolation = (what) => Object.assign(new Error(`${what} is still referenced`), { code: '23503' })
+// Postgres's foreign-key-violation code, mirrored for the checks the schema
+// enforces with NO ACTION (a delete blocked by a live reference) and for
+// composite-FK checks at insert time (a row that doesn't point at a valid
+// parent) — `verb` lets each call site read correctly for which case it is.
+const fkViolation = (what, verb = 'is still referenced') => Object.assign(new Error(`${what} ${verb}`), { code: '23503' })
 
 export function createMemoryStore ({ now = Date.now } = {}) {
   const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map()
@@ -204,7 +207,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [k, tm] of teamMembers) if (tm.teamId === id) teamMembers.delete(k)
     },
     async listTeamMembers (teamId) {
-      return all(teamMembers, (tm) => tm.teamId === teamId).map((tm) => ({ ...copy(tm), name: nameOf(members.get(tm.memberId)?.userId) }))
+      return all(teamMembers, (tm) => tm.teamId === teamId).sort((a, b) => a.addedAt - b.addedAt)
+        .map((tm) => ({ ...copy(tm), name: nameOf(members.get(tm.memberId)?.userId) }))
     },
     async teamsOfMember (memberId) {
       return all(teamMembers, (tm) => tm.memberId === memberId).map((tm) => ({ teamId: tm.teamId, access: tm.access }))
@@ -214,7 +218,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async addTeamMember ({ teamId, memberId, access }) {
       const team = teams.get(teamId)
       const member = members.get(memberId)
-      if (!team || !member || team.orgId !== member.orgId) throw fkViolation('team or member')
+      if (!team || !member || team.orgId !== member.orgId) throw fkViolation('team or member', 'is not in this org')
       const key = `${teamId}:${memberId}`
       const tm = teamMembers.get(key) || { teamId, memberId, scopes: [], addedAt: now() }
       tm.access = access

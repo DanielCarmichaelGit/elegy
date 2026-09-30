@@ -194,12 +194,21 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return rows.length > 0
     },
 
-    // Domain join requests: the partial unique index keeps one pending per
-    // person per org. join_requests.email must be lowercase (a check constraint).
+    // Domain join requests: the partial unique index (join_requests_one_pending)
+    // keeps one pending per person per org. The fast-path select below is only
+    // that — a fast path — since two concurrent calls can both pass it; the
+    // insert is what's race-safe: if it loses the race, its 23505 means someone
+    // else's row won, so re-select and hand that one back instead of throwing.
+    // join_requests.email must be lowercase (a check constraint).
     async createJoinRequest ({ orgId, userId, email }) {
       const pending = await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('user_id', userId).eq('status', 'pending').maybeSingle())
       if (pending) return rowFrom(pending)
-      return rowFrom(await one(db.from('join_requests').insert({ org_id: orgId, user_id: userId, email: email.toLowerCase() }).select(REQUEST).single()))
+      try {
+        return rowFrom(await one(db.from('join_requests').insert({ org_id: orgId, user_id: userId, email: email.toLowerCase() }).select(REQUEST).single()))
+      } catch (err) {
+        if (err.code !== '23505') throw err
+        return rowFrom(await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('user_id', userId).eq('status', 'pending').maybeSingle()))
+      }
     },
     async joinRequestById (orgId, id) { return rowFrom(await one(db.from('join_requests').select(REQUEST).eq('org_id', orgId).eq('id', id).maybeSingle())) },
     async listJoinRequests (orgId) {
