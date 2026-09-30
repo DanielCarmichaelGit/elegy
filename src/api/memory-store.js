@@ -32,8 +32,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   }
 
   return {
-    addUser (userId, { name = '', email = '', confirmed = true } = {}) {
-      profiles.set(userId, { id: userId, name: name || email.split('@')[0] || 'You', color: null, tool: null })
+    addUser (userId, { name = '', email = '', confirmed = true, kind = 'personal' } = {}) {
+      profiles.set(userId, { id: userId, name: name || email.split('@')[0] || 'You', color: null, tool: null, kind })
       users.set(userId, { email, confirmed })
     },
     async createLink (l) {
@@ -64,6 +64,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async touchDevice (id) { devices.get(id).lastSeenAt = now() },
     async revokeDevice (id) { Object.assign(devices.get(id), { revokedAt: now(), tokenHash: null }) },
     async profile (userId) { const p = profiles.get(userId); return p ? { ...p } : null },
+    // 'personal' or 'org': set once at sign-up, and the only thing POST /v1/orgs checks.
+    async profileKind (userId) { return profiles.get(userId)?.kind || null },
     async updateProfile (userId, patch) {
       const p = profiles.get(userId)
       for (const k of ['name', 'color', 'tool']) if (patch[k] !== undefined) p[k] = patch[k]

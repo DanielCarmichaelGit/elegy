@@ -8,10 +8,9 @@ before(async () => { t = await startTestApi() })
 after(() => t.close())
 
 test('creating an org makes you its owner, with a slug from the name', async () => {
-  const a = await t.call('POST', '/v1/orgs', { name: 'Acme Rockets' }, 'owner')
+  const a = await t.call('POST', '/v1/orgs', { name: 'Acme Rockets', first: true }, 'owner')
   assert.equal(a.status, 200)
   assert.equal(a.body.org.slug, 'acme-rockets')
-  assert.equal((await t.call('POST', '/v1/orgs', { name: 'Acme Rockets' }, 'owner')).body.org.slug, 'acme-rockets-2')
   const list = await t.call('GET', '/v1/orgs', null, 'owner')
   const mine = list.body.orgs.find((o) => o.slug === 'acme-rockets')
   assert.deepEqual([mine.isOwner, mine.role], [true, 'Owner'])
@@ -20,11 +19,28 @@ test('creating an org makes you its owner, with a slug from the name', async () 
   assert.deepEqual(me.body.grants, BUILTIN.owner)
   assert.equal(typeof me.body.memberId, 'string')
   assert.equal((await t.call('GET', '/v1/orgs/ACME-ROCKETS/me', null, 'owner')).status, 200, 'slugs are case-insensitive')
-  assert.equal((await t.call('POST', '/v1/orgs', { name: '   ' }, 'owner')).status, 400)
   assert.equal((await t.call('POST', '/v1/orgs', { name: 'X' })).status, 401)
 })
 
+test('a second org with the same name gets the next slug', async () => {
+  await t.store.addUser('rockets2', { kind: 'org' })
+  const b = await t.call('POST', '/v1/orgs', { name: 'Acme Rockets', first: true }, 'rockets2')
+  assert.equal(b.status, 200)
+  assert.equal(b.body.org.slug, 'acme-rockets-2')
+})
+
+// Orgs are only ever made by signing up as an org, and only your first one:
+// a personal account is refused outright, and an org account needs first: true.
+test('orgs are only made by an org account creating its first org', async () => {
+  const solo = await t.call('POST', '/v1/orgs', { name: 'Solo Nope', first: true }, 'mem')
+  assert.equal(solo.status, 403, 'a personal account, even with first: true')
+  assert.match(solo.body.error, /signing up as an org/)
+  assert.equal((await t.call('POST', '/v1/orgs', { name: 'Owner Nope' }, 'owner')).status, 403, 'an org account without first: true')
+  assert.equal((await t.call('POST', '/v1/orgs', { name: '   ', first: true }, 'owner')).status, 400, 'name is still validated')
+})
+
 test('first:true creates the org only once, even called twice (two tabs, or a double click)', async () => {
+  await t.store.addUser('racer', { kind: 'org' })
   const a = await t.call('POST', '/v1/orgs', { name: 'Race Co', first: true }, 'racer')
   assert.equal(a.status, 200)
   const b = await t.call('POST', '/v1/orgs', { name: 'Race Co Two', first: true }, 'racer')
@@ -36,6 +52,7 @@ test('first:true creates the org only once, even called twice (two tabs, or a do
 })
 
 test('first:true hands back an org you already belong to (e.g. you accepted an invite first)', async () => {
+  await t.store.addUser('already', { kind: 'org' })
   const o = await makeOrg(t, 'Existing Co')
   await t.store.addMember({ orgId: o.org.id, userId: 'already', roleId: o.role('member').id })
   const r = await t.call('POST', '/v1/orgs', { name: 'New Co', first: true }, 'already')
@@ -73,9 +90,9 @@ test('the org domain must be your own confirmed email domain, and never a public
   assert.equal((await put('out', { name: 'Acme Three', domain: 'acme.com' })).status, 200)
   const off = await put('owner', { domain: null })
   assert.deepEqual([off.body.org.domain, off.body.org.domainRequests], [null, false], 'no domain, no requests')
-  const g = (await t.call('POST', '/v1/orgs', { name: 'Gee Co' }, 'gm')).body.org
+  const g = (await t.call('POST', '/v1/orgs', { name: 'Gee Co', first: true }, 'gm')).body.org
   assert.equal((await put('gm', { domain: 'gmail.com' }, g.slug)).status, 400, 'public mail domain')
-  const u = (await t.call('POST', '/v1/orgs', { name: 'Una Co' }, 'unconf')).body.org
+  const u = (await t.call('POST', '/v1/orgs', { name: 'Una Co', first: true }, 'unconf')).body.org
   assert.equal((await put('unconf', { domain: 'acme.com' }, u.slug)).status, 403, 'unconfirmed email')
 })
 
@@ -183,7 +200,7 @@ test('roles: nobody edits a role with checkboxes they do not have', async () => 
 test('an org owner must transfer or delete their orgs before deleting their account', async () => {
   const other = await startTestApi()
   try {
-    await other.call('POST', '/v1/orgs', { name: 'Keep' }, 'owner')
+    await other.call('POST', '/v1/orgs', { name: 'Keep', first: true }, 'owner')
     assert.equal((await other.call('DELETE', '/v1/me/account', null, 'owner')).status, 409)
     assert.equal((await other.call('DELETE', '/v1/me/account', null, 'out')).status, 200)
   } finally { await other.close() }

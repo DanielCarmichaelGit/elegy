@@ -58,9 +58,14 @@ export function orgRoutes ({ store, user }) {
       }
     }],
 
+    // Orgs are only made by signing up as an org, and only ever your first one:
+    // a personal account, or any call without first: true, is refused outright.
     ['POST', /^\/v1\/orgs$/, async (req, body) => {
       const u = await user(req)
-      return { org: orgView(await createOrg(cleanName(body.name, 80, 'give the org a name'), u.userId, body.first === true)) }
+      if (body.first !== true || await store.profileKind(u.userId) !== 'org') {
+        throw new HttpError(403, 'Orgs are created by signing up as an org.')
+      }
+      return { org: orgView(await createOrg(cleanName(body.name, 80, 'give the org a name'), u.userId, true)) }
     }],
 
     ['GET', /^\/v1\/orgs\/([^/]+)\/me$/, async (req, body, [slug]) => {

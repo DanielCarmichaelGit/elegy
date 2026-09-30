@@ -5,10 +5,11 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client.js'
 import { isValidEmail, isValidPassword } from '@/lib/validate.js'
 import { safeNext } from '@/lib/safe-next.js'
-import { signUpData } from '@/lib/signup.js'
+import { orgSignUpData } from '@/lib/signup.js'
 
 const ERRORS = {
   name: 'Enter your name.',
+  org: 'Enter your org’s name (up to 80 characters).',
   email: 'That email doesn’t look right.',
   password: 'Password must be 8–72 characters.',
   weak_password: 'Choose a stronger password: longer, or mix in numbers and symbols.',
@@ -16,7 +17,7 @@ const ERRORS = {
   generic: 'Something went wrong. Try again.'
 }
 
-export default function SignUpForm ({ next }) {
+export default function SignUpOrgForm ({ next }) {
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
@@ -28,6 +29,8 @@ export default function SignUpForm ({ next }) {
     const email = form.email.value.trim()
     const password = form.password.value
     if (!name) { setError('name'); return }
+    const data = orgSignUpData({ name, orgName: form.org.value })
+    if (!data) { setError('org'); return }
     if (!isValidEmail(email)) { setError('email'); return }
     if (!isValidPassword(password)) { setError('password'); return }
     setError(null)
@@ -35,7 +38,7 @@ export default function SignUpForm ({ next }) {
     const { data: res, error: err } = await createClient().auth.signUp({
       email,
       password,
-      options: { data: signUpData({ name }), emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(safeNext(next))}` }
+      options: { data, emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(safeNext(next))}` }
     })
     setBusy(false)
     if (err) { setError(err.code === 'user_already_exists' ? 'taken' : err.code === 'weak_password' ? 'weak_password' : 'generic'); return }
@@ -47,11 +50,15 @@ export default function SignUpForm ({ next }) {
   }
 
   if (sent) {
-    return <p className='notice'>Check your email to confirm your account.</p>
+    return <p className='notice'>Check your email to confirm your account. Your org is created when you first sign in.</p>
   }
 
   return (
     <form onSubmit={onSubmit} className='stack'>
+      <div className='field'>
+        <label htmlFor='org'>Org name</label>
+        <input className='input' id='org' name='org' maxLength={80} required placeholder='e.g. Acme' />
+      </div>
       <div className='field'>
         <label htmlFor='name'>Your name</label>
         <input className='input' id='name' name='name' autoComplete='name' maxLength={60} required />
@@ -64,9 +71,8 @@ export default function SignUpForm ({ next }) {
         <label htmlFor='password'>Password</label>
         <input className='input' id='password' name='password' type='password' autoComplete='new-password' minLength={8} maxLength={72} required />
       </div>
-      <button className='btn primary' disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button>
+      <button className='btn primary' disabled={busy}>{busy ? 'Creating…' : 'Create org account'}</button>
       {error && <p className='notice bad'>{ERRORS[error] || ERRORS.generic}</p>}
-      <p className='muted'>Setting up for a company? <a href={`/signup/org?next=${encodeURIComponent(next)}`}>Create an org account</a></p>
     </form>
   )
 }

@@ -77,6 +77,15 @@ test('profiles, and agents only their owner can list or revoke', async () => {
   assert.equal(await s.agentByKey('kh'), null)
 })
 
+test('profileKind defaults to personal, and only an org account reads back org', async () => {
+  const s = createMemoryStore()
+  s.addUser('u1', { name: 'Dana' })
+  s.addUser('u2', { name: 'Org', kind: 'org' })
+  assert.equal(await s.profileKind('u1'), 'personal')
+  assert.equal(await s.profileKind('u2'), 'org')
+  assert.equal(await s.profileKind('missing'), null)
+})
+
 test('deleting a user removes their profile, computers and agents', async () => {
   const s = createMemoryStore()
   s.addUser('gone', { name: 'Gone' })

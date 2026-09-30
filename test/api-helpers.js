@@ -2,20 +2,24 @@
 // mailer that keeps what it sends, and a cast of people.
 import { startApi } from '../src/api/server.js'
 import { createMemoryStore } from '../src/api/memory-store.js'
+import { BUILTIN } from '../src/api/permissions.js'
+import { uniqueSlug } from '../src/api/slugs.js'
 
 export const SITE = 'https://quilt.test'
 // A bearer "user:<id>" stands in for a website user's JWT.
 const verifyUser = async (t) => (t && t.startsWith('user:') ? { userId: t.slice(5), email: '' } : null)
 
+// "owner", "gm" and "unconf" are org accounts (they call POST /v1/orgs directly
+// in api-orgs.test.js); everyone else is a plain personal account.
 const CAST = [
-  ['owner', 'Olive', 'olive@acme.com'], ['admin', 'Ada', 'ada@acme.com'], ['mem', 'Mo', 'mo@acme.com'],
-  ['lim', 'Lin', 'lin@acme.com'], ['out', 'Otto', 'otto@else.com'], ['gm', 'Gee', 'gee@gmail.com'],
-  ['unconf', 'Una', 'una@acme.com', false]
+  ['owner', 'Olive', 'olive@acme.com', true, 'org'], ['admin', 'Ada', 'ada@acme.com'], ['mem', 'Mo', 'mo@acme.com'],
+  ['lim', 'Lin', 'lin@acme.com'], ['out', 'Otto', 'otto@else.com'], ['gm', 'Gee', 'gee@gmail.com', true, 'org'],
+  ['unconf', 'Una', 'una@acme.com', false, 'org']
 ]
 
 export async function startTestApi (opts = {}) {
   const store = createMemoryStore()
-  for (const [id, name, email, confirmed = true] of CAST) store.addUser(id, { name, email, confirmed })
+  for (const [id, name, email, confirmed = true, kind = 'personal'] of CAST) store.addUser(id, { name, email, confirmed, kind })
   const sent = []
   const mailer = { send: async (m) => { sent.push(m) } }
   const api = await startApi({ store, verifyUser, siteUrl: SITE, agentKeySecret: 'test-secret', startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, mailer, ...opts })
@@ -30,10 +34,13 @@ export async function startTestApi (opts = {}) {
   return { api, store, sent, call, close: () => api.close() }
 }
 
-/** An org owned by "owner", with "admin" as Admin and "mem" as Member. */
+/** An org owned by "owner", with "admin" as Admin and "mem" as Member.
+ * Goes straight through the store rather than POST /v1/orgs: this is test setup
+ * for other endpoints, not a test of the sign-up-only enforcement itself, and it
+ * needs to make a fresh org for "owner" every time it's called, first: true or not. */
 export async function makeOrg (t, name = 'Acme') {
-  const { body } = await t.call('POST', '/v1/orgs', { name }, 'owner')
-  const org = await t.store.orgBySlug(body.org.slug)
+  const slug = await uniqueSlug(name, async (s) => !!await t.store.orgBySlug(s))
+  const org = await t.store.createOrg({ name, slug, ownerId: 'owner', grants: BUILTIN })
   const roles = await t.store.listRoles(org.id)
   const role = (b) => roles.find((r) => r.builtin === b)
   const admin = await t.store.addMember({ orgId: org.id, userId: 'admin', roleId: role('admin').id })

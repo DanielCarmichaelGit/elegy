@@ -57,6 +57,8 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async touchDevice (id) { await one(db.from('devices').update({ last_seen_at: new Date().toISOString() }).eq('id', id)) },
     async revokeDevice (id) { await one(db.from('devices').update({ revoked_at: new Date().toISOString(), token_hash: null }).eq('id', id)) },
     async profile (userId) { return rowFrom(await one(db.from('profiles').select('id, name, color, tool').eq('id', userId).maybeSingle())) },
+    // 'personal' or 'org': set once at sign-up, and the only thing POST /v1/orgs checks.
+    async profileKind (userId) { return (await one(db.from('profiles').select('kind').eq('id', userId).maybeSingle()))?.kind || null },
     async updateProfile (userId, { name, color, tool }) {
       return rowFrom(await one(db.from('profiles').update(toSnake({ name, color, tool })).eq('id', userId).select('id, name, color, tool').single()))
     },
