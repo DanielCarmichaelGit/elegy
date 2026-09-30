@@ -5,7 +5,7 @@ const poppins = Poppins({ subsets: ['latin'], weight: ['400', '500', '600'], var
 
 export const metadata = {
   title: { default: 'Quilt', template: '%s · Quilt' },
-  description: 'Build one project together, live — everyone in their own AI.',
+  description: 'Build one project together, live: everyone in their own AI.',
   icons: { icon: '/favicon.svg' }
 }
 

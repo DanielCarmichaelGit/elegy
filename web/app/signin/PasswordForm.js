@@ -9,7 +9,7 @@ import { safeNext } from '@/lib/safe-next.js'
 
 const ERRORS = {
   email: 'That email doesn’t look right.',
-  email_not_confirmed: 'Confirm your email first — check your inbox.',
+  email_not_confirmed: 'Confirm your email first: check your inbox.',
   generic: 'Wrong email or password.'
 }
 
