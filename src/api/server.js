@@ -5,17 +5,16 @@ import http from 'node:http'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
 import { parsePublicKey, verifyChallenge } from '../identity.js'
 import { newAgentIdentity } from './agent-keys.js'
+import { HttpError, UUID } from './http.js'
+import { orgRoutes } from './routes/orgs.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
 const COLLECT_GRACE_MS = 5 * 60 * 1000
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-class HttpError extends Error { constructor (status, message) { super(message); this.status = status } }
-
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, now = Date.now, log = () => {}, startLimit = 10, trustProxy = false, maxStartKeys = 10_000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, trustProxy = false, maxStartKeys = 10_000 }) {
   const site = String(siteUrl || '').replace(/\/+$/, '')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
@@ -32,18 +31,24 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return d
   }
 
-  // A few link requests per minute per address is plenty for a person. Behind Fly,
+  // A few tries per minute per address is plenty for a person. Behind Fly,
   // Fly-Client-IP is the real peer; X-Forwarded-For isn't used because Fly appends
   // to whatever the client sent, so its first entry is client-controlled.
-  const starts = new Map()
-  function limitStarts (req) {
-    const ip = (trustProxy && String(req.headers['fly-client-ip'] || '').trim()) || req.socket.remoteAddress
-    const recent = (starts.get(ip) || []).filter((t) => now() - t < 60_000)
-    if (recent.length >= startLimit) throw new HttpError(429, 'too many sign-in attempts; try again in a minute')
-    starts.set(ip, [...recent, now()])
-    // Keep the map bounded: forget addresses with nothing in the last minute.
-    if (starts.size > maxStartKeys) for (const [k, ts] of starts) if (ts.every((t) => now() - t >= 60_000)) starts.delete(k)
+  function makeLimiter (limit, message) {
+    const hits = new Map()
+    const check = (req) => {
+      const ip = (trustProxy && String(req.headers['fly-client-ip'] || '').trim()) || req.socket.remoteAddress
+      const recent = (hits.get(ip) || []).filter((t) => now() - t < 60_000)
+      if (recent.length >= limit) throw new HttpError(429, message)
+      hits.set(ip, [...recent, now()])
+      // Keep the map bounded: forget addresses with nothing in the last minute.
+      if (hits.size > maxStartKeys) for (const [k, ts] of hits) if (ts.every((t) => now() - t >= 60_000)) hits.delete(k)
+    }
+    check.size = () => hits.size
+    return check
   }
+  const limitStarts = makeLimiter(startLimit, 'too many sign-in attempts; try again in a minute')
+  const limitInvites = makeLimiter(inviteLimit, 'too many tries; wait a minute and try again')
 
   const COLOR = /^#[0-9a-fA-F]{6}$/
   function cleanProfile (b) {
@@ -138,6 +143,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
     ['DELETE', /^\/v1\/me\/account$/, async (req) => {
       const u = await user(req)
+      // Every org keeps exactly one owner, so an owner hands it on (or deletes it) first.
+      if ((await store.orgsForUser(u.userId)).some((o) => o.ownerId === u.userId)) throw new HttpError(409, 'you own an org; transfer it or delete it first')
       await store.deleteUser(u.userId)
       return { ok: true }
     }],
@@ -164,6 +171,10 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     }]
   ]
 
+  // Org routes live in their own modules and share the caller check and the limiter.
+  const ctx = { store, user, now, site, mailer, log, limit: limitInvites }
+  routes.push(...orgRoutes(ctx))
+
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
     const link = userCode && await store.linkByUserCode(userCode)
@@ -186,6 +197,10 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodePart))
       if (Array.isArray(out)) send(out[0], out[1]); else send(200, out)
     } catch (err) {
+      // A unique index said no (a taken team or role name): the caller can fix that.
+      if (err?.code === '23505') return send(409, { error: 'that name is already taken' })
+      // A foreign-key check said no (something from another org, or still referenced): a conflict, not a crash.
+      if (err?.code === '23503') return send(409, { error: 'that is still in use' })
       // Supabase errors are plain objects, so fall back to their JSON.
       if (!(err instanceof HttpError)) log(`api error: ${err?.stack || err?.message || JSON.stringify(err)}`)
       send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' })
@@ -199,7 +214,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)), startKeys: () => starts.size })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)), startKeys: () => limitStarts.size() })
   }))
 }
 
