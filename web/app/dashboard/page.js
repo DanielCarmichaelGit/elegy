@@ -1,20 +1,27 @@
-import { headers } from 'next/headers'
+import { headers, cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
 import Header from '@/components/Header.js'
 import NewAgent from '@/components/NewAgent.js'
+import SpaceSwitcher from '@/components/SpaceSwitcher.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
+import { myOrgs } from '@/lib/org.js'
+import { SPACE_COOKIE, spaceHome } from '@/lib/space.js'
+import { when } from '@/lib/org-view.js'
 import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
 import { unlinkComputer, revokeAgent } from './actions.js'
 
 export const metadata = { title: 'Dashboard' }
 const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
-// Renders on the server (UTC on Netlify), so pin the zone and label it rather than showing an unlabelled local time
-const when = (t) => (t ? new Date(t).toLocaleString('en', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' }) : 'never')
 
 export default async function Dashboard ({ searchParams }) {
   const q = await searchParams
   const user = await requireUser('/dashboard')
+  const orgs = await myOrgs(user.accessToken)
+  // Come back to the space the person chose last, if they're still in it.
+  const home = spaceHome((await cookies()).get(SPACE_COOKIE)?.value, orgs)
+  if (home !== '/dashboard') redirect(home)
   const supabase = await createClient()
   // Name the columns: secret columns (token_hash) aren't granted to signed-in people.
   const { data: computers } = await supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false })
@@ -29,11 +36,14 @@ export default async function Dashboard ({ searchParams }) {
         <div className='row' style={{ justifyContent: 'space-between' }}>
           <h1 style={{ fontSize: 32 }}>Dashboard</h1>
           <div className='row'>
+            <SpaceSwitcher orgs={orgs} current='personal' />
             <a className='btn ghost' href='/settings'>Settings</a>
             <form action='/auth/signout' method='post'><button className='btn ghost'>Sign out</button></form>
           </div>
         </div>
         {q.password && <p className='notice'>Password updated.</p>}
+        {q.left && <p className='notice'>You left the org.</p>}
+        {q.orgDeleted && <p className='notice'>The org was deleted.</p>}
         <section className='card stack'>
           <div className='row' style={{ justifyContent: 'space-between' }}>
             <h2>Your computers</h2>
@@ -50,10 +60,10 @@ export default async function Dashboard ({ searchParams }) {
         <section className='card stack'>
           <h2>Your agents</h2>
           <p className='muted'>Coming soon: agents will be able to join sessions as their own members, with an agent badge.</p>
-          {!agentsRes.ok && <p className='notice bad'>Couldn’t load your agents right now.</p>}
+          {!agentsRes.ok && <p className='notice bad'>Could not load your agents right now.</p>}
           {agents.map((a) => (
             <div key={a.id} className='row' style={{ justifyContent: 'space-between' }}>
-              <span><b>{a.name}</b> <span className='muted mono'>{a.keyPrefix}…</span> <span className='muted'>· last used {when(a.lastUsedAt)}</span></span>
+              <span><b>{a.name}</b> <span className='muted mono'>{a.keyPrefix}...</span> <span className='muted'>· last used {when(a.lastUsedAt)}</span></span>
               <form action={revokeAgent}><input type='hidden' name='id' value={a.id} /><button className='btn ghost danger'>Revoke</button></form>
             </div>))}
           <NewAgent />

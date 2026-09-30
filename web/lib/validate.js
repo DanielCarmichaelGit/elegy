@@ -8,3 +8,9 @@ export function isValidEmail (email) {
 export function isValidPassword (password) {
   return typeof password === 'string' && password.length >= 8 && password.length <= 72
 }
+
+export function isValidOrgName (name) {
+  if (typeof name !== 'string') return false
+  const n = name.trim()
+  return n.length >= 1 && n.length <= 80
+}

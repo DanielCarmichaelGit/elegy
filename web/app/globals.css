@@ -138,3 +138,12 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
   .cta-band { padding: 40px 12px; }
   .cta-inner { padding: 28px 18px; }
 }
+
+/* Org area */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.space-switcher .input { height: 38px; min-width: 180px; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.tabs a { padding: 8px 12px; color: var(--muted); text-decoration: none; font-weight: 500; }
+.tabs a:hover { color: var(--text); }
+.list-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border); }
+.list-row:first-of-type { border-top: 0; }

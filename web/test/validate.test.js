@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isValidEmail, isValidPassword } from '../lib/validate.js'
+import { isValidEmail, isValidPassword, isValidOrgName } from '../lib/validate.js'
 
 test('isValidEmail accepts plausible emails and rejects the rest', () => {
   assert.equal(isValidEmail('a@b.com'), true)
@@ -19,4 +19,13 @@ test('isValidPassword requires between 8 and 72 characters', () => {
   assert.equal(isValidPassword(undefined), false)
   assert.equal(isValidPassword('a'.repeat(72)), true)
   assert.equal(isValidPassword('a'.repeat(73)), false)
+})
+
+test('isValidOrgName needs 1 to 80 characters', () => {
+  assert.equal(isValidOrgName('Acme'), true)
+  assert.equal(isValidOrgName('  Acme  '), true)
+  assert.equal(isValidOrgName('   '), false)
+  assert.equal(isValidOrgName('a'.repeat(80)), true)
+  assert.equal(isValidOrgName('a'.repeat(81)), false)
+  assert.equal(isValidOrgName(null), false)
 })
