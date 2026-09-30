@@ -1,5 +1,4 @@
 import { headers } from 'next/headers'
-import Link from 'next/link'
 import Header from '@/components/Header.js'
 import Footer from '@/components/Footer.js'
 import Mark from '@/components/Mark.js'
@@ -12,6 +11,23 @@ const STEPS = [
   ['session.png', 'A live Quilt session with both partners editing.', 'Build together', 'Edits sync live, and you see who is changing what.']
 ]
 const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'VS Code', 'Zed']
+const AGENT_STEPS = [
+  ['The agent asks to join', 'It registers itself and shows you a link and a short code, no account needed.'],
+  ['You approve and set what it can do', 'Pick the org, the teams, editor or viewer, and optionally which folders.'],
+  ['It joins as its own member', 'Agent badge, its own edits and chats, and the same claims and roles as people.']
+]
+const AGENT_CAPS = [
+  ['folder', 'Edits only its folders', "It can only touch the folders you allow, nothing else in the project."],
+  ['chat', 'Chats with everyone', 'It shows up in the session feed and talks with people like any member.'],
+  ['clock', 'Keys expire every hour', 'Its access key is short-lived, refreshed automatically while it stays approved.'],
+  ['off', 'Revoke in one click', 'Cut it off at once and every key it holds stops working immediately.']
+]
+const AGENT_CAP_ICONS = {
+  folder: <path d='M3 6.5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' />,
+  chat: <path d='M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z' />,
+  clock: <><circle cx='12' cy='12' r='9' /><path d='M12 7v5l3.5 2' /></>,
+  off: <><path d='M12 3v7' /><path d='M6.5 6.5a8 8 0 1 0 11 0' /></>
+}
 
 // The window-frame chrome around a screenshot, sewn onto a quilt patch band in the hero and the
 // closing band, or plain on the cards and the dark feature band.
@@ -88,12 +104,105 @@ export default async function Home ({ searchParams }) {
           <div className='tools-row'>{TOOLS.map((t) => <span key={t} className='tool-chip'>{t}</span>)}</div>
         </div>
 
-        <div className='wrap'>
-          <section className='card stack agents-card' id='agents'>
-            <h2>Agents will be able to join too</h2>
-            <p className='muted'>Coming soon: create an agent in your dashboard and give it an invite link. It will be able to join sessions as its own member, with an agent badge, reading and editing files, and chatting with everyone.</p>
-            <div><Link className='btn' href='/signin'>Get started</Link></div>
-          </section>
+        <div className='wrap sec' id='agents'>
+          <div className='agents-head'>
+            <div className='row' style={{ justifyContent: 'center', gap: 10 }}>
+              <h2>Bring your AI agents in as teammates</h2>
+              <span className='pill'>Coming soon</span>
+            </div>
+            <p className='sub'>An agent can sign itself up, and join a session as a member in its own right.</p>
+          </div>
+
+          <div className='steps agent-steps'>
+            {AGENT_STEPS.map(([title, text], i) => (
+              <div key={title} className='step agent-step'>
+                <div className='step-t'>
+                  <span className='pill step-n'>{i + 1}</span>
+                  <h3>{title}</h3>
+                  <p className='muted'>{text}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className='agent-visual'>
+            <div className='agent-approve-card' role='img' aria-label='An approval screen for an agent named Larry, showing its code K7QD-2MFX, the Acme org as the destination, editor access to the Web team and viewer access to the Docs team, folder access limited to src and docs, and Approve and Deny buttons.'>
+              <div className='agent-approve-top'>
+                <span className='agent-avatar' style={{ background: 'var(--qm-a)' }}>L</span>
+                <div>
+                  <div className='row' style={{ gap: 6 }}>
+                    <b>Larry</b><span className='agent-badge'>Agent</span>
+                  </div>
+                  <span className='mono muted agent-code'>K7QD-2MFX</span>
+                </div>
+              </div>
+              <dl className='agent-approve-rows'>
+                <div className='agent-approve-row'>
+                  <dt>Where</dt>
+                  <dd>Acme org</dd>
+                </div>
+                <div className='agent-approve-row'>
+                  <dt>Teams</dt>
+                  <dd className='stack' style={{ gap: 6 }}>
+                    <span className='agent-team-row'>Web <span className='agent-select'>Editor</span></span>
+                    <span className='agent-team-row'>Docs <span className='agent-select'>Viewer</span></span>
+                  </dd>
+                </div>
+                <div className='agent-approve-row'>
+                  <dt>Folders</dt>
+                  <dd className='row' style={{ gap: 6 }}>
+                    <span className='tool-chip agent-chip mono'>src/</span>
+                    <span className='tool-chip agent-chip mono'>docs/</span>
+                  </dd>
+                </div>
+              </dl>
+              <div className='row agent-approve-actions' aria-hidden='true'>
+                <span className='btn primary agent-fake-btn'>Approve</span>
+                <span className='btn agent-fake-btn'>Deny</span>
+              </div>
+            </div>
+
+            <div className='agent-session-card' role='img' aria-label='A session member list showing three members: you on Cursor, Sam on Claude Code, and Larry with an agent badge, whose status reads editing src slash pricing dot jsx.'>
+              <div className='qwin-bar'><i /><i /><i /><span>quilt · members</span></div>
+              <ul className='agent-member-list'>
+                <li>
+                  <span className='agent-avatar' style={{ background: 'var(--qm-a)' }}>Y</span>
+                  <div>
+                    <b>You</b>
+                    <span className='muted agent-member-sub'>Cursor</span>
+                  </div>
+                </li>
+                <li>
+                  <span className='agent-avatar' style={{ background: 'var(--qm-c)' }}>S</span>
+                  <div>
+                    <b>Sam</b>
+                    <span className='muted agent-member-sub'>Claude Code</span>
+                  </div>
+                </li>
+                <li>
+                  <span className='agent-avatar' style={{ background: 'var(--qm-b)' }}>L</span>
+                  <div>
+                    <div className='row' style={{ gap: 6 }}>
+                      <b>Larry</b><span className='agent-badge'>Agent</span>
+                    </div>
+                    <span className='muted agent-member-sub'>editing src/pricing.jsx</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div className='agent-caps'>
+            {AGENT_CAPS.map(([icon, title, text]) => (
+              <div key={title} className='agent-cap'>
+                <svg className='agent-cap-ico' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.6' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'>
+                  {AGENT_CAP_ICONS[icon]}
+                </svg>
+                <h3>{title}</h3>
+                <p className='muted'>{text}</p>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className='wrap' id='download'>
