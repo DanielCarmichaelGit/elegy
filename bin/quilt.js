@@ -102,14 +102,16 @@ async function apiCmd () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, memory: { type: 'boolean' } } })
   const { startApi } = await import('../src/api/server.js')
   const env = process.env
-  let store, verifyUser
+  let store, verifyUser, mailer
   if (values.memory) {
     const { createMemoryStore } = await import('../src/api/memory-store.js')
     store = createMemoryStore(); store.addUser('local', { name: 'Local user' })
     verifyUser = async (t) => (t === 'local' ? { userId: 'local', email: '' } : null)
     console.log('in-memory mode: use "Authorization: Bearer local" as the signed-in user')
+    const { createConsoleMailer } = await import('../src/api/mailer.js')
+    mailer = createConsoleMailer(console.log)
   } else {
-    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'AGENT_KEY_SECRET', 'QUILT_SITE_URL']) if (!env[k]) fail(`${k} is not set`)
+    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'AGENT_KEY_SECRET', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM']) if (!env[k]) fail(`${k} is not set`)
     // It encrypts every agent's private key, so it must be a real random key.
     const secret = env.AGENT_KEY_SECRET.trim()
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(secret) || Buffer.from(secret, 'base64').length < 32) {
@@ -119,11 +121,13 @@ async function apiCmd () {
     const { createUserVerifier } = await import('../src/api/auth.js')
     store = createSupabaseStore({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY })
     verifyUser = createUserVerifier({ supabaseUrl: env.SUPABASE_URL })
+    const { createSmtpMailer } = await import('../src/api/mailer.js')
+    mailer = createSmtpMailer({ url: env.SMTP_URL, from: env.SMTP_FROM })
   }
   // In memory anyone may use "Bearer local", so only listen on this machine unless asked.
   const host = values.host || (values.memory ? '127.0.0.1' : '0.0.0.0')
   const api = await startApi({
-    port: Number(values.port || env.PORT || 8787), host, store, verifyUser,
+    port: Number(values.port || env.PORT || 8787), host, store, verifyUser, mailer,
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000', agentKeySecret: env.AGENT_KEY_SECRET || 'dev-only-secret',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
   })

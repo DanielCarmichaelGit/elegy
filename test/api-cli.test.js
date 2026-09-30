@@ -10,7 +10,7 @@ const BIN = new URL('../bin/quilt.js', import.meta.url).pathname
 // Runs `quilt api ...` until it prints `until` (or exits), then stops it.
 function run (args, env = {}, until = /listening/) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-api-cli-'))
-  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(SUPABASE_|AGENT_KEY_SECRET|QUILT_)/.test(k)))
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(SUPABASE_|AGENT_KEY_SECRET|QUILT_|SMTP_)/.test(k)))
   const child = spawn(process.execPath, [BIN, 'api', ...args], { env: { ...clean, HOME: home, ...env } })
   let out = ''
   return new Promise((resolve) => {
@@ -32,7 +32,7 @@ test('quilt api --memory --host still lets you choose the address', async () => 
   assert.match(out, /listening on http:\/\/0\.0\.0\.0:\d+/)
 })
 
-const prodEnv = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', QUILT_SITE_URL: 'https://quilt.test' }
+const prodEnv = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', QUILT_SITE_URL: 'https://quilt.test', SMTP_URL: 'smtp://u:p@127.0.0.1:2525', SMTP_FROM: 'Quilt <invites@quilt.test>' }
 
 test('quilt api refuses a weak AGENT_KEY_SECRET', async () => {
   for (const secret of ['short', Buffer.alloc(16, 1).toString('base64'), 'not base64 at all!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!']) {
@@ -46,4 +46,14 @@ test('quilt api refuses a weak AGENT_KEY_SECRET', async () => {
 test('quilt api accepts a 32-byte base64 AGENT_KEY_SECRET', async () => {
   const { out } = await run(['--port', '0', '--host', '127.0.0.1'], { ...prodEnv, AGENT_KEY_SECRET: Buffer.alloc(32, 7).toString('base64') })
   assert.match(out, /listening on/)
+})
+
+test('quilt api refuses to start without SMTP settings, since invites need email', async () => {
+  for (const k of ['SMTP_URL', 'SMTP_FROM']) {
+    const env = { ...prodEnv, AGENT_KEY_SECRET: Buffer.alloc(32, 7).toString('base64') }
+    delete env[k]
+    const { out, code } = await run(['--port', '0'], env)
+    assert.equal(code, 1, k)
+    assert.match(out, new RegExp(`${k} is not set`))
+  }
 })
