@@ -19,7 +19,7 @@ export default function NewAgent () {
     const s = agentSetup(state.key)
     return (
       <div className='stack notice'>
-        <b>{state.agent.name} is ready. Copy its key now, it won’t be shown again.</b>
+        <b>{state.agent.name} is ready. Copy its key now. It won’t be shown again.</b>
         <code style={{ wordBreak: 'break-all' }}>{state.key}</code>
         <div className='row'>
           <button type='button' className='btn ghost' onClick={copyKey}>{copied ? 'Copied' : 'Copy'}</button>
