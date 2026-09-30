@@ -123,6 +123,7 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .agents-card { margin-bottom: 64px; }
 
 .cta-band { margin-bottom: 64px; border-radius: 18px; position: relative; overflow: hidden; padding: 56px 24px; text-align: center; }
+.cta-band .quilt-patch { position: absolute; inset: 0; }
 .cta-inner { position: relative; background: var(--panel); border-radius: 14px; padding: 40px 32px; max-width: 620px; margin: 0 auto; }
 .cta-inner h2 { font-size: 28px; margin: 0 0 8px; }
 .cta-inner .sub { margin: 0 0 22px; }
@@ -147,3 +148,8 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .tabs a:hover { color: var(--text); }
 .list-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border); }
 .list-row:first-of-type { border-top: 0; }
+
+.choice { border: 0; padding: 0; margin: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.choice legend { font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 6px; padding: 0; }
+.choice label { flex: 1 1 140px; display: flex; gap: 8px; align-items: center; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 8px; cursor: pointer; font-weight: 500; }
+.choice label:has(input:checked) { border-color: var(--accent); background: var(--panel-2); }
