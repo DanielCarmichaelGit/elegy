@@ -29,7 +29,7 @@ test('a second org with the same name gets the next slug', async () => {
   assert.equal(b.body.org.slug, 'acme-rockets-2')
 })
 
-// Orgs are only ever made by signing up as an org, and only your first one:
+// Only an org account can create an org, and only when it isn't in one yet:
 // a personal account is refused outright, and an org account needs first: true.
 test('orgs are only made by an org account creating its first org', async () => {
   const solo = await t.call('POST', '/v1/orgs', { name: 'Solo Nope', first: true }, 'mem')
@@ -37,6 +37,7 @@ test('orgs are only made by an org account creating its first org', async () => 
   assert.match(solo.body.error, /signing up as an org/)
   assert.equal((await t.call('POST', '/v1/orgs', { name: 'Owner Nope' }, 'owner')).status, 403, 'an org account without first: true')
   assert.equal((await t.call('POST', '/v1/orgs', { name: '   ', first: true }, 'owner')).status, 400, 'name is still validated')
+  assert.equal((await t.call('POST', '/v1/orgs', { name: 'Ghost Co', first: true }, 'ghost')).status, 403, 'no profile at all reads as not an org account')
 })
 
 test('first:true creates the org only once, even called twice (two tabs, or a double click)', async () => {

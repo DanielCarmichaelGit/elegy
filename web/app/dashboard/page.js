@@ -26,11 +26,13 @@ export default async function Dashboard ({ searchParams }) {
   const supabase = await createClient()
   // Name the columns: secret columns (token_hash) aren't granted to signed-in people.
   // Independent calls, so they run together rather than one after another.
-  const [{ data: computers }, agentsRes, discover] = await Promise.all([
+  const [{ data: computers }, agentsRes, discover, { data: profile }] = await Promise.all([
     supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false }),
     apiCall(user, 'GET', '/v1/agents'),
     // Orgs on the person's own (confirmed, non-public) email domain that take join requests.
-    apiCall(user, 'GET', '/v1/orgs/discover')
+    apiCall(user, 'GET', '/v1/orgs/discover'),
+    // Only an org account ever gets a FirstOrg card, even if a personal account somehow has stray org_name metadata.
+    supabase.from('profiles').select('kind').eq('id', user.id).maybeSingle()
   ])
   const agents = (agentsRes.data?.agents || []).filter((a) => !a.revokedAt)
   const joinable = discover.data?.orgs || []
@@ -51,7 +53,7 @@ export default async function Dashboard ({ searchParams }) {
         {q.password && <p className='notice'>Password updated.</p>}
         {q.left && <p className='notice'>You left the org.</p>}
         {q.orgDeleted && <p className='notice'>The org was deleted.</p>}
-        {!orgs.length && user.orgName && <FirstOrg name={user.orgName} />}
+        {!orgs.length && user.orgName && profile?.kind === 'org' && <FirstOrg name={user.orgName} />}
         {q.asked && <p className='notice'>Asked. Someone at the org will let you in.</p>}
         {q.error && <p className='notice bad'>{safeMessage(q.error)}</p>}
         {joinable.length > 0 && (

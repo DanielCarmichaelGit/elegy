@@ -32,29 +32,21 @@ export async function revokeAgent (formData) {
   revalidatePath('/dashboard')
 }
 
-// "A team" sign-ups carry their org's name in the account until the org exists.
+// An org sign-up carries its org's name in the account until the org exists.
 // Only for people in no org yet (not, say, someone who accepted an invite first).
 // first: true tells the API to guard this server-side: two tabs (or a double
 // click) that both call this at once still end up with exactly one org.
+// There's no way to dismiss this: org_name only clears once the org is made,
+// so a failed attempt can only be retried, not skipped.
 export async function createFirstOrg () {
   const user = await requireUser('/dashboard')
   if (!user.orgName) return { error: 'There’s no org waiting to be created.' }
   const made = await apiCall(user, 'POST', '/v1/orgs', { name: user.orgName, first: true })
   if (!made.ok) return { error: made.data?.error || 'Couldn’t create your org. Try again.' }
-  await clearOrgName()
-  await rememberSpace(made.data.org.slug)
-  return { slug: made.data.org.slug }
-}
-
-export async function dismissFirstOrg () {
-  await requireUser('/dashboard')
-  await clearOrgName()
-  revalidatePath('/dashboard')
-}
-
-async function clearOrgName () {
   const supabase = await createClient()
   await supabase.auth.updateUser({ data: { org_name: null } })
+  await rememberSpace(made.data.org.slug)
+  return { slug: made.data.org.slug }
 }
 
 // Domain join requests: the API checks the person's confirmed email matches the org's domain.

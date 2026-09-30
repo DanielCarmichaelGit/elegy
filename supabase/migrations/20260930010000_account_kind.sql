@@ -14,8 +14,8 @@ begin
   return new;
 end $$;
 
--- create or replace resets function privileges to their defaults, so re-apply
--- the lock_trigger_functions migration's revoke.
+-- create or replace keeps the function's existing ACL (the lock_trigger_functions
+-- migration's revoke already applies); this re-states it as defence in depth.
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 
 -- Clients still can't write kind (the update grant stays name, color, tool only);

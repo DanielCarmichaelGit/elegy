@@ -83,3 +83,22 @@ test('the migration keys devices on (user_id, public_key) and allows the approvi
   assert.match(devices, /unique \(user_id, public_key\)/)
   assert.match(sql, /status in \('pending', 'approving', 'approved', 'denied', 'consumed'\)/)
 })
+
+test('supabase profileKind reads the kind column, and answers null for no row', async () => {
+  const { client, calls } = fakeClient({ kind: 'org' })
+  const s = createSupabaseStore({ client })
+  assert.equal(await s.profileKind('u1'), 'org')
+  assert.equal(calls[0].table, 'profiles')
+  assert.ok(calls[0].ops.some(([op, col]) => op === 'select' && col === 'kind'))
+  const none = createSupabaseStore({ client: fakeClient(null).client })
+  assert.equal(await none.profileKind('gone'), null)
+})
+
+test('the account_kind migration sets kind from sign-up metadata, and keeps the trigger locked down', () => {
+  const sql = fs.readFileSync(new URL('../supabase/migrations/20260930010000_account_kind.sql', import.meta.url), 'utf8')
+  assert.match(sql, /check \(kind in \('personal', 'org'\)\)/)
+  const fn = sql.match(/create or replace function public\.handle_new_user[\s\S]*?\$\$;/)[0]
+  assert.match(fn, /when new\.raw_user_meta_data ->> 'account' = 'org' then 'org' else 'personal' end/)
+  assert.match(sql, /revoke execute on function public\.handle_new_user\(\) from public, anon, authenticated/)
+  assert.match(sql, /grant select \(kind\) on public\.profiles to authenticated/)
+})

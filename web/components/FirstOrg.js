@@ -1,8 +1,10 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { createFirstOrg, dismissFirstOrg } from '@/app/dashboard/actions.js'
+import { createFirstOrg } from '@/app/dashboard/actions.js'
 
-// Makes the org a "A team" sign-up asked for, once, then opens it.
+// Makes the org an org sign-up asked for, once, then opens it. There's no way
+// to skip this: org_name only clears once the org actually exists, so the
+// only way off this screen is for the org to get made.
 export default function FirstOrg ({ name }) {
   const started = useRef(false)
   const [error, setError] = useState(null)
@@ -30,10 +32,7 @@ export default function FirstOrg ({ name }) {
         ? (
           <>
             <p className='notice bad'>{error}</p>
-            <div className='row'>
-              <button className='btn primary' onClick={run} disabled={busy}>{busy ? 'Trying…' : 'Try again'}</button>
-              <form action={dismissFirstOrg}><button className='btn ghost' disabled={busy}>Not now</button></form>
-            </div>
+            <button className='btn primary' onClick={run} disabled={busy}>{busy ? 'Trying…' : 'Try again'}</button>
           </>)
         : <p className='muted'>Setting up {name}…</p>}
     </section>

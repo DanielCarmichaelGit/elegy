@@ -58,8 +58,8 @@ export function orgRoutes ({ store, user }) {
       }
     }],
 
-    // Orgs are only made by signing up as an org, and only ever your first one:
-    // a personal account, or any call without first: true, is refused outright.
+    // Only an org account can create an org, and only when it isn't in one yet
+    // (first: true, checked again by createOrg itself against a race).
     ['POST', /^\/v1\/orgs$/, async (req, body) => {
       const u = await user(req)
       if (body.first !== true || await store.profileKind(u.userId) !== 'org') {
