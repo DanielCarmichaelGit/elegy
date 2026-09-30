@@ -94,3 +94,78 @@ test('team membership: add, change access and remove; people always see their ow
   assert.equal((await t.call('DELETE', `${base}/${o.mem.id}`, null, 'admin')).status, 404)
   assert.equal((await t.call('POST', `/v1/orgs/${other.slug}/teams/${web.id}/members`, { memberId: other.mem.id, access: 'viewer' }, 'owner')).status, 404, "another org's team")
 })
+
+test('re-adding someone already in the team is refused, even with Create alone', async () => {
+  const o = await makeOrg(t, 'Readd Co')
+  const web = (await t.call('POST', `/v1/orgs/${o.slug}/teams`, { name: 'Web' }, 'admin')).body.team
+  const base = `/v1/orgs/${o.slug}/teams/${web.id}/members`
+  assert.equal((await t.call('POST', base, { memberId: o.mem.id, access: 'viewer' }, 'admin')).status, 200)
+  const again = await t.call('POST', base, { memberId: o.mem.id, access: 'editor' }, 'admin')
+  assert.equal(again.status, 409)
+  // Create alone (no Update) must not be able to restyle access by re-adding.
+  const creator = await t.store.createRole({ orgId: o.org.id, name: 'Adder', grants: { team_members: { c: true } } })
+  await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: creator.id })
+  assert.equal((await t.call('POST', base, { memberId: o.mem.id, access: 'editor' }, 'lim')).status, 409)
+  assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/teams`, null, 'admin')).body.teams.find((x) => x.id === web.id).members[0].access, 'viewer', 'access is unchanged')
+})
+
+test('removing someone who outranks you is refused even with Members: Delete', async () => {
+  const o = await makeOrg(t, 'Guard Co')
+  const guard = await t.store.createRole({ orgId: o.org.id, name: 'Guard', grants: { members: { d: true }, teams: { r: true } } })
+  await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: guard.id })
+  assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/members/${o.admin.id}`, null, 'lim')).status, 403)
+  assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/members/${o.mem.id}`, null, 'lim')).status, 200, "a peer within Guard's grid can still be removed")
+})
+
+test('team membership: Update and Delete each need their own checkbox', async () => {
+  const o = await makeOrg(t, 'Checkbox Co')
+  const web = (await t.call('POST', `/v1/orgs/${o.slug}/teams`, { name: 'Web' }, 'admin')).body.team
+  const base = `/v1/orgs/${o.slug}/teams/${web.id}/members`
+  await t.call('POST', base, { memberId: o.mem.id, access: 'viewer' }, 'admin')
+  assert.equal((await t.call('PUT', `${base}/${o.mem.id}`, { access: 'editor' }, 'mem')).status, 403, 'no Team membership: Update')
+  assert.equal((await t.call('DELETE', `${base}/${o.mem.id}`, null, 'mem')).status, 403, 'no Team membership: Delete')
+})
+
+test('invalid access on PUT team member is a 400', async () => {
+  const o = await makeOrg(t, 'Badaccess Co')
+  const web = (await t.call('POST', `/v1/orgs/${o.slug}/teams`, { name: 'Web' }, 'admin')).body.team
+  const base = `/v1/orgs/${o.slug}/teams/${web.id}/members`
+  await t.call('POST', base, { memberId: o.mem.id, access: 'viewer' }, 'admin')
+  assert.equal((await t.call('PUT', `${base}/${o.mem.id}`, { access: 'owner' }, 'admin')).status, 400)
+})
+
+test('the member list only shows teams to people with Team membership: Read', async () => {
+  const o = await makeOrg(t, 'Teamsview Co')
+  const web = await t.store.createTeam({ orgId: o.org.id, name: 'Web' })
+  await t.store.addTeamMember({ teamId: web.id, memberId: o.mem.id, access: 'editor' })
+  const lead = await t.store.createRole({ orgId: o.org.id, name: 'Lead', grants: { members: { r: true } } })
+  await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: lead.id })
+  const r = await t.call('GET', `/v1/orgs/${o.slug}/members`, null, 'lim')
+  assert.equal(r.status, 200)
+  assert.deepEqual(r.body.members.find((m) => m.userId === 'mem').teams, [])
+})
+
+test('cross-org ids answer 404 on every id-taking member and team route', async () => {
+  const o = await makeOrg(t, 'Cross Co')
+  const other = await makeOrg(t, 'Cross Other Co')
+  const web = (await t.call('POST', `/v1/orgs/${o.slug}/teams`, { name: 'Web' }, 'admin')).body.team
+  const otherTeam = (await t.call('POST', `/v1/orgs/${other.slug}/teams`, { name: 'Other Team' }, 'admin')).body.team
+  await t.call('POST', `/v1/orgs/${o.slug}/teams/${web.id}/members`, { memberId: o.mem.id, access: 'viewer' }, 'admin')
+
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/members/${other.mem.id}`, { roleId: o.role('member').id }, 'admin')).status, 404, "another org's member, PUT")
+  assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/members/${other.mem.id}`, null, 'admin')).status, 404, "another org's member, DELETE")
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/teams/${otherTeam.id}`, { name: 'Renamed' }, 'admin')).status, 404, "another org's team, PUT")
+  assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/teams/${otherTeam.id}`, null, 'admin')).status, 404, "another org's team, DELETE")
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/teams/${otherTeam.id}/members/${o.mem.id}`, { access: 'editor' }, 'admin')).status, 404, "another org's team in the path, PUT")
+  assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/teams/${otherTeam.id}/members/${o.mem.id}`, null, 'admin')).status, 404, "another org's team in the path, DELETE")
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/teams/${web.id}/members/${other.mem.id}`, { access: 'editor' }, 'admin')).status, 404, "another org's member in the path, PUT")
+  assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/teams/${web.id}/members/${other.mem.id}`, null, 'admin')).status, 404, "another org's member in the path, DELETE")
+})
+
+test('PUT /members/:id with no roleId is a 404 and leaves the role unchanged', async () => {
+  const o = await makeOrg(t, 'Noroleid Co')
+  const before = await t.store.memberById(o.org.id, o.mem.id)
+  assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}/members/${o.mem.id}`, {}, 'admin')).status, 404)
+  const after = await t.store.memberById(o.org.id, o.mem.id)
+  assert.equal(after.roleId, before.roleId)
+})

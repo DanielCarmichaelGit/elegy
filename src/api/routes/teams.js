@@ -67,6 +67,9 @@ export function teamRoutes ({ store, user }) {
       const access = accessOf(body.access ?? 'viewer')
       const m = await store.memberById(a.org.id, needId(body.memberId, 'member'))
       if (!m) throw new HttpError(404, 'no such member')
+      // addTeamMember upserts; without this, Create alone could restyle someone's
+      // access by re-adding them, which is Team membership: Update's job.
+      if ((await store.listTeamMembers(team.id)).some((x) => x.memberId === m.id)) throw new HttpError(409, 'That person is already in this team.')
       const tm = await store.addTeamMember({ teamId: team.id, memberId: m.id, access })
       return { member: { memberId: tm.memberId, access: tm.access } }
     }],
