@@ -10,7 +10,7 @@ import { unlinkComputer, revokeAgent } from './actions.js'
 export const metadata = { title: 'Dashboard' }
 const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
 // Renders on the server (UTC on Netlify), so pin the zone and label it rather than showing an unlabelled local time
-const when = (t) => (t ? new Date(t).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC', timeZoneName: 'short' }) : 'never')
+const when = (t) => (t ? new Date(t).toLocaleString('en', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' }) : 'never')
 
 export default async function Dashboard ({ searchParams }) {
   const q = await searchParams
