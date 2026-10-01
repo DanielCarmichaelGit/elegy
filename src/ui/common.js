@@ -167,3 +167,153 @@ export function busyPeople (st, { includeMe = true } = {}) {
 /** Tools someone is using, for badges. */
 export const toolsOf = (p) => [...new Set([p.tool, ...(p.agents || [])].filter((t) => t && t !== 'unknown'))]
 
+// Native <select> menus look out of place, so every select gets a styled button
+// and menu. The real select stays (hidden) in the form, so .value, form data
+// and change events work exactly as before.
+let openMenu = null
+function closeMenu (refocus) {
+  if (!openMenu) return
+  const { menu, btn } = openMenu
+  openMenu = null
+  menu.remove()
+  btn.setAttribute('aria-expanded', 'false')
+  if (refocus) btn.focus()
+}
+
+function syncDropdown (sel, btn) {
+  const o = sel.options[sel.selectedIndex]
+  btn.querySelector('.dd-label').textContent = o ? o.textContent : ''
+  btn.disabled = sel.disabled
+}
+
+function openDropdown (sel, btn) {
+  closeMenu()
+  const menu = document.createElement('div')
+  menu.className = 'dd-menu'
+  menu.setAttribute('role', 'listbox')
+  ;[...sel.options].forEach((o, i) => {
+    const item = document.createElement('div')
+    item.className = 'dd-item' + (i === sel.selectedIndex ? ' on' : '')
+    item.setAttribute('role', 'option')
+    item.setAttribute('aria-selected', String(i === sel.selectedIndex))
+    if (o.disabled) item.setAttribute('aria-disabled', 'true')
+    item.dataset.i = i
+    item.innerHTML = `<span>${esc(o.textContent)}</span>${I.check || ''}`
+    menu.append(item)
+  })
+  document.body.append(menu)
+  const r = btn.getBoundingClientRect()
+  menu.style.minWidth = `${r.width}px`
+  const below = window.innerHeight - r.bottom
+  const h = Math.min(menu.scrollHeight, 280)
+  menu.style.left = `${Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)}px`
+  menu.style.top = below < h + 12 && r.top > below ? `${r.top - h - 4}px` : `${r.bottom + 4}px`
+  btn.setAttribute('aria-expanded', 'true')
+  openMenu = { menu, btn, sel, active: Math.max(0, sel.selectedIndex) }
+  highlight(openMenu.active)
+
+  menu.addEventListener('mousedown', (e) => e.preventDefault())
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('.dd-item')
+    if (item && item.getAttribute('aria-disabled') !== 'true') choose(Number(item.dataset.i))
+  })
+  menu.addEventListener('mousemove', (e) => {
+    const item = e.target.closest('.dd-item')
+    if (item) highlight(Number(item.dataset.i), false)
+  })
+}
+
+function highlight (i, scroll = true) {
+  if (!openMenu) return
+  const items = openMenu.menu.children
+  if (!items.length) return
+  openMenu.active = Math.max(0, Math.min(items.length - 1, i))
+  ;[...items].forEach((x, j) => x.classList.toggle('active', j === openMenu.active))
+  if (!scroll) return
+  // Scroll only the menu: scrollIntoView can scroll the page, which closes the menu.
+  const { menu } = openMenu
+  const it = items[openMenu.active]
+  if (it.offsetTop < menu.scrollTop) menu.scrollTop = it.offsetTop
+  else if (it.offsetTop + it.offsetHeight > menu.scrollTop + menu.clientHeight) menu.scrollTop = it.offsetTop + it.offsetHeight - menu.clientHeight
+}
+
+function choose (i) {
+  const { sel } = openMenu
+  closeMenu(true)
+  if (i === sel.selectedIndex || sel.options[i]?.disabled) return
+  sel.selectedIndex = i
+  sel.dispatchEvent(new Event('input', { bubbles: true }))
+  sel.dispatchEvent(new Event('change', { bubbles: true }))
+}
+
+function enhanceSelect (sel) {
+  if (sel.dataset.dd) return
+  sel.dataset.dd = '1'
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = `dd-btn ${sel.className}`.trim()
+  btn.setAttribute('aria-haspopup', 'listbox')
+  btn.setAttribute('aria-expanded', 'false')
+  const label = sel.getAttribute('aria-label') || (sel.id && document.querySelector(`label[for="${CSS.escape(sel.id)}"]`)?.textContent)
+  if (label) btn.setAttribute('aria-label', label)
+  btn.innerHTML = `<span class="dd-label"></span>${I.chevDown}`
+  sel.classList.add('dd-native')
+  sel.tabIndex = -1
+  sel.setAttribute('aria-hidden', 'true')
+  sel.after(btn)
+  syncDropdown(sel, btn)
+
+  // A <label for> click focuses the hidden select; send it to the button.
+  sel.addEventListener('focus', () => btn.focus())
+  sel.addEventListener('change', () => syncDropdown(sel, btn))
+  new MutationObserver(() => syncDropdown(sel, btn)).observe(sel, { childList: true, subtree: true, attributes: true, characterData: true })
+  btn.addEventListener('click', () => {
+    if (openMenu?.btn === btn) closeMenu()
+    else openDropdown(sel, btn)
+  })
+  btn.addEventListener('keydown', (e) => {
+    const open = openMenu?.btn === btn
+    if (!open && ['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); openDropdown(sel, btn); return }
+    if (!open) return
+    const keys = {
+      ArrowDown: () => highlight(openMenu.active + 1),
+      ArrowUp: () => highlight(openMenu.active - 1),
+      Home: () => highlight(0),
+      End: () => highlight(Infinity),
+      Enter: () => choose(openMenu.active),
+      ' ': () => choose(openMenu.active),
+      Escape: () => { e.stopPropagation(); closeMenu(true) }
+    }
+    if (keys[e.key]) { e.preventDefault(); keys[e.key](); return }
+    if (e.key === 'Tab') { closeMenu(); return }
+    if (e.key.length === 1) {
+      const k = e.key.toLowerCase()
+      const opts = [...sel.options]
+      const n = opts.length
+      for (let j = 1; j <= n; j++) {
+        const idx = (openMenu.active + j) % n
+        if (opts[idx].textContent.trim().toLowerCase().startsWith(k)) { highlight(idx); break }
+      }
+    }
+  })
+}
+
+export function startDropdowns (root = document.body) {
+  root.querySelectorAll('select').forEach(enhanceSelect)
+  new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue
+        if (n.tagName === 'SELECT') enhanceSelect(n)
+        else n.querySelectorAll?.('select').forEach(enhanceSelect)
+      }
+      // Remove a menu whose button left the page (e.g. a re-render).
+      if (openMenu && !openMenu.btn.isConnected) closeMenu()
+    }
+  }).observe(root, { childList: true, subtree: true })
+  document.addEventListener('mousedown', (e) => {
+    if (openMenu && !openMenu.menu.contains(e.target) && !openMenu.btn.contains(e.target)) closeMenu()
+  })
+  window.addEventListener('resize', () => closeMenu())
+  document.addEventListener('scroll', (e) => { if (openMenu && !openMenu.menu.contains(e.target)) closeMenu() }, true)
+}

@@ -1,12 +1,13 @@
 // Quilt app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
-import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall } from './common.js'
+import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall, startDropdowns } from './common.js'
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
 
 // ---------------------------------------------------------------- boot --
 async function boot () {
+  startDropdowns()
   if (!TOKEN) return renderLocked()
   // Shown only if loading takes a moment: the Q pieces itself together while we wait.
   const waiting = setTimeout(() => { if (!state.loaded) $('#app').innerHTML = `<div class="booting">${quiltMark({ word: false, loop: true })}</div>` }, 250)
