@@ -116,5 +116,10 @@ export async function fetchMe ({ token, api = apiUrl(), fetch: fetchImpl = globa
  */
 export async function signOut ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, file = accountFile(), revokeTimeoutMs = 5000 } = {}) {
   clearAccount(file)
-  if (token) await call(fetchImpl, api, 'POST', '/v1/me/signout', {}, token, { signal: AbortSignal.timeout(revokeTimeoutMs) }).catch(() => {})
+  await revokeToken({ token, api, fetch: fetchImpl, timeoutMs: revokeTimeoutMs })
+}
+
+/** Revokes a token on the server, best effort, without touching account.json. */
+export async function revokeToken ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
+  if (token) await call(fetchImpl, api, 'POST', '/v1/me/signout', {}, token, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => {})
 }

@@ -14,7 +14,7 @@ import { getSettings, saveSettings, ranOnLocalRelay } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, accountFromProfile } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile } from './account.js'
 import { personPasses } from './pass-source.js'
 import { loadIdentity } from './identity.js'
 
@@ -137,11 +137,13 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
 
   /** Starts linking this computer; the website approves it, and we collect the token in the background. */
   async function beginLink () {
+    if (readAccount()) throw httpError(409, 'Already signed in.')
     const identity = loadIdentity()
     const mine = { ...await startLink({ identity }), state: 'waiting', error: null }
     link = mine
     waitForLink({ identity, link: mine, stopped: () => link !== mine }).then((r) => {
-      if (link !== mine) return
+      // Approved after it was cancelled or replaced: don't leave that token live on the server.
+      if (link !== mine) return revokeToken({ token: r.token })
       saveAccount({ token: r.token, account: accountFromProfile(r.profile), signedInAt: Date.now() })
       link = null
       passes = null
@@ -178,12 +180,18 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     const me = profile()
     // Every session signs in to the relay as this computer's account.
     const sessionPasses = accountPasses()
+    // Signing out (or in again) replaces `passes`, so a start that outlives the sign-in it began under can tell.
+    const current = () => passes === sessionPasses
+    const outlived = () => readAccount()
+      ? httpError(409, 'Your sign-in changed while this session was starting. Start it again.')
+      : Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
     if (mode === 'github') {
       // Clone first, then start a normal session on the clone.
       const repoName = String(repo || '').split('/').pop()
       dir = path.resolve(expandHome(dir || path.join(me.joinDir, repoName || 'repo')))
       if (runs.has(idFor(dir))) throw httpError(400, 'A session is already running in that folder.')
       await gitops.cloneRepo({ repo, dir, branch, newBranch, base })
+      if (!current()) throw outlived()
       mode = 'create'
     }
     tool = tool || me.tool
@@ -236,15 +244,22 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
         onFatal: async (err) => {
           log(`stopped: ${err.message}`)
           await stop(id)
-          if (err.signedOut) await signedOut('revoked')
+          // Only this sign-in's passes may sign it out: a stale session's 401 is about a token already gone.
+          if (err.signedOut && current()) await signedOut('revoked')
         }
       })
     } catch (err) {
+      if (!current()) throw outlived()
       if (err.signedOut) {
         await signedOut('revoked')
         throw Object.assign(httpError(401, err.message), { signedOut: true })
       }
       throw err
+    }
+    if (!current()) {
+      // Signed out while it was starting: it must not keep running on the old sign-in.
+      await entry.run.stop().catch(() => {})
+      throw outlived()
     }
     runs.set(id, entry)
     const s = entry.run.session

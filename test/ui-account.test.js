@@ -6,6 +6,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import net from 'node:net'
+import http from 'node:http'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ui-account-'))
 process.env.HOME = home
@@ -59,7 +61,7 @@ test('signed out, the app only offers to sign in', async () => {
   }
   assert.match(await (await fetch(`http://127.0.0.1:${ui.port}/app.js`)).text(), /renderSignIn/)
   const screen = await (await fetch(`http://127.0.0.1:${ui.port}/signin.js`)).text()
-  for (const copy of ['Sign in to Quilt', 'New to Quilt? <a', 'Create an account', 'https://heyquilt.com/signup', 'Approve this computer in your browser', 'Cancel', 'Open the page again']) {
+  for (const copy of ['Sign in to Quilt', 'New to Quilt? <a', 'Create an account', 'https://heyquilt.com/signup', 'Approve this computer in your browser', 'Cancel', 'Open the page again', 'That sign-in was stopped. Start over to get a new code.']) {
     assert.ok(screen.includes(copy), copy)
   }
 })
@@ -118,5 +120,116 @@ test('opening the app notices a sign-out that happened while it was closed', asy
     assert.equal(fs.existsSync(accountFile), false)
   } finally {
     await again.close()
+  }
+})
+
+/** A relay address whose connections wait until release(): holds a session start mid-way. */
+async function gatedRelay (port) {
+  let release
+  const released = new Promise((resolve) => { release = resolve })
+  let arrived
+  const connected = new Promise((resolve) => { arrived = resolve })
+  const sockets = new Set()
+  const server = net.createServer((client) => {
+    sockets.add(client)
+    client.pause()
+    arrived()
+    released.then(() => {
+      const up = net.connect(port, '127.0.0.1')
+      sockets.add(up)
+      up.on('error', () => client.destroy())
+      client.on('error', () => up.destroy())
+      client.pipe(up).pipe(client)
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return {
+    url: `ws://127.0.0.1:${server.address().port}`,
+    connected,
+    release,
+    close: () => { for (const s of sockets) s.destroy(); return new Promise((resolve) => server.close(resolve)) }
+  }
+}
+
+/** The accounts API behind a proxy that can hold the next device poll, and reports tokens it hands out. */
+async function gatedApi (target) {
+  let hold = null
+  let gotToken
+  const token = new Promise((resolve) => { gotToken = resolve })
+  const server = http.createServer(async (req, res) => {
+    let body = ''
+    for await (const chunk of req) body += chunk
+    const poll = req.url === '/v1/device/poll'
+    if (poll && hold) { const h = hold; hold = null; h.arrive(); await h.released }
+    const headers = {}
+    for (const h of ['content-type', 'authorization']) if (req.headers[h]) headers[h] = req.headers[h]
+    const r = await fetch(target + req.url, { method: req.method, headers, body: body || undefined })
+    const text = await r.text()
+    if (poll) { try { const j = JSON.parse(text); if (j.token) gotToken(j.token) } catch {} }
+    res.writeHead(r.status, { 'content-type': 'application/json' })
+    res.end(text)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    token,
+    holdNextPoll () {
+      let arrive, release
+      const arrived = new Promise((resolve) => { arrive = resolve })
+      const released = new Promise((resolve) => { release = resolve })
+      hold = { arrive, released }
+      return { arrived, release }
+    },
+    close: () => new Promise((resolve) => server.close(resolve))
+  }
+}
+
+test('a session still starting when you sign out does not survive it, or sign out the next account', async () => {
+  await signIn()
+  const gate = await gatedRelay(relay.port)
+  process.env.QUILT_SERVER = gate.url
+  try {
+    const starting = api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'slow') })
+    await gate.connected
+    assert.deepEqual((await api('POST', '/api/account/signout')).body, { ok: true })
+    gate.release()
+    const s = await starting
+    assert.equal(s.status, 401, JSON.stringify(s.body))
+    assert.equal(s.body.signedOut, true)
+    assert.deepEqual((await api('GET', '/api/account')).body, SIGNED_OUT, 'a sign-out you asked for, not a revocation')
+    // Checked before the gate closes, which would drop its connections by itself.
+    await waitFor(() => [...relay.rooms.values()].every((r) => r.conns.size === 0))
+  } finally {
+    process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
+    await gate.close()
+  }
+  await signIn()
+  assert.deepEqual((await api('GET', '/api/state')).body.sessions, [], 'no run left over from before')
+  assert.equal((await api('GET', '/api/account')).body.signedIn, true)
+})
+
+test('signing in twice is refused, and an approval that lands after cancelling is revoked', async () => {
+  const again = await api('POST', '/api/account/start')
+  assert.equal(again.status, 409)
+  assert.equal(again.body.error, 'Already signed in.')
+  await api('POST', '/api/account/signout')
+
+  const proxy = await gatedApi(accounts.api.url)
+  process.env.QUILT_API_URL = proxy.url
+  try {
+    const hold = proxy.holdNextPoll()
+    const started = await api('POST', '/api/account/start')
+    assert.equal(started.status, 200, JSON.stringify(started.body))
+    await accounts.call('POST', '/v1/device/approve', { userCode: started.body.link.userCode, approve: true }, 'mem')
+    await hold.arrived
+    await api('POST', '/api/account/cancel')
+    hold.release()
+    const token = await proxy.token
+    await waitFor(async () => (await accounts.call('GET', '/v1/me', null, null, { authorization: `Bearer ${token}` })).status === 401)
+    assert.deepEqual((await api('GET', '/api/account')).body, SIGNED_OUT)
+    assert.equal(fs.existsSync(accountFile), false)
+  } finally {
+    process.env.QUILT_API_URL = accounts.api.url
+    await proxy.close()
   }
 })

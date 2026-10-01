@@ -54,7 +54,9 @@ function waiting (link, onSignedIn) {
     let acc
     try { acc = await api('GET', '/api/account') } catch { return }
     if (acc.signedIn) { clearInterval(poller); onSignedIn(); return }
-    const st = acc.link && acc.link.state
+    // No link any more (cancelled elsewhere, or the app restarted): nothing left to wait for.
+    if (!acc.link) return over('That sign-in was stopped. Start over to get a new code.', onSignedIn)
+    const st = acc.link.state
     if (st === 'expired') over('That code expired. Start over to get a new one.', onSignedIn)
     else if (st === 'denied') over('This computer was not approved. Start over to try again.', onSignedIn)
     else if (st === 'failed') over(acc.link.error || 'Signing in did not work. Start over to try again.', onSignedIn)

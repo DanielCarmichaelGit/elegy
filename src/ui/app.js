@@ -46,6 +46,7 @@ async function boot () {
 
 /** Back to the sign-in screen: after Sign out, or when the API turned this computer away. */
 export function signedOutNow (message = '') {
+  sessionUnmount() // stops an open session view's timers and bindings
   state.events?.close()
   state.events = null
   state.loaded = false
