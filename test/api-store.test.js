@@ -61,20 +61,11 @@ test('claimLink only changes status once', async () => {
   assert.equal(await s.claimLink(l.id, 'approved', 'consumed'), false)
 })
 
-test('profiles, and agents only their owner can list or revoke', async () => {
+test('profiles are read and edited', async () => {
   const s = createMemoryStore()
-  s.addUser('u1', { name: 'Dana' }); s.addUser('u2', { name: 'Eli' })
+  s.addUser('u1', { name: 'Dana' })
   assert.equal((await s.profile('u1')).name, 'Dana')
   assert.equal((await s.updateProfile('u1', { color: '#123456', tool: 'Cursor' })).tool, 'Cursor')
-  const a = await s.createAgent({ ownerId: 'u1', name: 'Larry', keyPrefix: 'qa_abcde', keyHash: 'kh', publicKey: 'apk', privateKeyEnc: 'enc' })
-  assert.equal((await s.agentByKey('kh')).id, a.id)
-  const listed = await s.listAgents('u1')
-  assert.equal(listed.length, 1)
-  assert.equal(listed[0].keyHash, undefined)
-  assert.equal(listed[0].privateKeyEnc, undefined)
-  assert.equal(await s.revokeAgent('u2', a.id), false)
-  assert.equal(await s.revokeAgent('u1', a.id), true)
-  assert.equal(await s.agentByKey('kh'), null)
 })
 
 test('profileKind defaults to personal, and only an org account reads back org', async () => {
@@ -91,9 +82,9 @@ test('deleting a user removes their profile, computers and agents', async () => 
   s.addUser('gone', { name: 'Gone' })
   const d = await s.upsertDevice({ userId: 'gone', name: 'Mac', platform: 'darwin', publicKey: 'pk-gone' })
   await s.setDeviceToken(d.id, 'h-gone')
-  await s.createAgent({ ownerId: 'gone', name: 'A', keyPrefix: 'qa_xxxxx', keyHash: 'k-gone', publicKey: 'apk-gone', privateKeyEnc: 'e' })
+  const a = await s.createAgent({ name: 'A', provider: 'Anthropic', type: 'coding agent', ownerUserId: 'gone', invitedBy: 'gone' })
   await s.deleteUser('gone')
   assert.equal(await s.profile('gone'), null)
   assert.equal(await s.deviceByToken('h-gone'), null)
-  assert.equal(await s.agentByKey('k-gone'), null)
+  assert.equal(await s.agentById(a.id), null)
 })

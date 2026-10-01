@@ -8,7 +8,8 @@ const ts = (v) => (v == null ? v : typeof v === 'number' ? new Date(v).toISOStri
 const ms = (v) => (v == null ? v : Date.parse(v))
 // Postgres's foreign-key-violation code, for the same checks memory-store.js mirrors.
 const fkViolation = (what) => Object.assign(new Error(`${what} is still referenced`), { code: '23503' })
-const SAFE_AGENT = 'id, owner_id, name, key_prefix, public_key, created_at, last_used_at, revoked_at'
+// No secrets live on agents any more; the columns are still named, like every other table.
+const AGENT = 'id, name, provider, type, description, public_key, owner_user_id, org_id, invited_by, created_at, last_used_at, revoked_at'
 // Named columns for the org tables, so a select never picks up a secret by accident.
 const ORG = 'id, name, slug, owner_id, domain, domain_requests, created_at'
 const ROLE = 'id, org_id, name, builtin, grants, created_at'
@@ -62,13 +63,29 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async updateProfile (userId, { name, color, tool }) {
       return rowFrom(await one(db.from('profiles').update(toSnake({ name, color, tool })).eq('id', userId).select('id, name, color, tool').single()))
     },
-    async createAgent (a) { return rowFrom(await one(db.from('agents').insert(toSnake(a)).select(SAFE_AGENT).single())) },
-    async agentByKey (h) { return rowFrom(await one(db.from('agents').select().eq('key_hash', h).is('revoked_at', null).maybeSingle())) },
-    async listAgents (ownerId) { return (await one(db.from('agents').select(SAFE_AGENT).eq('owner_id', ownerId).order('created_at'))).map(rowFrom) },
-    async revokeAgent (ownerId, id) {
-      const rows = await one(db.from('agents').update({ revoked_at: new Date().toISOString() }).eq('id', id).eq('owner_id', ownerId).select('id'))
+    async createAgent ({ name, provider, type, description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = null }) {
+      return rowFrom(await one(db.from('agents')
+        .insert({ name, provider, type, description, public_key: publicKey, owner_user_id: ownerUserId, org_id: orgId, invited_by: invitedBy })
+        .select(AGENT).single()))
+    },
+    async agentById (id) { return rowFrom(await one(db.from('agents').select(AGENT).eq('id', id).maybeSingle())) },
+    async agentByPublicKey (publicKey) {
+      if (!publicKey) return null
+      return rowFrom(await one(db.from('agents').select(AGENT).eq('public_key', publicKey).maybeSingle()))
+    },
+    async listPersonalAgents (userId) {
+      return (await one(db.from('agents').select(AGENT).eq('owner_user_id', userId).is('revoked_at', null).order('created_at'))).map(rowFrom)
+    },
+    async touchAgent (id) { await one(db.from('agents').update({ last_used_at: new Date().toISOString() }).eq('id', id)) },
+    // Revoking an agent kills every key it holds at once.
+    async revokeAgent (id) {
+      const at = new Date().toISOString()
+      const rows = await one(db.from('agents').update({ revoked_at: at }).eq('id', id).is('revoked_at', null).select('id'))
+      await one(db.from('agent_keys').update({ revoked_at: at }).eq('agent_id', id).is('revoked_at', null))
       return rows.length > 0
     },
+    // Only for undoing a half-finished join; cascades to its keys and membership.
+    async deleteAgent (id) { await one(db.from('agents').delete().eq('id', id)) },
     // Deleting the auth user cascades through profiles, devices, links and agents.
     async deleteUser (userId) {
       const { error } = await db.auth.admin.deleteUser(userId)
@@ -134,9 +151,10 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     // Members.
     memberOf,
     async memberById (orgId, id) { return rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('id', id).maybeSingle())) },
+    // A member is a person (profiles) or an agent (agents); each row embeds whichever it is.
     async listMembers (orgId) {
-      const rows = await one(db.from('org_members').select(`${MEMBER}, profiles (name)`).eq('org_id', orgId).order('joined_at'))
-      return rows.map(({ profiles, ...r }) => ({ ...rowFrom(r), name: profiles?.name || '' }))
+      const rows = await one(db.from('org_members').select(`${MEMBER}, profiles (name), agents (name, provider, type)`).eq('org_id', orgId).order('joined_at'))
+      return rows.map(({ profiles, agents, ...r }) => ({ ...rowFrom(r), name: profiles?.name || agents?.name || '', provider: agents?.provider ?? null, type: agents?.type ?? null }))
     },
     // Already a member: the upsert does nothing and we return the existing row.
     async addMember ({ orgId, userId, roleId }) {
@@ -148,6 +166,11 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async setMemberRole (id, roleId) { return rowFrom(await one(db.from('org_members').update({ role_id: roleId }).eq('id', id).select(MEMBER).single())) },
     // Cascades to the member's team memberships.
     async removeMember (id) { await one(db.from('org_members').delete().eq('id', id)) },
+    // The composite (agent_id, org_id) foreign key keeps other orgs' and personal agents out.
+    async addAgentMember ({ orgId, agentId, roleId = null }) {
+      return rowFrom(await one(db.from('org_members').insert({ org_id: orgId, agent_id: agentId, role_id: roleId }).select(MEMBER).single()))
+    },
+    async memberByAgent (orgId, agentId) { return rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('agent_id', agentId).maybeSingle())) },
 
     // Teams.
     async listTeams (orgId) { return (await one(db.from('teams').select(TEAM).eq('org_id', orgId).order('name'))).map(rowFrom) },
@@ -156,8 +179,8 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async renameTeam (id, name) { return rowFrom(await one(db.from('teams').update({ name }).eq('id', id).select(TEAM).single())) },
     async deleteTeam (id) { await one(db.from('teams').delete().eq('id', id)) },
     async listTeamMembers (teamId) {
-      const rows = await one(db.from('team_members').select(`${TEAM_MEMBER}, org_members (user_id, profiles (name))`).eq('team_id', teamId).order('added_at'))
-      return rows.map(({ org_members: m, ...r }) => ({ ...rowFrom(r), name: m?.profiles?.name || '' }))
+      const rows = await one(db.from('team_members').select(`${TEAM_MEMBER}, org_members (user_id, agent_id, profiles (name), agents (name))`).eq('team_id', teamId).order('added_at'))
+      return rows.map(({ org_members: m, ...r }) => ({ ...rowFrom(r), name: m?.profiles?.name || m?.agents?.name || '', kind: m?.agent_id ? 'agent' : 'person' }))
     },
     async teamsOfMember (memberId) {
       return (await one(db.from('team_members').select('team_id, access').eq('member_id', memberId))).map((r) => ({ teamId: r.team_id, access: r.access }))

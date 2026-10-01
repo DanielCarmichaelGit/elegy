@@ -14,7 +14,6 @@ if (!JWT) { console.log('set QUILT_TEST_JWT to check approve, profile and agents
 ok((await call('POST', '/v1/device/approve', { userCode: st.b.userCode, approve: true }, JWT)).s === 200, 'approve')
 const tok = (await poll(st.b.deviceCode)).b?.token; ok(tok?.startsWith('qd_'), 'token')
 ok((await call('GET', '/v1/me', null, tok)).b?.profile?.id, 'me')
-const ag = await call('POST', '/v1/agents', { name: 'smoke agent' }, JWT); ok(ag.b?.key?.startsWith('qa_'), 'agent created')
-ok((await call('DELETE', `/v1/agents/${ag.b.agent.id}`, null, JWT)).s === 200, 'agent revoked')
+ok(Array.isArray((await call('GET', '/v1/agents', null, JWT)).b?.agents), 'agents listed')
 ok((await call('POST', '/v1/me/signout', {}, tok)).s === 200, 'signout')
 console.log('all good')

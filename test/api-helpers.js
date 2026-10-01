@@ -22,7 +22,7 @@ export async function startTestApi (opts = {}) {
   for (const [id, name, email, confirmed = true, kind = 'personal'] of CAST) store.addUser(id, { name, email, confirmed, kind })
   const sent = []
   const mailer = { send: async (m) => { sent.push(m) } }
-  const api = await startApi({ store, verifyUser, siteUrl: SITE, agentKeySecret: 'test-secret', startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, mailer, ...opts })
+  const api = await startApi({ store, verifyUser, siteUrl: SITE, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, mailer, ...opts })
   const call = async (method, path, body, userId, headers = {}) => {
     const res = await fetch(api.url + path, {
       method,

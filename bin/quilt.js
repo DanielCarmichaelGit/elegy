@@ -111,12 +111,7 @@ async function apiCmd () {
     const { createConsoleMailer } = await import('../src/api/mailer.js')
     mailer = createConsoleMailer(console.log)
   } else {
-    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'AGENT_KEY_SECRET', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM']) if (!env[k]) fail(`${k} is not set`)
-    // It encrypts every agent's private key, so it must be a real random key.
-    const secret = env.AGENT_KEY_SECRET.trim()
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(secret) || Buffer.from(secret, 'base64').length < 32) {
-      fail('AGENT_KEY_SECRET must be at least 32 random bytes, base64-encoded; make one with: openssl rand -base64 32')
-    }
+    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM']) if (!env[k]) fail(`${k} is not set`)
     const { createSupabaseStore } = await import('../src/api/supabase-store.js')
     const { createUserVerifier } = await import('../src/api/auth.js')
     store = createSupabaseStore({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY })
@@ -128,7 +123,7 @@ async function apiCmd () {
   const host = values.host || (values.memory ? '127.0.0.1' : '0.0.0.0')
   const api = await startApi({
     port: Number(values.port || env.PORT || 8787), host, store, verifyUser, mailer,
-    siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000', agentKeySecret: env.AGENT_KEY_SECRET || 'dev-only-secret',
+    siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
   })
   console.log(`quilt accounts API listening on ${api.url}`)

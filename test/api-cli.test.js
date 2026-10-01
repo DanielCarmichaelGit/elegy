@@ -34,23 +34,14 @@ test('quilt api --memory --host still lets you choose the address', async () => 
 
 const prodEnv = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', QUILT_SITE_URL: 'https://quilt.test', SMTP_URL: 'smtp://u:p@127.0.0.1:2525', SMTP_FROM: 'Quilt <invites@quilt.test>' }
 
-test('quilt api refuses a weak AGENT_KEY_SECRET', async () => {
-  for (const secret of ['short', Buffer.alloc(16, 1).toString('base64'), 'not base64 at all!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!']) {
-    const { out, code } = await run(['--port', '0'], { ...prodEnv, AGENT_KEY_SECRET: secret })
-    assert.equal(code, 1, `exit for ${secret}`)
-    assert.match(out, /AGENT_KEY_SECRET/)
-    assert.match(out, /openssl rand -base64 32/)
-  }
-})
-
-test('quilt api accepts a 32-byte base64 AGENT_KEY_SECRET', async () => {
-  const { out } = await run(['--port', '0', '--host', '127.0.0.1'], { ...prodEnv, AGENT_KEY_SECRET: Buffer.alloc(32, 7).toString('base64') })
+test('quilt api starts without AGENT_KEY_SECRET: agents hold their own keys now', async () => {
+  const { out } = await run(['--port', '0', '--host', '127.0.0.1'], prodEnv)
   assert.match(out, /listening on/)
 })
 
 test('quilt api refuses to start without SMTP settings, since invites need email', async () => {
   for (const k of ['SMTP_URL', 'SMTP_FROM']) {
-    const env = { ...prodEnv, AGENT_KEY_SECRET: Buffer.alloc(32, 7).toString('base64') }
+    const env = { ...prodEnv }
     delete env[k]
     const { out, code } = await run(['--port', '0'], env)
     assert.equal(code, 1, k)

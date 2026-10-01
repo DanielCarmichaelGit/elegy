@@ -3,7 +3,6 @@
 import crypto from 'node:crypto'
 
 const uuid = () => crypto.randomUUID()
-const pick = (o, drop) => Object.fromEntries(Object.entries(o).filter(([k]) => !drop.includes(k)))
 const copy = (o) => (o ? structuredClone(o) : null)
 // Postgres's unique-violation code, which the API turns into a 409.
 const duplicate = (what) => Object.assign(new Error(`${what} already exists`), { code: '23505' })
@@ -17,6 +16,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map()
   const users = new Map(); const orgs = new Map(); const roles = new Map(); const members = new Map()
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
+  const agentInvites = new Map(); const keyRows = new Map()
   const all = (m, keep) => [...m.values()].filter(keep)
   const nameOf = (userId) => profiles.get(userId)?.name || ''
   const findMember = (orgId, userId) => all(members, (m) => m.orgId === orgId && m.userId === userId)[0]
@@ -29,6 +29,16 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const dropMember = (id) => {
     members.delete(id)
     for (const [k, tm] of teamMembers) if (tm.memberId === id) teamMembers.delete(k)
+  }
+  // An org member is a person (named by their profile) or an agent (named when it joined).
+  const memberName = (m) => (m?.agentId ? agents.get(m.agentId)?.name || '' : nameOf(m?.userId))
+  // Deleting an agent takes its keys and membership with it, like the cascades in
+  // Postgres; an invite it used only forgets it (on delete set null).
+  const dropAgent = (id) => {
+    agents.delete(id)
+    for (const [k, key] of keyRows) if (key.agentId === id) keyRows.delete(k)
+    for (const [k, m] of members) if (m.agentId === id) dropMember(k)
+    for (const i of agentInvites.values()) if (i.usedByAgentId === id) i.usedByAgentId = null
   }
 
   return {
@@ -71,21 +81,37 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const k of ['name', 'color', 'tool']) if (patch[k] !== undefined) p[k] = patch[k]
       return { ...p }
     },
-    async createAgent (a) {
-      const row = { id: uuid(), createdAt: now(), lastUsedAt: null, revokedAt: null, ...a }
-      agents.set(row.id, row); return pick(row, ['keyHash', 'privateKeyEnc'])
+    // Agents hold their own keys; at most a public key is kept here. Mirrors
+    // agents_one_home (a person's or an org's, never both) and the unique public_key.
+    async createAgent ({ name, provider, type, description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = null }) {
+      if ((ownerUserId == null) === (orgId == null)) throw Object.assign(new Error('an agent belongs to one person or one org'), { code: '23514' })
+      if (publicKey && all(agents, (a) => a.publicKey === publicKey).length) throw duplicate('agent')
+      const row = { id: uuid(), name, provider, type, description, publicKey, ownerUserId, orgId, invitedBy, createdAt: now(), lastUsedAt: null, revokedAt: null }
+      agents.set(row.id, row); return copy(row)
     },
-    async agentByKey (h) { const a = [...agents.values()].find((x) => x.keyHash === h && !x.revokedAt); return a ? { ...a } : null },
-    async listAgents (ownerId) { return [...agents.values()].filter((a) => a.ownerId === ownerId).map((a) => pick(a, ['keyHash', 'privateKeyEnc'])) },
-    async revokeAgent (ownerId, id) {
+    async agentById (id) { return copy(agents.get(id)) },
+    async agentByPublicKey (publicKey) { return publicKey ? copy(all(agents, (a) => a.publicKey === publicKey)[0]) : null },
+    async listPersonalAgents (userId) {
+      return all(agents, (a) => a.ownerUserId === userId && !a.revokedAt).sort((a, b) => a.createdAt - b.createdAt).map(copy)
+    },
+    async touchAgent (id) { const a = agents.get(id); if (a) a.lastUsedAt = now() },
+    // Revoking an agent kills every key it holds at once.
+    async revokeAgent (id) {
       const a = agents.get(id)
-      if (!a || a.ownerId !== ownerId) return false
-      a.revokedAt = now(); return true
+      if (!a || a.revokedAt) return false
+      a.revokedAt = now()
+      for (const k of keyRows.values()) if (k.agentId === id && !k.revokedAt) k.revokedAt = now()
+      return true
     },
+    // Only for undoing a half-finished join.
+    async deleteAgent (id) { dropAgent(id) },
     async deleteUser (userId) {
       profiles.delete(userId); users.delete(userId)
       for (const [id, d] of devices) if (d.userId === userId) devices.delete(id)
-      for (const [id, a] of agents) if (a.ownerId === userId) agents.delete(id)
+      for (const [id, a] of agents) if (a.ownerUserId === userId) dropAgent(id)
+      for (const a of agents.values()) if (a.invitedBy === userId) a.invitedBy = null
+      for (const [id, i] of agentInvites) if (i.ownerUserId === userId) agentInvites.delete(id)
+      for (const i of agentInvites.values()) if (i.createdBy === userId) i.createdBy = null
       for (const [id, m] of members) if (m.userId === userId) dropMember(id)
       for (const [id, r] of requests) if (r.userId === userId) requests.delete(id)
     },
@@ -130,6 +156,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     async deleteOrg (id) {
       orgs.delete(id)
+      for (const [k, a] of agents) if (a.orgId === id) dropAgent(k)
+      for (const [k, i] of agentInvites) if (i.orgId === id) agentInvites.delete(k)
       for (const [k, m] of members) if (m.orgId === id) dropMember(k)
       for (const [k, t] of teams) if (t.orgId === id) teams.delete(k)
       for (const [k, r] of roles) if (r.orgId === id) roles.delete(k)
@@ -186,7 +214,14 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // Members.
     async memberOf (orgId, userId) { return copy(findMember(orgId, userId)) },
     async memberById (orgId, id) { const m = members.get(id); return m && m.orgId === orgId ? copy(m) : null },
-    async listMembers (orgId) { return all(members, (m) => m.orgId === orgId).map((m) => ({ ...copy(m), name: nameOf(m.userId) })).sort((a, b) => a.joinedAt - b.joinedAt) },
+    async listMembers (orgId) {
+      return all(members, (m) => m.orgId === orgId)
+        .map((m) => {
+          const a = m.agentId ? agents.get(m.agentId) : null
+          return { ...copy(m), name: memberName(m), provider: a?.provider ?? null, type: a?.type ?? null }
+        })
+        .sort((a, b) => a.joinedAt - b.joinedAt)
+    },
     async addMember ({ orgId, userId, roleId }) {
       const existing = findMember(orgId, userId)
       if (existing) return copy(existing)
@@ -200,6 +235,15 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       m.roleId = roleId; return copy(m)
     },
     async removeMember (id) { dropMember(id) },
+    // Mirrors the composite (agent_id, org_id) foreign key: only the org's own agents join it.
+    async addAgentMember ({ orgId, agentId, roleId = null }) {
+      if (agents.get(agentId)?.orgId !== orgId) throw fkViolation('agent', 'is not in this org')
+      if (!roleInOrg(roleId, orgId)) throw fkViolation('role')
+      if (all(members, (m) => m.orgId === orgId && m.agentId === agentId).length) throw duplicate('member')
+      const m = { id: uuid(), orgId, userId: null, agentId, roleId, joinedAt: now() }
+      members.set(m.id, m); return copy(m)
+    },
+    async memberByAgent (orgId, agentId) { return copy(all(members, (m) => m.orgId === orgId && m.agentId === agentId)[0]) },
 
     // Teams.
     async listTeams (orgId) { return all(teams, (t) => t.orgId === orgId).sort((a, b) => a.name.localeCompare(b.name)).map(copy) },
@@ -220,7 +264,10 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     async listTeamMembers (teamId) {
       return all(teamMembers, (tm) => tm.teamId === teamId).sort((a, b) => a.addedAt - b.addedAt)
-        .map((tm) => ({ ...copy(tm), name: nameOf(members.get(tm.memberId)?.userId) }))
+        .map((tm) => {
+          const m = members.get(tm.memberId)
+          return { ...copy(tm), name: memberName(m), kind: m?.agentId ? 'agent' : 'person' }
+        })
     },
     async teamsOfMember (memberId) {
       return all(teamMembers, (tm) => tm.memberId === memberId).map((tm) => ({ teamId: tm.teamId, access: tm.access }))

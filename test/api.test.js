@@ -25,7 +25,7 @@ before(async () => {
   store = createMemoryStore()
   store.addUser('u1', { name: 'Dana' }); store.addUser('u2', { name: 'Eli' })
   // Many tests start links from one address; the limiter has its own tests below.
-  api = await startApi({ store, verifyUser, siteUrl: SITE, agentKeySecret: 'test-secret', startLimit: 1000 })
+  api = await startApi({ store, verifyUser, siteUrl: SITE, startLimit: 1000 })
 })
 after(() => api.close())
 
@@ -58,7 +58,7 @@ test('two polls racing on the same approved link: only one wins a token', async 
   // Wrap the store so linkByDeviceCode awaits a tick, giving both concurrent
   // polls time to read 'approved' before either claims it, like a real DB round-trip.
   const slow = { ...store, linkByDeviceCode: async (h) => { const l = await store.linkByDeviceCode(h); await new Promise((r) => setImmediate(r)); return l } }
-  const raceApi = await startApi({ store: slow, verifyUser, siteUrl: SITE, agentKeySecret: 'test-secret' })
+  const raceApi = await startApi({ store: slow, verifyUser, siteUrl: SITE })
   try {
     const raceCall = async (method, path, body, token) => {
       const res = await fetch(raceApi.url + path, {
@@ -115,19 +115,17 @@ test('the app reads and edits its profile with its device token, and signing out
   assert.equal((await call('GET', '/v1/me', null, token)).status, 401)
 })
 
-test('agents: created by their owner with a key shown once, listed without secrets, revoked', async () => {
-  const made = await call('POST', '/v1/agents', { name: 'Larry' }, 'user:u1')
-  assert.equal(made.status, 200)
-  assert.match(made.body.key, /^qa_/)
-  assert.equal(made.body.agent.name, 'Larry')
-  assert.equal(made.body.agent.keyPrefix, made.body.key.slice(0, 8))
+test('personal agents: listed for their owner, revoked only by them; the website no longer makes agents', async () => {
+  const a = await store.createAgent({ name: 'Larry', provider: 'Anthropic', type: 'coding agent', ownerUserId: 'u1', invitedBy: 'u1' })
   const list = await call('GET', '/v1/agents', null, 'user:u1')
-  assert.equal(list.body.agents.length, 1)
-  assert.equal(JSON.stringify(list.body).includes(made.body.key), false)
-  assert.equal((await call('DELETE', `/v1/agents/${made.body.agent.id}`, null, 'user:u2')).status, 404)
-  assert.equal((await call('DELETE', `/v1/agents/${made.body.agent.id}`, null, 'user:u1')).status, 200)
-  assert.equal((await call('POST', '/v1/agents', { name: '' }, 'user:u1')).status, 400)
-  assert.equal((await call('POST', '/v1/agents', { name: 'x' })).status, 401)
+  assert.deepEqual(list.body.agents.map((x) => [x.id, x.name, x.provider, x.type]), [[a.id, 'Larry', 'Anthropic', 'coding agent']])
+  assert.equal((await call('GET', '/v1/agents', null, 'user:u2')).body.agents.length, 0)
+  assert.equal((await call('DELETE', `/v1/agents/${a.id}`, null, 'user:u2')).status, 404)
+  assert.equal((await call('DELETE', `/v1/agents/${a.id}`, null, 'user:u1')).status, 200)
+  assert.equal((await call('DELETE', `/v1/agents/${a.id}`, null, 'user:u1')).status, 404, 'already revoked')
+  assert.equal((await call('GET', '/v1/agents', null, 'user:u1')).body.agents.length, 0)
+  assert.equal((await call('POST', '/v1/agents', { name: 'x' }, 'user:u1')).status, 404)
+  assert.equal((await call('GET', '/v1/agents')).status, 401)
 })
 
 test('browsers: only the website origin gets CORS headers', async () => {
@@ -138,7 +136,7 @@ test('browsers: only the website origin gets CORS headers', async () => {
 })
 
 test('starting links is rate-limited per address', async () => {
-  const limited = await startApi({ store: createMemoryStore(), verifyUser, siteUrl: SITE, agentKeySecret: 's', startLimit: 2 })
+  const limited = await startApi({ store: createMemoryStore(), verifyUser, siteUrl: SITE, startLimit: 2 })
   try {
     const { publicKey } = generateIdentity()
     const go = () => fetch(limited.url + '/v1/device/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ publicKey, deviceName: 'X' }) })
@@ -150,7 +148,7 @@ test('starting links is rate-limited per address', async () => {
 
 // Starts a second API (e.g. over a wrapped store) and hands the test a caller for it.
 async function withApi (opts, fn) {
-  const other = await startApi({ store, verifyUser, siteUrl: SITE, agentKeySecret: 'test-secret', startLimit: 1000, ...opts })
+  const other = await startApi({ store, verifyUser, siteUrl: SITE, startLimit: 1000, ...opts })
   const via = async (method, path, body, token, headers = {}) => {
     const res = await fetch(other.url + path, {
       method,
@@ -299,7 +297,6 @@ test('odd bodies and paths are 400s, not 500s', async () => {
     assert.equal((await via('POST', '/v1/device/start', '"hello"')).status, 400)
     assert.equal((await via('POST', '/v1/device/start', '[1,2]')).status, 400)
     assert.equal((await via('POST', '/v1/device/poll', '42')).status, 404)
-    assert.equal((await via('POST', '/v1/agents', 'null', 'user:u1')).status, 400)
     assert.equal((await via('GET', '/v1/device/link/%E0%A4%A', undefined, 'user:u1')).status, 400)
   })
 })

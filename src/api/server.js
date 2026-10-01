@@ -4,12 +4,12 @@
 import http from 'node:http'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
 import { parsePublicKey, verifyChallenge } from '../identity.js'
-import { newAgentIdentity } from './agent-keys.js'
-import { HttpError, UUID } from './http.js'
+import { HttpError } from './http.js'
 import { orgRoutes } from './routes/orgs.js'
 import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
 import { inviteRoutes } from './routes/invites.js'
+import { agentRoutes } from './routes/agents.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -17,7 +17,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, agentKeySecret, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, trustProxy = false, maxStartKeys = 10_000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, trustProxy = false, maxStartKeys = 10_000 }) {
   const site = String(siteUrl || '').replace(/\/+$/, '')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
@@ -155,33 +155,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if ((await store.orgsForUser(u.userId)).some((o) => o.ownerId === u.userId)) throw new HttpError(409, 'you own an org; transfer it or delete it first')
       await store.deleteUser(u.userId)
       return { ok: true }
-    }],
-
-    ['POST', /^\/v1\/agents$/, async (req, body) => {
-      const u = await user(req)
-      const name = String(body.name || '').trim().slice(0, 40)
-      if (!name) throw new HttpError(400, 'give the agent a name')
-      const key = newToken('qa_')
-      const agent = await store.createAgent({ ownerId: u.userId, name, keyPrefix: key.slice(0, 8), keyHash: hashToken(key), ...newAgentIdentity(agentKeySecret) })
-      return { agent, key }
-    }],
-
-    ['GET', /^\/v1\/agents$/, async (req) => {
-      const u = await user(req)
-      return { agents: await store.listAgents(u.userId) }
-    }],
-
-    ['DELETE', /^\/v1\/agents\/([^/]+)$/, async (req, body, [id]) => {
-      const u = await user(req)
-      // Agent ids are uuids; anything else can't exist (and Postgres would reject it).
-      if (!UUID.test(id) || !await store.revokeAgent(u.userId, id)) throw new HttpError(404, 'no such agent')
-      return { ok: true }
     }]
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
   const ctx = { store, user, now, site, mailer, log, limit: limitInvites, limitSend: limitInviteSend }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx))
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
