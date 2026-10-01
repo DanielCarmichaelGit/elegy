@@ -292,6 +292,14 @@ function bindTop () {
   document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) close() }, { signal: mounted.signal })
 
   menu.addEventListener('change', async (e) => {
+    if (e.target.matches('[data-share]')) {
+      const on = e.target.checked
+      try {
+        await api('POST', `/api/sessions/${current}/sharing`, { on })
+        toast(on ? 'Sharing your AI chat again' : 'Paused sharing your AI chat')
+      } catch (err) { toast(err.message); e.target.checked = !on }
+      return
+    }
     if (!e.target.matches('[data-summarize]')) return
     const on = e.target.checked
     try {
@@ -484,10 +492,10 @@ function membersHtml (st) {
   if (!acc.controlled) return ''
   const list = (st.members || []).filter((m) => m.role !== 'owner')
   if (!acc.owner) {
-    return list.length || st.members?.length ? `<div class="pm-sep"></div><div class="pm-title">Access</div>
-      ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}` : ''
+    return list.length || st.members?.length ? `<div class="pm-section"><div class="pm-title">Access</div>
+      ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}</div>` : ''
   }
-  return `<div class="pm-sep"></div><div class="pm-title">Who can get in</div>
+  return `<div class="pm-section"><div class="pm-title">Who can get in</div>
     ${list.length ? list.map((m) => `
       <form class="pm-member edit" data-key="${esc(m.key)}">
         <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
@@ -497,9 +505,9 @@ function membersHtml (st) {
         </select>
         ${m.kind === 'agent' ? `<input class="input" name="scopes" value="${esc(scopesText(m.scopes))}" placeholder="All folders" aria-label="Folders ${esc(m.name)} may change" title="Folders this agent may change, separated by commas">` : ''}
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
-      </form>`).join('') : '<div class="empty-note">Only you so far. People you let in show up here.</div>'}
-    <div class="pm-sep"></div>
-    <button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button>`
+      </form>`).join('') : '<div class="pm-empty">Only you so far. People you let in show up here.</div>'}
+    </div>
+    <div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
 }
 
 function renderPeopleMenu () {
@@ -511,12 +519,14 @@ function renderPeopleMenu () {
   if (menu.querySelector('.pm-member.edit') && menu.contains(document.activeElement) && document.activeElement.closest('.pm-member')) return
   const self = personInfo(st.me.name)
   const a = st.me.agent || {}
+  // Your AI chat: two plain switches instead of a button plus a checkbox.
+  const sharing = a.sharing !== false
   const shareLine = a.status === 'unavailable'
-    ? `<div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div>`
-    : a.sharing === false
-      ? `<div class="pm-share"><span>AI chat sharing is paused</span><button class="btn sm" data-sharing="on">Resume</button></div>`
-      : `<div class="pm-share"><span><span class="dot-ok"></span>Sharing your AI chat</span><button class="btn sm ghost" data-sharing="off">Pause</button></div>
-         <label class="pm-share pm-toggle"><span>Summarize it first</span><input type="checkbox" data-summarize ${a.summarized ? 'checked' : ''}></label>`
+    ? `<div class="pm-card"><div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div></div>`
+    : `<div class="pm-card pm-settings">
+        <label class="pm-switch"><span><b>Share my AI chat</b><small>Others see your prompts and your AI's replies.</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''}></label>
+        <label class="pm-switch ${sharing ? '' : 'off'}"><span><b>Summarize it first</b><small>Share short summaries instead of every word.</small></span><input type="checkbox" role="switch" data-summarize ${a.summarized ? 'checked' : ''} ${sharing ? '' : 'disabled'}></label>
+      </div>`
   const row = (p) => {
     const editing = p.editing && p.editing[0] ? `<div class="pm-sub">Editing <code>${esc(p.editing[0].path)}</code></div>` : ''
     return `<div class="pm-row">
@@ -530,12 +540,23 @@ function renderPeopleMenu () {
       ${p.isMe ? '' : `<button class="btn sm ghost" data-dm="${esc(p.name)}">Message</button>`}
     </div>`
   }
+  const others = st.peers.length
+    ? st.peers.map((p) => row(personInfo(p.name))).join('')
+    : '<div class="pm-empty">Nobody else is here yet. Use <b>Invite</b> to bring someone in.</div>'
   menu.innerHTML = `
-    <div class="pm-title">In this session</div>
-    ${row(self)}
-    <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
-    ${shareLine}
-    ${st.peers.length ? `<div class="pm-sep"></div>${st.peers.map((p) => row(personInfo(p.name))).join('')}` : '<div class="pm-sep"></div><div class="empty-note">Nobody else is here yet. Click <b>Invite</b> to bring someone in.</div>'}
+    <div class="pm-head"><span>People</span><span class="pm-count">${st.peers.length + 1} here</span></div>
+    <div class="pm-section">
+      <div class="pm-title">You</div>
+      <div class="pm-card">
+        ${row(self)}
+        <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
+      </div>
+      ${shareLine}
+    </div>
+    <div class="pm-section">
+      <div class="pm-title">Others</div>
+      ${others}
+    </div>
     ${membersHtml(st)}`
   if (typing != null) {
     const el = menu.querySelector('#focus-input')
