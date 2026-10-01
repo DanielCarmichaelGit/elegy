@@ -224,13 +224,17 @@ test('gh: status, repos (with orgs) and branches', async () => {
 })
 
 // ------------------------------------------------------------------- API --
-let ui, base
+let ui, base, relay
 before(async () => {
+  const { startServer } = await import('../src/server.js')
+  relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {} })
+  // The app always uses one relay; QUILT_SERVER points it at this local one.
+  process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
   const { startUi } = await import('../src/ui-server.js')
-  ui = await startUi({ port: 0, relayPort: 0 })
+  ui = await startUi({ port: 0 })
   base = `http://127.0.0.1:${ui.port}`
 })
-after(async () => { await ui.close(); fs.rmSync(root, { recursive: true, force: true }) })
+after(async () => { await ui.close(); await relay.close(); fs.rmSync(root, { recursive: true, force: true }) })
 const api = (method, p, body) => fetch(base + p, {
   method,
   headers: { 'x-quilt-token': ui.token, 'content-type': 'application/json' },
@@ -242,11 +246,11 @@ test('API: start a session from GitHub, then commit and open a PR', async () => 
   assert.equal((await api('GET', '/api/github/repos')).body.repos.length, 2)
   assert.ok((await api('GET', '/api/github/branches?repo=me/app')).body.branches.includes('dev'))
 
-  const bad = await api('POST', '/api/sessions', { mode: 'github', repo: 'me/app', newBranch: 'bad name', hostRelay: true })
+  const bad = await api('POST', '/api/sessions', { mode: 'github', repo: 'me/app', newBranch: 'bad name' })
   assert.equal(bad.status, 400)
   assert.match(bad.body.error, /valid branch name/)
 
-  const s = await api('POST', '/api/sessions', { mode: 'github', repo: 'me/app', newBranch: 'feature/api', hostRelay: true })
+  const s = await api('POST', '/api/sessions', { mode: 'github', repo: 'me/app', newBranch: 'feature/api' })
   assert.equal(s.status, 200, JSON.stringify(s.body))
   assert.equal(s.body.dir, path.join(home, 'quilt', 'app'), 'defaults to the join folder')
   assert.equal(s.body.git, true)
@@ -273,7 +277,7 @@ test('API: start a session from GitHub, then commit and open a PR', async () => 
 test('API: git endpoints refuse folders that are not repos', async () => {
   const dir = path.join(root, 'plain')
   fs.mkdirSync(dir)
-  const s = await api('POST', '/api/sessions', { mode: 'create', dir, hostRelay: true })
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir })
   assert.equal(s.status, 200, JSON.stringify(s.body))
   assert.equal(s.body.git, false)
   for (const [m, p] of [['GET', 'git'], ['POST', 'git/pull'], ['POST', 'git/commit'], ['POST', 'git/pr']]) {

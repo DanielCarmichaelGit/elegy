@@ -50,9 +50,7 @@ export const state = {
   messages: new Map(), // id -> [message]
   recent: [],
   defaults: {},
-  profile: {}, // name, tool, color, joinDir, shareAgent, preferLocal, relayMode, publicUrl, relay
-  relayStatus: null, // { ok, latencyMs, error, at }
-  relay: null,
+  profile: {}, // name, tool, color, joinDir, shareAgent, summarize, preferLocal
   maxFileBytes: 0,
   view: 'home', // 'home' | session id
   pane: 'chat', // mobile pane

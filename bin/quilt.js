@@ -17,11 +17,8 @@ Usage:
   quilt api [--port 8787] [--memory]                   Run the accounts API (needs SUPABASE_URL etc.; --memory for local testing)
   quilt agent join <link> --name <name>               Join Quilt as an agent with an invite link from the website
   quilt agent whoami --name <name>                    Show who a joined agent is
-  quilt relay set <url> [--key <key>]                 Use a hosted relay by default
-  quilt relay [check [url] | clear]                   Show, test, or forget the default relay
-  quilt join [--server <ws(s)://relay>]               Start a new session in this folder
+  quilt join                                          Rejoin this folder's last session, or start a new one
   quilt join <invite-link>                            Join a partner's session in this folder
-  quilt join                                          Rejoin this folder's last session
   quilt setup                                         Connect Claude Code / Cursor / others via MCP
   quilt status                                        Show collaborators, claims, activity, chat
   quilt chat                                          Live chat (messages, DMs, files) in this terminal
@@ -58,7 +55,6 @@ async function main () {
     case 'login': return login()
     case 'logout': return logout()
     case 'whoami': return whoami()
-    case 'relay': return relayCmd()
     case 'join': return join()
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
@@ -98,7 +94,7 @@ async function serve () {
   console.log(`  sign-in: ${c.passPublicKey ? 'a pass from the accounts API is required; new sessions are limited per account' : 'off (set QUILT_PASS_PUBLIC_KEY to require it)'}`)
   if (!c.passPublicKey) console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set QUILT_RELAY_KEY to restrict)'}`)
   console.log(`  limits: ${Math.round(c.maxRoomBytes / 1048576)} MB per session, ${Math.round(c.maxRoomFileBytes / 1048576)} MB of shared files, ${c.maxConnsPerIp} connections per address, idle sessions removed after ${c.roomTtlDays} days`)
-  console.log(`start a session with:  quilt join --server ws://<this-host>:${srv.port}`)
+  console.log(`for development, point Quilt at it with QUILT_SERVER=ws://<this-host>:${srv.port}`)
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('relay', { port: srv.port, dataDir })
   const shutdown = async () => { await srv.close(); process.exit(0) }
@@ -172,7 +168,7 @@ async function join () {
     args: argv,
     allowPositionals: true,
     options: {
-      server: { type: 'string' }, room: { type: 'string' }, secret: { type: 'string' },
+      room: { type: 'string' }, secret: { type: 'string' },
       tool: { type: 'string' }, dir: { type: 'string' }, prefer: { type: 'string' }, agent: { type: 'string' }
     }
   })
@@ -190,21 +186,20 @@ async function join () {
   const dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
+  const { ranOnLocalRelay } = await import('../src/settings.js')
   let conn
   if (positionals[0]) {
     try { conn = decodeInvite(positionals[0]) } catch (err) { fail(err.message) }
-  } else if (values.server || process.env.QUILT_SERVER) {
-    conn = newConn(values.server || process.env.QUILT_SERVER)
-    if (values.room) conn.room = values.room
+  } else if (values.room) {
+    conn = newConn()
+    conn.room = values.room
     if (values.secret || process.env.QUILT_SECRET) conn.secret = values.secret || process.env.QUILT_SECRET
-  } else if (saved.server) {
-    conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}) }
+  } else if (saved.server && !ranOnLocalRelay(saved.server)) {
+    conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
   } else {
-    const { defaultRelay } = await import('../src/settings.js')
-    const d = defaultRelay()
-    if (!d) fail('Give a relay to start a session (quilt join --server wss://…), set a default with `quilt relay set <url>`,\nor pass an invite link to join one. Or run `quilt ui` to do it in your browser.')
-    conn = newConn(d.relay, d.key)
-    console.log(`starting a new session on your default relay ${d.relay}`)
+    if (saved.server) console.log("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Starting a new session.")
+    conn = newConn()
+    console.log('starting a new session')
   }
 
   const stamp = () => new Date().toLocaleTimeString()
@@ -242,42 +237,6 @@ async function join () {
   }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
-}
-
-async function relayCmd () {
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { key: { type: 'string' } } })
-  const { getSettings, saveSettings, normalizeRelay, checkRelay } = await import('../src/settings.js')
-  const [sub, arg] = positionals
-  const show = (h) => `ok · ${h.latencyMs} ms · ${h.requiresKey ? 'starting sessions needs a relay key' : 'open to anyone'}`
-  if (sub === 'set') {
-    if (!arg) fail('usage: quilt relay set <url> [--key <key>]')
-    let url
-    try { url = normalizeRelay(arg) } catch (err) { fail(err.message) }
-    try {
-      const h = await checkRelay(url)
-      console.log(`${url}: ${show(h)}`)
-      if (h.requiresKey && !values.key && getSettings().relay !== url) console.log('note: this relay needs a key to start sessions; add --key <key> (joining others\' sessions works without it)')
-    } catch (err) {
-      console.log(`warning: ${err.message}. Saving it anyway.`)
-    }
-    const prev = getSettings()
-    saveSettings({ relay: url, relayKey: values.key ?? (prev.relay === url ? prev.relayKey : undefined) })
-    return console.log(`default relay set. \`quilt join\` and the app now start sessions on ${url}.`)
-  }
-  if (sub === 'clear') {
-    saveSettings({ relay: undefined, relayKey: undefined })
-    return console.log('default relay cleared')
-  }
-  const s = getSettings()
-  const url = sub === 'check' ? (arg || s.relay) : s.relay
-  if (!sub && !url) return console.log('no default relay. Set one with `quilt relay set wss://your-relay.example.com` (see docs/hosting.md).')
-  if (!url) fail('usage: quilt relay check <url>')
-  try {
-    const h = await checkRelay(url)
-    console.log(`${normalizeRelay(url)}${url === s.relay ? ' (default)' : ''}: ${show(h)}${url === s.relay && s.relayKey ? ' · key saved' : ''}`)
-  } catch (err) {
-    fail(`${url}: ${err.message}`)
-  }
 }
 
 async function ui () {

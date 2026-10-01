@@ -11,7 +11,6 @@ import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
-import { defaultRelay, normalizeRelay, keyFor } from './settings.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
@@ -217,18 +216,14 @@ export async function runMcp () {
   })
 
   server.registerTool('quilt_start_session', {
-    description: 'Start a new live quilt session for a folder, as an AI agent, and get an invite link for others. Uses the user\'s default relay (set with `quilt relay set`) unless you pass one.',
+    description: 'Start a new live quilt session for a folder, as an AI agent, and get an invite link for others.',
     inputSchema: {
-      relay: z.string().optional().describe('Relay address, e.g. wss://relay.example.com'),
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
       agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.')
     }
-  }, async ({ relay, folder, agent }) => {
+  }, async ({ folder, agent }) => {
     try {
-      const d = defaultRelay()
-      const server_ = relay ? normalizeRelay(relay) : d && d.relay
-      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or have them run `quilt relay set <url>`.')
-      const r = await startAs({ conn: newConn(server_, relay ? keyFor(server_) : d.key), folder: folder || '.', agent })
+      const r = await startAs({ conn: newConn(), folder: folder || '.', agent })
       return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite link below with collaborators.`) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }

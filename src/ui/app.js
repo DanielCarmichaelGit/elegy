@@ -16,7 +16,6 @@ async function boot () {
     state.recent = s.recent
     state.defaults = s.defaults
     state.profile = s.profile
-    state.relay = s.relay
     state.maxFileBytes = s.maxFileBytes
     for (const sum of s.sessions) state.sessions.set(sum.id, sum)
     state.loaded = true
@@ -121,7 +120,7 @@ export async function go (view) {
 
 // --------------------------------------------------------------- render --
 export async function shutdown () {
-  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session, the relay, and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
+  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
   try {
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop
@@ -239,7 +238,6 @@ export function openInvite (id) {
   const s = state.sessions.get(id)
   if (!s) return
   const d = decodeInvite(s.invite)
-  const local = d && !d.server.startsWith('wss://')
   const back = document.createElement('div')
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
@@ -250,7 +248,6 @@ export function openInvite (id) {
     ${s.viewInvite ? `<div class="label" style="margin-bottom:6px">View only</div>
     <div class="codebox"><code id="inv-view">${esc(s.viewInvite)}</code><button class="btn icon" data-copy="inv-view" title="Copy" aria-label="Copy view-only link">${I.copy}</button></div>` : ''}
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
-    ${local ? '<p class="hint warn">This is a local-network address. If your partner is somewhere else, run <code>cloudflared tunnel --url http://localhost:4321</code> and start a new session with the tunnel address as the public address (or use a hosted relay).</p>' : ''}
     <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later from the people menu.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`

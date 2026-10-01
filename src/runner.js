@@ -8,7 +8,7 @@ import { Session } from './session.js'
 import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
-import { keyFor } from './settings.js'
+import { relayUrl } from './settings.js'
 import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
@@ -39,11 +39,10 @@ export function decodeInvite (code) {
   return { server: j.s, room: j.r, secret: j.k || '' }
 }
 
-/** A new room: `secret` invites people to edit, `viewSecret` to only watch. */
-export function newConn (server, key = keyFor(server)) {
+/** A new room on Quilt's relay: `secret` invites people to edit, `viewSecret` to only watch. */
+export function newConn (server = relayUrl()) {
   return {
     server,
-    ...(key ? { key } : {}),
     room: `room-${crypto.randomBytes(4).toString('hex')}`,
     secret: crypto.randomBytes(18).toString('base64url'),
     viewSecret: crypto.randomBytes(18).toString('base64url')

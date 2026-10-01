@@ -9,23 +9,17 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent } from './runner.js'
-import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
-import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
+import { getSettings, saveSettings, ranOnLocalRelay } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
-import { quiltHome, migrateDir } from './legacy.js'
-
-// The saved default relay, without its key.
-const savedRelay = () => {
-  const s = getSettings()
-  return s.relay ? { url: s.relay, hasKey: !!s.relayKey } : null
-}
+import { migrateDir } from './legacy.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
+const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
 
-/** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. Never includes the relay key. */
+/** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. */
 function profile () {
   const s = getSettings()
   return {
@@ -35,10 +29,7 @@ function profile () {
     joinDir: s.joinDir || '~/quilt',
     shareAgent: s.shareAgent !== false,
     summarize: !!s.summarize,
-    preferLocal: !!s.preferLocal,
-    relayMode: s.relayMode === 'local' || !s.relay ? 'local' : 'hosted',
-    publicUrl: s.publicUrl || '',
-    relay: savedRelay()
+    preferLocal: !!s.preferLocal
   }
 }
 
@@ -63,16 +54,6 @@ function updateProfile (b) {
   if ('shareAgent' in b) patch.shareAgent = b.shareAgent ? undefined : false
   if ('summarize' in b) patch.summarize = b.summarize ? true : undefined
   if ('preferLocal' in b) patch.preferLocal = b.preferLocal ? true : undefined
-  if ('relayMode' in b) patch.relayMode = b.relayMode === 'local' ? 'local' : undefined
-  if ('publicUrl' in b) patch.publicUrl = String(b.publicUrl || '').trim() || undefined
-  if ('relay' in b) {
-    const prev = getSettings()
-    if (!b.relay) { patch.relay = undefined; patch.relayKey = undefined } else {
-      patch.relay = normalizeRelay(b.relay)
-      if (patch.relay !== prev.relay) patch.relayKey = undefined
-    }
-  }
-  if (b.relayKey) patch.relayKey = String(b.relayKey)
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }
@@ -103,13 +84,14 @@ const STATIC = {
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
 // link, so a dev preview pane can show the app. Any local page could then open it too.
-export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, preview = false } = {}) {
+export async function startUi ({ port = 7420, onShutdown, preview = false } = {}) {
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
   const clients = new Set() // SSE responses
-  let relay = null
 
   const idFor = (dir) => crypto.createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 10)
+  // Recent sessions not open now. Ones that ran on a local relay are marked: they can't reopen.
+  const recentList = () => recentSessions().filter((r) => !runs.has(idFor(r.dir))).map((r) => ({ ...r, unsupported: ranOnLocalRelay(r.server) }))
   const broadcast = (type, data) => {
     const frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
     for (const res of clients) res.write(frame)
@@ -125,7 +107,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
   // clients) fall back to "didn't join it from an invite".
   const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
-  async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault, repo, branch, newBranch, base }) {
+  async function start ({ mode, dir, name, tool, invite, prefer, repo, branch, newBranch, base }) {
     const me = profile()
     if (mode === 'github') {
       // Clone first, then start a normal session on the clone.
@@ -154,30 +136,13 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     } else if (mode === 'rejoin') {
       const saved = readConfig(dir)
       if (!saved) throw new Error('No previous session in that folder.')
-      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}), ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
+      if (ranOnLocalRelay(saved.server)) throw httpError(400, LOCAL_RELAY_GONE)
+      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
       inviteServer = saved.inviteServer
       name = name || saved.name
       tool = tool || saved.tool
-      if (saved.server.startsWith(`ws://127.0.0.1:${relayPort}`)) await ensureRelay()
     } else {
-      // An explicit relay address wins; otherwise use what Settings says.
-      if (hostRelay === undefined) hostRelay = !server && me.relayMode === 'local'
-      if (hostRelay) {
-        publicUrl = publicUrl ?? me.publicUrl
-        await ensureRelay()
-        conn = newConn(`ws://127.0.0.1:${relay.port}`)
-        inviteServer = (publicUrl || '').trim() || `ws://${lanAddress()}:${relay.port}`
-        if (!/^wss?:\/\//.test(inviteServer)) inviteServer = inviteServer.replace(/^http/, 'ws')
-      } else {
-        server = server || me.relay?.url
-        if (!server) throw new Error('Set up a relay in Settings, or host one on this computer.')
-        const url = normalizeRelay(server)
-        conn = newConn(url, relayKey || keyFor(url))
-        if (saveDefault) {
-          const prev = getSettings()
-          saveSettings({ relay: url, relayKey: relayKey || (prev.relay === url ? prev.relayKey : undefined), relayMode: undefined })
-        }
-      }
+      conn = newConn()
     }
 
     const entry = { logs: [], joined: mode === 'join' }
@@ -223,19 +188,6 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     broadcast('stopped', { id })
   }
 
-  async function ensureRelay () {
-    if (relay) return relay
-    try {
-      relay = await startServer({ port: relayPort, dataDir: path.join(quiltHome(), 'relay-data'), log: () => {} })
-    } catch (err) {
-      if (err.code === 'EADDRINUSE') {
-        // Probably an `quilt serve` already running here; use it.
-        relay = { port: relayPort, external: true }
-      } else throw err
-    }
-    return relay
-  }
-
   const get = (id) => {
     const r = runs.get(id)
     if (!r) throw httpError(404, 'That session is not running.')
@@ -264,10 +216,9 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
   const api = {
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
-      recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))),
+      recent: recentList(),
       defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors() },
       profile: profile(),
-      relay: relay ? { port: relay.port, lan: `ws://${lanAddress()}:${relay.port}` } : null,
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
     'POST /api/sessions': (b) => start(b),
@@ -300,12 +251,9 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
       return { on: r.run.session.setSummarize(b.on ? r.run.summarizer() : null) }
     },
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
-    'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))) } },
+    'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentList() } },
     'GET /api/settings': () => profile(),
     'POST /api/settings': (b) => updateProfile(b),
-    'POST /api/relay/check': async (b) => {
-      try { return await checkRelay(b.url) } catch (err) { throw httpError(400, err.message) }
-    },
     'GET /api/github/status': () => gitops.ghStatus(),
     'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
@@ -436,7 +384,6 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     close: async () => {
       for (const id of [...runs.keys()]) await stop(id)
       for (const res of clients) res.end()
-      if (relay && !relay.external) await relay.close()
       await new Promise((r) => server.close(r))
     }
   }
@@ -472,13 +419,6 @@ function detectTool () {
 
 function expandHome (p) {
   return p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p
-}
-
-function lanAddress () {
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) return a.address
-  }
-  return '127.0.0.1'
 }
 
 function httpError (status, message) {

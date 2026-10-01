@@ -6,7 +6,6 @@ import { quiltMark } from './mark.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
-const isHosted = () => state.profile.relayMode === 'hosted' && !!state.profile.relay
 const firstName = () => String(state.profile.name || '').split(/[\s._-]/)[0] || state.profile.name
 
 function greeting () {
@@ -28,13 +27,12 @@ export function renderShell (view) {
   bindSidebar()
   if (view === 'settings') bindSettings()
   else bindHome()
-  paintRelayStatus()
-  refreshRelayStatus()
 }
 
 function sidebarHtml (view) {
   const p = state.profile
   const running = [...state.sessions.values()]
+  const reopenable = state.recent.filter((r) => !r.unsupported)
   return `
   <aside class="side">
     <button class="brand" data-view="home" aria-label="Home">${quiltMark({ sew: 'first' })}</button>
@@ -52,7 +50,7 @@ function sidebarHtml (view) {
         <button class="pop-item" role="menuitem" data-join-session>${I.link}<span>Join with an invite…</span></button>
         ${running.length ? `<div class="pop-sep"></div><div class="pop-label">Open now</div>${running.map((s) => `
         <button class="pop-item" role="menuitem" data-go="${s.id}"><span class="dot" style="background:${s.status.connected ? 'var(--ok)' : 'var(--warn)'}"></span><span class="grow">${esc(basename(s.dir))}</span><span class="hint">${s.status.peers.length + 1} here</span></button>`).join('')}` : ''}
-        ${state.recent.length ? `<div class="pop-sep"></div><div class="pop-label">Recent</div>${state.recent.slice(0, 5).map((r) => `
+        ${reopenable.length ? `<div class="pop-sep"></div><div class="pop-label">Recent</div>${reopenable.slice(0, 5).map((r) => `
         <button class="pop-item" role="menuitem" data-rejoin="${esc(r.dir)}"><span class="dot"></span><span class="grow">${esc(basename(r.dir))}</span><span class="hint">${esc(ago(r.lastUsed))}</span></button>`).join('')}` : ''}
       </div>
     </div>
@@ -63,7 +61,6 @@ function sidebarHtml (view) {
     </nav>
 
     <div class="side-foot">
-      <div class="relay-status" id="relay-status"></div>
       <button class="btn sm ghost side-off" data-shutdown>${I.power}<span>Shut down</span></button>
     </div>
   </aside>`
@@ -71,10 +68,7 @@ function sidebarHtml (view) {
 
 function bindSidebar () {
   document.querySelectorAll('[data-view]').forEach((b) => {
-    b.onclick = () => {
-      go(b.dataset.view)
-      if (b.dataset.anchor) requestAnimationFrame(() => $(`#${b.dataset.anchor}`)?.scrollIntoView({ block: 'start' }))
-    }
+    b.onclick = () => go(b.dataset.view)
   })
   const btn = $('#sessions-btn')
   const menu = $('#sessions-menu')
@@ -115,73 +109,32 @@ function bindSessionActions (root) {
   })
 }
 
-// ---------------------------------------------------------- relay status --
-async function refreshRelayStatus (force = false) {
-  const url = isHosted() ? state.profile.relay.url : null
-  if (!url) { state.relayStatus = null; return paintRelayStatus() }
-  const fresh = state.relayStatus && state.relayStatus.url === url && Date.now() - state.relayStatus.at < 60000
-  if (fresh && !force) return
-  try {
-    const r = await api('POST', '/api/relay/check', { url })
-    state.relayStatus = { url, ok: true, latencyMs: r.latencyMs, at: Date.now() }
-  } catch (err) {
-    state.relayStatus = { url, ok: false, error: err.message, at: Date.now() }
-  }
-  paintRelayStatus()
-}
-
-function paintRelayStatus () {
-  const el = $('#relay-status')
-  if (!el) return
-  const st = state.relayStatus
-  if (!isHosted()) {
-    el.innerHTML = `<span class="dot"></span><span class="rs-main"><b>This computer</b><span>Same network only</span></span>`
-    return
-  }
-  const host = hostOf(state.profile.relay.url)
-  const line = !st ? 'Checking…' : st.ok ? `Online · ${st.latencyMs} ms` : 'Can’t reach it'
-  el.innerHTML = `<span class="dot" style="background:${!st ? 'var(--faint)' : st.ok ? 'var(--ok)' : 'var(--bad)'}"></span>
-    <span class="rs-main"><b>${esc(host)}</b><span>${esc(line)}</span></span>`
-  el.title = st && !st.ok ? st.error : ''
-}
-
 // ------------------------------------------------------------------ home --
 function sessionRows () {
   const running = [...state.sessions.values()].map((s) => ({
     live: true, id: s.id, dir: s.dir, name: s.status.me.name, tool: s.status.me.tool,
     server: s.status.server, peers: s.status.peers.length
   }))
-  const recent = state.recent.map((r) => ({ live: false, dir: r.dir, name: r.name, tool: r.tool, server: r.server, lastUsed: r.lastUsed }))
+  const recent = state.recent.map((r) => ({ live: false, dir: r.dir, name: r.name, tool: r.tool, server: r.server, lastUsed: r.lastUsed, unsupported: !!r.unsupported }))
   return [...running, ...recent]
 }
 
-function relayLabel (server) {
-  if (!server) return ''
-  return /^ws:\/\/(127\.0\.0\.1|localhost)/.test(server) ? 'This computer' : hostOf(server)
-}
+const relayLabel = (server) => server ? hostOf(server) : ''
 
-function relayExplainer () {
-  return isHosted()
-    ? `Everyone connects through your relay, <b>${esc(hostOf(state.profile.relay.url))}</b>. It passes changes between your computers so you can work from anywhere.`
-    : 'Everyone connects straight to this computer, so partners need to be on your network (or use a tunnel).'
-}
-
-function homeHtml () {
-  const rows = sessionRows()
+function sessionRowHtml (r) {
+  if (r.unsupported) {
+    return `
+      <div class="session-row gone">
+        <div class="folder-ico">${I.folder}</div>
+        <div class="meta">
+          <div class="name">${esc(basename(r.dir))}</div>
+          <div class="sub">This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched.</div>
+        </div>
+        <div class="facts"><span>${esc(ago(r.lastUsed))}</span></div>
+        <div class="acts"><button class="btn sm" data-forget="${esc(r.dir)}">Remove from list</button></div>
+      </div>`
+  }
   return `
-  <header class="page-head">
-    <h1>${greeting()}, ${esc(firstName())}</h1>
-    <p>${rows.some((r) => r.live) ? 'Pick up a session, or start something new from the Sessions menu.' : 'Start a session on one of your folders, or join one a partner shared with you.'}</p>
-  </header>
-
-  ${rows.length ? `
-  <section class="sessions">
-    <div class="sec-head"><h2>Your sessions</h2><span class="count">${rows.length}</span>
-      <span class="spacer"></span>
-      <button class="btn sm" data-join-session>${I.link}<span>Join</span></button>
-      <button class="btn sm primary" data-new-session>${I.plus}<span>New session</span></button>
-    </div>
-    <div class="card session-list">${rows.map((r) => `
       <div class="session-row${r.live ? ' live' : ''}">
         <div class="folder-ico${r.live ? ' live' : ''}">${I.folder}</div>
         <div class="meta">
@@ -199,7 +152,25 @@ function homeHtml () {
             : `<button class="btn sm" data-rejoin="${esc(r.dir)}">Rejoin</button>
                <button class="btn sm ghost icon" data-forget="${esc(r.dir)}" title="Remove from this list" aria-label="Remove ${esc(basename(r.dir))} from this list">${I.x}</button>`}
         </div>
-      </div>`).join('')}</div>
+      </div>`
+}
+
+function homeHtml () {
+  const rows = sessionRows()
+  return `
+  <header class="page-head">
+    <h1>${greeting()}, ${esc(firstName())}</h1>
+    <p>${rows.some((r) => r.live) ? 'Pick up a session, or start something new from the Sessions menu.' : 'Start a session on one of your folders, or join one a partner shared with you.'}</p>
+  </header>
+
+  ${rows.length ? `
+  <section class="sessions">
+    <div class="sec-head"><h2>Your sessions</h2><span class="count">${rows.length}</span>
+      <span class="spacer"></span>
+      <button class="btn sm" data-join-session>${I.link}<span>Join</span></button>
+      <button class="btn sm primary" data-new-session>${I.plus}<span>New session</span></button>
+    </div>
+    <div class="card session-list">${rows.map(sessionRowHtml).join('')}</div>
   </section>` : `
   <section class="card welcome">
     <div class="welcome-steps">
@@ -211,19 +182,13 @@ function homeHtml () {
       <button class="btn primary" data-new-session>${I.plus}<span>New session</span></button>
       <button class="btn" data-join-session>${I.link}<span>Join with an invite</span></button>
     </div>
-  </section>`}
-
-  <section class="card relay-note">
-    ${I.globe}
-    <p>${relayExplainer()}</p>
-  </section>`
+  </section>`}`
 }
 
 function bindHome () {
   const page = $('#page')
   bindSessionActions(page)
   page.querySelectorAll('.session-list [data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go) })
-  page.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => { go(b.dataset.view); if (b.dataset.anchor) requestAnimationFrame(() => $(`#${b.dataset.anchor}`)?.scrollIntoView({ block: 'start' })) } })
   page.querySelectorAll('[data-forget]').forEach((b) => {
     b.onclick = async () => {
       try {
@@ -265,7 +230,6 @@ function newSessionDialog () {
     </div>
     </div>
     <div id="src-github" hidden></div>
-    <div class="note">${I.globe}<span>${relayExplainer()}</span></div>
     <p class="error" id="n-error"></p>
     <div class="actions"><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Start session</button></div>`)
   let src = 'folder'
@@ -484,7 +448,6 @@ function toggle (name, checked, label, hint) {
 
 function settingsHtml () {
   const p = state.profile
-  const hosted = isHosted() || (!p.relay && p.relayMode === 'hosted')
   return `
   <header class="page-head">
     <h1>Settings</h1>
@@ -531,39 +494,6 @@ function settingsHtml () {
     </div>
   </form>
 
-  <!-- Hidden for now: everyone uses the hosted relay, so this isn't something people should need to think about. -->
-  <form class="card settings-sec" id="relay-sec" autocomplete="off" hidden>
-    <div class="sec-intro"><h2>Relay</h2><p>The server that connects you and your partners. Sessions left unused for 30 days are deleted from it.</p></div>
-    <div class="sec-body">
-      <div class="choice-cards" role="radiogroup" aria-label="Relay">
-        <label class="choice-card"><input type="radio" name="relayMode" value="hosted" ${hosted ? 'checked' : ''}>
-          <span><b>Hosted relay</b><span class="hint">Works from anywhere</span></span></label>
-        <label class="choice-card"><input type="radio" name="relayMode" value="local" ${hosted ? '' : 'checked'}>
-          <span><b>This computer</b><span class="hint">Same network, or through a tunnel</span></span></label>
-      </div>
-      <div id="relay-hosted" ${hosted ? '' : 'hidden'}>
-        <div class="field">
-          <label for="s-relay">Relay address</label>
-          <input class="input mono" id="s-relay" name="relay" value="${esc(p.relay?.url || '')}" placeholder="wss://relay.example.com" spellcheck="false">
-          <span class="hint" id="s-relay-check"></span>
-        </div>
-        <div class="field">
-          <label for="s-key">Relay key</label>
-          <input class="input" id="s-key" name="relayKey" type="password" autocomplete="off" placeholder="${p.relay?.hasKey ? 'Saved. Type a new one to replace it.' : 'Only if the relay needs one'}">
-          <span class="hint">Needed to start sessions on a private relay. Partners joining don't need it.</span>
-        </div>
-      </div>
-      <div id="relay-local" ${hosted ? 'hidden' : ''}>
-        <div class="field">
-          <label for="s-public">Public address <span class="hint">(optional)</span></label>
-          <input class="input mono" id="s-public" name="publicUrl" value="${esc(p.publicUrl)}" placeholder="wss://your-tunnel.trycloudflare.com" spellcheck="false">
-          <span class="hint">For partners elsewhere: run <code>cloudflared tunnel --url http://localhost:4321</code> and paste the address it prints.</span>
-        </div>
-      </div>
-      <div class="sec-actions"><span></span><button class="btn primary" type="submit">Save relay</button></div>
-    </div>
-  </form>
-
   <section class="card settings-sec">
     <div class="sec-intro"><h2>This computer</h2><p>Where Quilt keeps things.</p></div>
     <div class="sec-body">
@@ -582,7 +512,6 @@ function bindSettings () {
       btn.disabled = true
       try {
         state.profile = await api('POST', '/api/settings', pick(new FormData(form)))
-        if (form.id === 'relay-sec') state.relayStatus = null
         toast('Saved')
         renderShell('settings')
         done && done()
@@ -609,36 +538,4 @@ function bindSettings () {
   const sess = $('#sessions-sec')
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir'))
   saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
-
-  const relay = $('#relay-sec')
-  relay.querySelectorAll('[name=relayMode]').forEach((r) => {
-    r.onchange = () => {
-      $('#relay-hosted').hidden = r.value !== 'hosted'
-      $('#relay-local').hidden = r.value === 'hosted'
-    }
-  })
-  const check = async () => {
-    const url = $('#s-relay').value.trim()
-    const hint = $('#s-relay-check')
-    if (!url) { hint.textContent = ''; return }
-    hint.className = 'hint'
-    hint.textContent = 'Checking…'
-    try {
-      const r = await api('POST', '/api/relay/check', { url })
-      hint.className = 'hint ok'
-      hint.textContent = `✓ Online · ${r.latencyMs} ms${r.requiresKey ? ` · needs a relay key to start sessions${state.profile.relay?.hasKey && state.profile.relay.url === url ? ' (saved)' : ''}` : ''}`
-    } catch (err) {
-      hint.className = 'hint warn'
-      hint.textContent = err.message
-    }
-  }
-  $('#s-relay').addEventListener('change', check)
-  if ($('#s-relay').value && !$('#relay-hosted').hidden) check()
-  saveForm(relay, (f) => {
-    const mode = f.get('relayMode')
-    if (mode === 'hosted' && !f.get('relay')) throw new Error('Enter the relay address.')
-    return mode === 'hosted'
-      ? { relayMode: 'hosted', relay: f.get('relay'), relayKey: f.get('relayKey') || undefined }
-      : { relayMode: 'local', publicUrl: f.get('publicUrl') }
-  })
 }

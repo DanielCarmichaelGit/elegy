@@ -145,7 +145,7 @@ export class Connection extends EventEmitter {
         ws.retrying = true // we closed it on purpose: no "closed before the connection was established" warning
         ws.terminate()
       } else if (res.statusCode === 403 && /relay key/i.test(reason)) {
-        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `quilt relay set <url> --key <key>`.'))
+        this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Join a session someone started there with their invite link instead.'))
         this.close()
       } else if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
         this.emit('fatal', new Error(`Relay refused connection: ${reason}`))
