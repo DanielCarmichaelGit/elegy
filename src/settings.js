@@ -36,7 +36,11 @@ export function isHostedRelay (server) {
   return HOSTED_ALIASES.includes(String(server || '').replace(/\/+$/, ''))
 }
 
-/** A session that ran on a relay on someone's own computer ("This computer"), which Quilt no longer runs. */
-export function ranOnLocalRelay (server) {
-  return /^ws:\/\//.test(String(server || '')) && server !== relayUrl()
+/**
+ * A saved session on any relay other than Quilt's own (or the QUILT_SERVER relay in use): one that
+ * ran on someone's own computer, or through a tunnel to it. Quilt no longer runs those, and must
+ * never send this computer's pass to them.
+ */
+export function unsupportedRelay (server) {
+  return !!server && !isHostedRelay(server) && server !== relayUrl()
 }

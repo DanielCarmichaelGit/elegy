@@ -40,7 +40,7 @@ before(async () => {
   const link = (await accounts.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.replace(API_URL, accounts.api.url)
   await agentJoin({ link, name: 'helper', dir: path.join(home, '.quilt'), log: () => {} })
   client = new Client({ name: 'claude-code', version: '1.0.0' })
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentCwd, env: { ...process.env, HOME: home }, stderr: 'ignore' }))
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentCwd, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
 })
 
 after(async () => {
@@ -61,6 +61,20 @@ test('without a session, tools explain how to join', async () => {
   const r = await call('quilt_status')
   assert.equal(r.isError, true)
   assert.match(text(r), /quilt_join_session/)
+})
+
+test('an agent refuses invites naming another relay, or a room that is a path', async () => {
+  for (const invite of ['https://evil.example/join/..%2F..%2F..#x', 'https://evil.example/join/pair#s3cret', `http://127.0.0.1:${relay.port}/join/..%2F..#x`]) {
+    const r = await call('quilt_join_session', { invite })
+    assert.equal(r.isError, true, invite)
+    assert.equal(text(r), 'Could not join: That invite link is not valid. Copy the whole link they sent.', invite)
+  }
+  assert.deepEqual(fs.readdirSync(agentCwd), [], 'nothing was synced')
+  const { roomFolder } = await import('../src/mcp.js')
+  assert.equal(roomFolder(agentCwd, 'room-1a2b'), path.join(agentCwd, 'quilt-room-1a2b'))
+  for (const room of ['a/../..', 'x/../../etc', '/../..']) {
+    assert.throws(() => roomFolder(agentCwd, room), /That invite link is not valid/, room)
+  }
 })
 
 test('an agent joins by invite and shows up as an agent', async () => {

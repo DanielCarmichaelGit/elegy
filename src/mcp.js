@@ -11,9 +11,21 @@ import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
+import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
+
+/**
+ * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
+ * would put the folder anywhere else is refused all the same.
+ */
+export function roomFolder (cwd, room) {
+  const root = path.resolve(cwd)
+  const dir = path.resolve(root, `quilt-${room}`)
+  if (path.dirname(dir) !== root) throw new Error(INVALID_INVITE)
+  return dir
+}
 
 export { toolLabel }
 
@@ -137,7 +149,7 @@ export async function runMcp () {
       // Join into the current folder only if it's empty or already this room's folder.
       const saved = readConfig(cwd)
       const empty = !fs.existsSync(cwd) || fs.readdirSync(cwd).filter((n) => n !== '.quilt' && n !== '.DS_Store').length === 0
-      dir = empty || (saved && saved.room === conn.room) ? cwd : path.join(cwd, `quilt-${conn.room}`)
+      dir = empty || (saved && saved.room === conn.room) ? cwd : roomFolder(cwd, conn.room)
     }
     // A person is already syncing this folder: work through their session.
     if (runningElsewhere(dir)) {

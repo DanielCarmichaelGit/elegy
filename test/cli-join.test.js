@@ -81,3 +81,22 @@ test('quilt join --agent joins as a saved agent', async () => {
     await waitFor(() => inRelay().some(([n, k]) => n === 'helper' && k === 'agent'))
   } finally { await stop(child) }
 })
+
+test('quilt invite prints nothing for a session on a relay Quilt no longer supports', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const invite = (server) => {
+    const dir = tmp('saved')
+    fs.mkdirSync(path.join(dir, '.quilt'))
+    fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify({ server, room: 'room-old', secret: 's' }))
+    return spawnSync(process.execPath, [BIN, 'invite'], { cwd: dir, env: envFor(tmp('home')), encoding: 'utf8' })
+  }
+  for (const server of ['wss://quiet-fox.trycloudflare.com', 'ws://192.168.1.4:4321']) {
+    const r = invite(server)
+    assert.equal(r.status, 1, server)
+    assert.equal(r.stdout, '', server)
+    assert.match(r.stderr, /ran on your computer's own relay, which Quilt no longer supports/, server)
+  }
+  const ok = invite('wss://relay.heyquilt.com')
+  assert.equal(ok.status, 0)
+  assert.equal(ok.stdout.trim(), 'https://join.heyquilt.com/room-old#s')
+})

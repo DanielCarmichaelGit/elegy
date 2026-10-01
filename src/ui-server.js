@@ -10,12 +10,13 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent } from './runner.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
-import { getSettings, saveSettings, ranOnLocalRelay } from './settings.js'
+import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile } from './account.js'
 import { personPasses } from './pass-source.js'
+import { INVALID_INVITE } from './ui/invite.js'
 import { loadIdentity } from './identity.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
@@ -160,8 +161,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
   }
 
   const idFor = (dir) => crypto.createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 10)
-  // Recent sessions not open now. Ones that ran on a local relay are marked: they can't reopen.
-  const recentList = () => recentSessions().filter((r) => !runs.has(idFor(r.dir))).map((r) => ({ ...r, unsupported: ranOnLocalRelay(r.server) }))
+  // Recent sessions not open now. Ones that ran on another relay are marked: they can't reopen.
+  const recentList = () => recentSessions().filter((r) => !runs.has(idFor(r.dir))).map((r) => ({ ...r, unsupported: unsupportedRelay(r.server) }))
   const broadcast = (type, data) => {
     const frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
     for (const res of clients) res.write(frame)
@@ -189,7 +190,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     if (mode === 'github') {
       // Clone first, then start a normal session on the clone.
       const repoName = String(repo || '').split('/').pop()
-      dir = path.resolve(expandHome(dir || path.join(me.joinDir, repoName || 'repo')))
+      dir = path.resolve(expandHome(dir || underJoinDir(me.joinDir, repoName || 'repo', 'That repository name is not valid.')))
       if (runs.has(idFor(dir))) throw httpError(400, 'A session is already running in that folder.')
       await gitops.cloneRepo({ repo, dir, branch, newBranch, base })
       if (!current()) throw outlived()
@@ -199,7 +200,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     prefer = prefer || (me.preferLocal ? 'local' : 'remote')
     if (mode === 'join' && !dir) {
       const inv = decodeInvite(invite || '')
-      dir = path.join(expandHome(me.joinDir), inv.room)
+      dir = underJoinDir(me.joinDir, inv.room)
     }
     if (!dir) throw new Error('Choose a project folder.')
     dir = path.resolve(expandHome(dir))
@@ -213,9 +214,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     } else if (mode === 'rejoin') {
       const saved = readConfig(dir)
       if (!saved) throw new Error('No previous session in that folder.')
-      if (ranOnLocalRelay(saved.server)) throw httpError(400, LOCAL_RELAY_GONE)
+      if (unsupportedRelay(saved.server)) throw httpError(400, LOCAL_RELAY_GONE)
       conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
-      inviteServer = saved.inviteServer
+      inviteServer = unsupportedRelay(saved.inviteServer) ? undefined : saved.inviteServer
       tool = tool || saved.tool
     } else {
       conn = newConn()
@@ -323,7 +324,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
       recent: recentList(),
-      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors() },
+      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors(), relay: relayUrl() },
       profile: profile(),
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
@@ -527,6 +528,17 @@ function detectTool () {
 
 function expandHome (p) {
   return p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p
+}
+
+/**
+ * The folder for `name` (a room or repo name) inside the join folder. Invites only carry plain
+ * room names, but a name that would land anywhere else (`..`, a path) is refused all the same.
+ */
+export function underJoinDir (joinDir, name, message = INVALID_INVITE) {
+  const root = path.resolve(expandHome(joinDir))
+  const dir = path.resolve(root, String(name))
+  if (path.dirname(dir) !== root) throw httpError(400, message)
+  return dir
 }
 
 function httpError (status, message) {

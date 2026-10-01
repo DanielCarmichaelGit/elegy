@@ -186,7 +186,7 @@ async function join () {
   const dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
-  const { ranOnLocalRelay } = await import('../src/settings.js')
+  const { unsupportedRelay } = await import('../src/settings.js')
   let conn
   if (positionals[0]) {
     try { conn = decodeInvite(positionals[0]) } catch (err) { fail(err.message) }
@@ -194,7 +194,7 @@ async function join () {
     conn = newConn()
     conn.room = values.room
     if (values.secret || process.env.QUILT_SECRET) conn.secret = values.secret || process.env.QUILT_SECRET
-  } else if (saved.server && !ranOnLocalRelay(saved.server)) {
+  } else if (saved.server && !unsupportedRelay(saved.server)) {
     conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
   } else {
     if (saved.server) console.log("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Starting a new session.")
@@ -459,12 +459,15 @@ async function chat () {
 
 async function invite () {
   const { encodeInvite } = await import('../src/runner.js')
+  const { unsupportedRelay } = await import('../src/settings.js')
   let dir = process.cwd()
   while (true) {
     const f = path.join(dir, '.quilt', 'config.json')
     if (fs.existsSync(f)) {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'))
-      return console.log(encodeInvite({ ...c, server: c.inviteServer || c.server }))
+      // Never hand out an invite to a relay Quilt won't connect to (or let anyone else connect to).
+      if (unsupportedRelay(c.server)) fail("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Run quilt join here to start a new session.")
+      return console.log(encodeInvite({ ...c, server: c.inviteServer && !unsupportedRelay(c.inviteServer) ? c.inviteServer : c.server }))
     }
     if (path.dirname(dir) === dir) fail('no session configured in this folder')
     dir = path.dirname(dir)

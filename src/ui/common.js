@@ -4,6 +4,8 @@ import { parseInvite } from './invite.js'
 // The app only ever talks to Quilt's own relay, so an old-style relay link that happens
 // to be this address resolves the same way a join.heyquilt.com link does.
 const HOSTED_RELAY = 'wss://relay.heyquilt.com'
+// Same list as settings.js: the hosted relay under its current and older address.
+const HOSTED_ALIASES = [HOSTED_RELAY, 'wss://cowove-relay.fly.dev']
 
 // ---------------------------------------------------------------- token --
 const params = new URLSearchParams(location.search)
@@ -148,10 +150,14 @@ export async function api (method, path, body, headers = {}) {
   return data
 }
 
-/** Same as decodeInvite in runner.js (room and relay only): an invite link, or an older base64 code. */
+/**
+ * Same as decodeInvite in runner.js (room and relay only): an invite link, or an older base64 code.
+ * A link naming its own relay must name Quilt's relay or the one this app uses (state.defaults.relay).
+ */
 export function decodeInvite (code) {
+  const allowRelay = (s) => HOSTED_ALIASES.includes(String(s).replace(/\/+$/, '')) || (!!state.defaults.relay && s === state.defaults.relay)
   try {
-    const r = parseInvite(code)
+    const r = parseInvite(code, { allowRelay })
     return { server: r.relay || HOSTED_RELAY, room: r.room }
   } catch {
     return null

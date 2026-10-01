@@ -24,9 +24,13 @@ export function encodeInvite (c) {
   return buildInvite(c, isHostedRelay)
 }
 
-/** Reads an invite link (or an older base64 code), with or without "quilt join" or "quilt:" in front. */
+/**
+ * Reads an invite link (or an older base64 code), with or without "quilt join" or "quilt:" in front.
+ * A link naming its own relay is accepted only for Quilt's relay or the one this computer already
+ * uses (QUILT_SERVER), so a crafted link can't hand this computer's pass and files to another relay.
+ */
 export function decodeInvite (code) {
-  const r = parseInvite(code)
+  const r = parseInvite(code, { allowRelay: (s) => isHostedRelay(s) || s === relayUrl() })
   return { server: r.relay || relayUrl(), room: r.room, secret: r.secret }
 }
 

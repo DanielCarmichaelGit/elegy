@@ -66,18 +66,42 @@ test('invites are join.heyquilt.com links on the hosted relay, and older forms s
   assert.deepEqual(decodeInvite('quilt:https://join.heyquilt.com/room-1a2b#abc_D-9'), joined)
   assert.throws(() => decodeInvite('https://join.heyquilt.com/room-1a2b'), /This link is missing part of it\. Ask for a new invite\./)
 
-  // The relay form keeps its relay, so older sessions and development relays still work.
-  const conn = { server: 'wss://relay.example.com', room: 'room-1a2b', secret: 'abc_D-9' }
-  const link = encodeInvite(conn)
-  assert.equal(link, 'https://relay.example.com/join/room-1a2b#abc_D-9')
-  assert.deepEqual(decodeInvite(link), conn)
-  assert.deepEqual(decodeInvite(`  quilt join ${link}\n`), conn)
+  // The relay form keeps its relay, but only Quilt's own (under either address) or the one in use.
+  assert.deepEqual(decodeInvite('https://relay.heyquilt.com/join/room-1a2b#abc_D-9'), { server: 'wss://relay.heyquilt.com', room: 'room-1a2b', secret: 'abc_D-9' })
   assert.deepEqual(decodeInvite('https://cowove-relay.fly.dev/join/room-1a2b#abc_D-9'), { server: 'wss://cowove-relay.fly.dev', room: 'room-1a2b', secret: 'abc_D-9' })
-  assert.deepEqual(decodeInvite(encodeInvite({ server: 'ws://192.168.1.4:4321/', room: 'r', secret: 's' })), { server: 'ws://192.168.1.4:4321', room: 'r', secret: 's' })
-  const old = Buffer.from(JSON.stringify({ s: conn.server, r: conn.room, k: conn.secret })).toString('base64url')
-  assert.deepEqual(decodeInvite(old), conn)
+  const hostedOld = Buffer.from(JSON.stringify({ s: 'wss://relay.heyquilt.com', r: 'room-1a2b', k: 'abc_D-9' })).toString('base64url')
+  assert.deepEqual(decodeInvite(hostedOld), hosted)
+  process.env.QUILT_SERVER = 'ws://192.168.1.4:4321'
+  try {
+    const dev = { server: 'ws://192.168.1.4:4321', room: 'r', secret: 's' }
+    assert.equal(encodeInvite(dev), 'http://192.168.1.4:4321/join/r#s')
+    assert.deepEqual(decodeInvite(encodeInvite(dev)), dev)
+    assert.deepEqual(decodeInvite(`  quilt join ${encodeInvite(dev)}\n`), dev)
+  } finally {
+    delete process.env.QUILT_SERVER
+  }
   assert.throws(() => decodeInvite('nonsense'), /invite link is not valid/)
   assert.throws(() => decodeInvite('https://join.heyquilt.com/'), /invite link is not valid/)
+})
+
+test('an invite can never name another relay, or a room that is a path', () => {
+  const invalid = /That invite link is not valid\. Copy the whole link they sent\./
+  // Any relay this computer doesn't already use is refused, in every form.
+  assert.equal(encodeInvite({ server: 'wss://relay.example.com', room: 'room-1a2b', secret: 'abc_D-9' }), 'https://relay.example.com/join/room-1a2b#abc_D-9')
+  assert.throws(() => decodeInvite('https://relay.example.com/join/room-1a2b#abc_D-9'), invalid)
+  assert.throws(() => decodeInvite('http://192.168.1.4:4321/join/r#s'), invalid)
+  assert.throws(() => decodeInvite('https://quiet-fox.trycloudflare.com/join/room-1a2b#s'), invalid)
+  const evil = Buffer.from(JSON.stringify({ s: 'wss://evil.example', r: 'room-1a2b', k: 's' })).toString('base64url')
+  assert.throws(() => decodeInvite(evil), invalid)
+  // The reported attack: a path in the room, which would become the folder to sync.
+  assert.throws(() => decodeInvite('https://evil.example/join/..%2F..%2F..#x'), invalid)
+  assert.throws(() => decodeInvite('https://relay.heyquilt.com/join/..%2F..%2F..#x'), invalid)
+  assert.throws(() => decodeInvite('https://relay.heyquilt.com/join/..#x'), invalid)
+  for (const r of ['../../..', '..', '/etc', 'a/b', 'a\\b', '', 'x'.repeat(65)]) {
+    const code = Buffer.from(JSON.stringify({ s: 'wss://relay.heyquilt.com', r, k: 's' })).toString('base64url')
+    assert.throws(() => decodeInvite(code), invalid, JSON.stringify(r))
+  }
+  assert.throws(() => decodeInvite('https://join.heyquilt.com/..%2F..#x'), invalid)
 })
 
 test('a relay key is needed to create rooms, not to join them', async (t) => {

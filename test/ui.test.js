@@ -181,6 +181,39 @@ test("a session that ran on this computer's own relay is marked, and can't be re
   assert.equal((await api('POST', '/api/relay/check', { url: 'ws://127.0.0.1:9' })).status, 404)
 })
 
+test('a session on a tunnel to a computer\'s own relay is unsupported too', async () => {
+  const dir = path.join(home, 'old-tunnel')
+  const server = 'wss://quiet-fox.trycloudflare.com'
+  fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify({ server, room: 'room-tun', secret: 's', name: 'me' }))
+  const recentFile = path.join(home, '.quilt', 'recent.json')
+  const list = fs.existsSync(recentFile) ? JSON.parse(fs.readFileSync(recentFile, 'utf8')) : []
+  fs.writeFileSync(recentFile, JSON.stringify([{ dir, room: 'room-tun', server, name: 'me', tool: 'Cursor', lastUsed: Date.now() }, ...list]))
+  const st = await api('GET', '/api/state')
+  assert.equal(st.body.recent.find((r) => r.dir === dir).unsupported, true)
+  assert.equal(st.body.defaults.relay, process.env.QUILT_SERVER, 'the app knows which relay invites may name')
+  const r = await api('POST', '/api/sessions', { mode: 'rejoin', dir })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.error, "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched.")
+})
+
+test('a crafted invite can\'t name another relay, or put the folder outside the join folder', async () => {
+  const invalid = 'That invite link is not valid. Copy the whole link they sent.'
+  const before = fs.readdirSync(home).sort()
+  for (const invite of ['https://evil.example/join/..%2F..%2F..#x', 'https://evil.example/join/room-ok#x', `http://127.0.0.1:${relay.port}/join/..%2F..#x`]) {
+    const r = await api('POST', '/api/sessions', { mode: 'join', invite })
+    assert.equal(r.status, 400, invite)
+    assert.equal(r.body.error, invalid, invite)
+  }
+  assert.deepEqual(fs.readdirSync(home).sort(), before, 'no folder was made or synced')
+  const { underJoinDir } = await import('../src/ui-server.js')
+  const root = path.join(home, 'Quilt')
+  assert.equal(underJoinDir(root, 'room-1a2b'), path.join(root, 'room-1a2b'))
+  for (const name of ['..', '../..', '../../etc', '/etc', 'a/b', '', '.']) {
+    assert.throws(() => underJoinDir(root, name), (err) => err.status === 400 && err.message === invalid, JSON.stringify(name))
+  }
+})
+
 test('settings: colour and AI tool are saved and used by new sessions; the name comes from the account', async () => {
   assert.equal((await api('POST', '/api/settings', { color: 'red' })).status, 400)
   assert.equal((await api('POST', '/api/settings', { tool: 'Notepad' })).status, 400)
