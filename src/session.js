@@ -639,6 +639,14 @@ export class Session extends EventEmitter {
     this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
   }
 
+  /** Moves our copy of rel into the conflicts folder (for files too big to copy through memory). */
+  moveAside (rel, abs) {
+    const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    try { fs.renameSync(abs, dest) } catch { fs.copyFileSync(abs, dest) }
+    this.log(`⚠️  ${rel} is being replaced by the shared version; yours was moved to ${path.relative(this.root, dest)}`)
+  }
+
   lastEditorOf (rel) {
     for (let i = this.activity.length - 1; i >= 0; i--) {
       const a = this.activity.get(i)
@@ -841,11 +849,24 @@ export class Session extends EventEmitter {
       if (!cur || cur.hash !== entry.hash) return // replaced meanwhile; that version is on its way
       if (this.stopped) return
       const abs = resolveInside(this.root, rel)
-      // Edited while it downloaded (ingest waits for downloads): keep that version.
-      const now = this.readDisk(rel)
-      if (now && now.key !== undefined && now.key !== this.lastKnown.get(rel) && now.key !== `bin:${entry.hash}`) this.keepConflict(rel, now)
+      let st = null
+      try { st = fs.lstatSync(abs) } catch {}
+      if (st && !st.isFile()) {
+        // A link or folder in its place: never write through it, maybe out of the project.
+        this.log(`not writing ${rel}: something other than a plain file is in its place. Move it away to get the shared version.`)
+        return
+      }
+      let now = null
+      try { now = this.readDisk(rel) } catch { now = { unreadable: true } }
+      if (now && (now.tooLarge || now.unreadable)) {
+        this.moveAside(rel, abs) // we can't tell what it is, so it's kept rather than replaced
+      } else if (now && now.key !== undefined && now.key !== this.lastKnown.get(rel) && now.key !== `bin:${entry.hash}`) {
+        // Edited while it downloaded (ingest waits for downloads): keep that version.
+        this.keepConflict(rel, now)
+      }
       fs.mkdirSync(path.dirname(abs), { recursive: true })
-      fs.writeFileSync(abs, buf)
+      // O_NOFOLLOW: if a link appeared since the check, fail rather than follow it.
+      fs.writeFileSync(abs, buf, { flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0) })
       this.lastKnown.set(rel, `bin:${entry.hash}`)
       this.setOnDisk(rel, entry.hash)
       this.retry.delete(rel)

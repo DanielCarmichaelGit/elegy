@@ -350,3 +350,41 @@ test('at most two large files move at once; the rest wait their turn', async (t)
   for (const [name, buf] of files) await waitFor(() => bytes(dirB, name)?.equals(buf))
   assert.equal(most, 2)
 })
+
+test('a download never writes through a link, and keeps a local file it cannot read as content', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b'); const outside = tmp('outside')
+  fs.writeFileSync(path.join(dirA, 'photo.png'), big())
+  fs.writeFileSync(path.join(dirA, 'linked.png'), big())
+  await open(dirA, 'alice', { room })
+  const B = await open(dirB, 'bob', { room })
+  await waitFor(() => B.storedOnDisk.get('photo.png') && B.storedOnDisk.get('linked.png'))
+  // Alice changes both, and Bob stops before downloading them. Meanwhile one
+  // becomes a huge text file on his disk, and the other a link out of the project.
+  const hold = holdDownloads(t)
+  const photo = big(); const linked = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), photo)
+  fs.writeFileSync(path.join(dirA, 'linked.png'), linked)
+  await waitFor(() => B.blobs.get('photo.png')?.hash === sha1(photo) && B.blobs.get('linked.png')?.hash === sha1(linked) &&
+    B.downloading.has('photo.png') && B.downloading.has('linked.png'))
+  await B.stop()
+  hold.release('fail')
+  hold.restore()
+  const huge = 'x'.repeat(3 * 1024 * 1024)
+  fs.writeFileSync(path.join(dirB, 'photo.png'), huge)
+  fs.writeFileSync(path.join(outside, 'target.png'), 'outside')
+  fs.rmSync(path.join(dirB, 'linked.png'))
+  fs.symlinkSync(path.join(outside, 'target.png'), path.join(dirB, 'linked.png'))
+
+  const logs = []
+  const B2 = new Session({ dir: dirB, server, secret: 'edit', name: 'bob', room, identity: B.identity })
+  sessions.push(B2)
+  B2.on('log', (m) => logs.push(m))
+  await B2.start({ waitTimeoutMs: 5000 })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(photo))
+  const conflicts = path.join(B2.stateDir, 'conflicts')
+  assert.ok(fs.readdirSync(conflicts).some((d) => bytes(path.join(conflicts, d), 'photo.png')?.toString() === huge), 'the huge file was kept')
+  await waitFor(() => logs.some((m) => /not writing linked\.png/.test(m)))
+  assert.equal(fs.readFileSync(path.join(outside, 'target.png'), 'utf8'), 'outside')
+  assert.ok(fs.lstatSync(path.join(dirB, 'linked.png')).isSymbolicLink())
+})
