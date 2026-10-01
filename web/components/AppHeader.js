@@ -9,12 +9,8 @@ import { myOrgs, orgMe } from '@/lib/org.js'
 import { orgTabs } from '@/lib/org-view.js'
 import { SPACE_COOKIE, PERSONAL, spaceHome } from '@/lib/space.js'
 import { createClient } from '@/lib/supabase/server.js'
+import { PERSONAL_NAV } from '@/lib/nav.js'
 
-const PERSONAL_NAV = [
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/dashboard#computers', label: 'Computers' },
-  { href: '/dashboard#agents', label: 'Agents' }
-]
 
 /** Initials for the avatar: from the profile name, else the email. */
 export function initials (name, email) {

@@ -6,18 +6,13 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { isOn } from '@/lib/nav.js'
 
 const MARKETING = [
   { href: '/#how', label: 'How it works' },
   { href: '/#agents', label: 'Agents' },
   { href: '/pricing', label: 'Pricing' }
 ]
-
-function isOn (item, pathname) {
-  const path = item.href.split('#')[0]
-  if (!path || item.href.includes('#')) return false
-  return pathname === path || (!item.exact && pathname.startsWith(path + '/'))
-}
 
 export default function HeaderNav ({ items = MARKETING, label = 'Main' }) {
   const pathname = usePathname()

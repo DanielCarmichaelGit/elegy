@@ -7,41 +7,51 @@ import { apiCall } from '@/lib/api.js'
 import { rememberSpace } from '@/lib/space-cookie.js'
 import { isSlug } from '@/lib/space.js'
 
+// The Computers and Agents pages, and the overview that counts them. These actions don't
+// redirect: the form re-renders the page it was on, so revalidating that page (and the
+// overview's counts) is enough.
+const COMPUTERS = '/dashboard/computers'
+const AGENTS = '/dashboard/agents'
+function refresh (page) {
+  revalidatePath(page)
+  revalidatePath('/dashboard')
+}
+
 // Unlinking goes straight through row-level security: people may set revoked_at on their own computers.
 export async function unlinkComputer (formData) {
-  await requireUser('/dashboard')
+  await requireUser(COMPUTERS)
   const supabase = await createClient()
   await supabase.from('devices').update({ revoked_at: new Date().toISOString() }).eq('id', String(formData.get('id'))).is('revoked_at', null)
-  revalidatePath('/dashboard')
+  refresh(COMPUTERS)
 }
 
 // An agent invite link is shown once, so it comes back to the form rather than through a redirect.
 export async function createAgentInvite () {
-  const user = await requireUser('/dashboard')
+  const user = await requireUser(AGENTS)
   const r = await apiCall(user, 'POST', '/v1/agent-invites', {})
   if (!r.ok) return { error: r.data?.error || 'Couldn’t make an invite link. Try again.' }
-  revalidatePath('/dashboard')
+  refresh(AGENTS)
   return { link: r.data.link, id: r.data.invite.id }
 }
 
 // Whether a shown invite link is still waiting, so the page can notice the agent join.
 export async function agentInviteWaiting (id) {
-  const user = await requireUser('/dashboard')
+  const user = await requireUser(AGENTS)
   const r = await apiCall(user, 'GET', '/v1/agent-invites')
   if (!r.ok) return true
   return (r.data?.invites || []).find((i) => i.id === id)?.status === 'waiting'
 }
 
 export async function cancelAgentInvite (formData) {
-  const user = await requireUser('/dashboard')
+  const user = await requireUser(AGENTS)
   await apiCall(user, 'DELETE', `/v1/agent-invites/${encodeURIComponent(String(formData.get('id')))}`)
-  revalidatePath('/dashboard')
+  refresh(AGENTS)
 }
 
 export async function revokeAgent (formData) {
-  const user = await requireUser('/dashboard')
+  const user = await requireUser(AGENTS)
   await apiCall(user, 'DELETE', `/v1/agents/${encodeURIComponent(String(formData.get('id')))}`)
-  revalidatePath('/dashboard')
+  refresh(AGENTS)
 }
 
 // An org sign-up carries its org's name in the account until the org exists.
