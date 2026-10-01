@@ -1,6 +1,6 @@
 // The session workspace: file tree on the left, a partner's live AI chat or a
 // shared file in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, decodeInvite, busyPeople } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
@@ -686,7 +686,7 @@ function renderMain () {
           </div>` : `
           <div class="codebox"><code id="empty-invite">${esc(invite)}</code></div>
           <button class="btn primary" data-copy-invite="edit">${I.copy}<span>Copy invite link</span></button>`}
-          <p class="hint small">Once they join, you'll see their AI chat here as it happens.${inviteIsLocal(invite) ? ' These links only work on your network. For someone elsewhere, see <b>Invite</b>.' : ''}</p>
+          <p class="hint small">Once they join, you'll see their AI chat here as it happens.</p>
         </div>`
         return
       }
@@ -718,11 +718,6 @@ function renderMain () {
 }
 
 const fileKey = (path) => `${current}\n${path}`
-
-function inviteIsLocal (invite) {
-  const d = decodeInvite(invite || '')
-  return !!d && !d.server.startsWith('wss://')
-}
 
 function treeMeta (path) {
   const t = state.trees.get(current)

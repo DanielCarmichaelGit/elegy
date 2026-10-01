@@ -1,4 +1,11 @@
 // Shared state and helpers for the Quilt app (native ES modules, no build step).
+import { parseInvite } from './invite.js'
+
+// The app only ever talks to Quilt's own relay, so an old-style relay link that happens
+// to be this address resolves the same way a join.heyquilt.com link does.
+const HOSTED_RELAY = 'wss://relay.heyquilt.com'
+// Same list as settings.js: the hosted relay under its current and older address.
+const HOSTED_ALIASES = [HOSTED_RELAY, 'wss://cowove-relay.fly.dev']
 
 // ---------------------------------------------------------------- token --
 const params = new URLSearchParams(location.search)
@@ -46,13 +53,12 @@ export const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copi
 // ---------------------------------------------------------------- state --
 export const state = {
   loaded: false,
+  account: null, // { id, name, email }: who this computer is signed in as
   sessions: new Map(), // id -> summary
   messages: new Map(), // id -> [message]
   recent: [],
   defaults: {},
-  profile: {}, // name, tool, color, joinDir, shareAgent, preferLocal, relayMode, publicUrl, relay
-  relayStatus: null, // { ok, latencyMs, error, at }
-  relay: null,
+  profile: {}, // name, tool, color, joinDir, shareAgent, summarize, preferLocal
   maxFileBytes: 0,
   view: 'home', // 'home' | session id
   pane: 'chat', // mobile pane
@@ -132,21 +138,30 @@ export async function api (method, path, body, headers = {}) {
     body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`)
+    // This computer isn't signed in (any more): the app goes back to the sign-in screen.
+    if (res.status === 401 && data.signedOut) {
+      err.signedOut = true
+      window.dispatchEvent(new Event('quilt-signed-out'))
+    }
+    throw err
+  }
   return data
 }
 
-/** Same as decodeInvite in runner.js: an invite link, or an older base64 code. */
+/**
+ * Same as decodeInvite in runner.js (room and relay only): an invite link, or an older base64 code.
+ * A link naming its own relay must name Quilt's relay or the one this app uses (state.defaults.relay).
+ */
 export function decodeInvite (code) {
-  const raw = String(code || '').trim().replace(/^quilt join\s+/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
-  const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
-  if (m) {
-    try { return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]) } } catch { return null }
-  }
+  const allowRelay = (s) => HOSTED_ALIASES.includes(String(s).replace(/\/+$/, '')) || (!!state.defaults.relay && s === state.defaults.relay)
   try {
-    const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')))
-    return j && j.s && j.r ? { server: j.s, room: j.r } : null
-  } catch { return null }
+    const r = parseInvite(code, { allowRelay })
+    return { server: r.relay || HOSTED_RELAY, room: r.room }
+  } catch {
+    return null
+  }
 }
 
 export function remember (key, value) { try { localStorage.setItem(`quilt-${key}`, value) } catch {} }

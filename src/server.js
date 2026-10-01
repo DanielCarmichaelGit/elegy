@@ -1,7 +1,9 @@
 // Relay server: holds one shared Yjs document per room, relays updates and
 // presence between clients, stores files shared in chat, and persists rooms
 // to disk. It checks who each client is (see identity.js) and owns the
-// room's claims, so only the person who made a claim can release it. Safe to
+// room's claims, so only the person who made a claim can release it (with
+// sign-in on, the account that made it, so two people who share a display
+// name can't release each other's claims). Safe to
 // run on the public internet: rooms need their secret, creating rooms can
 // require a relay key, and rooms have size quotas.
 //
@@ -21,15 +23,17 @@ import * as Y from 'yjs'
 import { handleAgentMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
-  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_NEEDS_UPDATE,
+  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_NEEDS_UPDATE, CLOSE_PASS_EXPIRED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
+import { verifyPass } from './passes.js'
 import { patternsOverlap, globMatcher } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
+import { JOIN_HOST } from './ui/invite.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -47,8 +51,12 @@ const sameSecret = (a, b) => a.length === b.length && crypto.timingSafeEqual(a, 
 export function relayConfig (opts = {}) {
   const env = adoptLegacyEnv({ ...process.env })
   const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v))
+  // The accounts API's public key. With it, every connection needs a pass (see passes.js).
+  const passPublicKey = opts.passPublicKey ?? env.QUILT_PASS_PUBLIC_KEY ?? ''
   return {
-    relayKey: opts.relayKey ?? env.QUILT_RELAY_KEY ?? '',
+    passPublicKey,
+    // With passes on, the accounts API decides who may start sessions: the relay key isn't used.
+    relayKey: passPublicKey ? '' : (opts.relayKey ?? env.QUILT_RELAY_KEY ?? ''),
     // A room's whole history lives in memory while anyone is in it, and takes
     // several times its stored size there: keep this well under the machine's memory.
     maxRoomBytes: num(opts.maxRoomBytes ?? env.QUILT_MAX_ROOM_MB, 32) * (opts.maxRoomBytes !== undefined ? 1 : MB),
@@ -90,10 +98,12 @@ class Room {
       if (fs.existsSync(this.metaFile)) this.meta = JSON.parse(fs.readFileSync(this.metaFile, 'utf8'))
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
-    this.meta.claims = this.meta.claims || {} // pattern -> { by, pattern, note, ts }
-    this.meta.members = this.meta.members || {} // public key -> { name, kind, role, scopes, since }
-    this.access = new Map() // ws -> { key, name, kind, role, scopes, owner } for people in the room
-    this.pending = new Map() // ws -> { key, name, kind, invitedAs, since } waiting for the owner
+    this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
+    // Member id -> { name, kind, role, scopes, since }. The id is the public key, or
+    // '<kind>:<sub>' for members approved with a pass (an account, on any computer).
+    this.meta.members = this.meta.members || {}
+    this.access = new Map() // ws -> { key, id, name, kind, role, scopes, owner } for people in the room
+    this.pending = new Map() // ws -> { key, id, name, kind, invitedAs, since } waiting for the owner
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
@@ -153,18 +163,65 @@ class Room {
     return 'bad-secret'
   }
 
-  /** Where someone stands when they sign in: let in now (with a role), or wait for the owner. */
-  accessFor (key, name, kind, invitedAs) {
+  /**
+   * Where someone stands when they sign in: let in now (with a role), or wait
+   * for the owner. `account` is '<kind>:<sub>' from their pass when sign-in is
+   * on: then they are their account, on any computer, not their key.
+   */
+  accessFor (key, name, kind, invitedAs, account = '') {
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false }
     if (!this.meta.owner) { this.meta.owner = key; this.saveMeta() } // the room's creator signs in first
-    if (this.meta.owner === key) return { state: 'approved', role: 'editor', scopes: [], owner: true }
-    const m = this.meta.members[key]
+    if (account) this.noteKey(account, key)
+    if (this.isOwner(key, account)) {
+      if (account) {
+        // Remember the owner's account, so they're the owner on any computer.
+        // Names come from accounts and can change: show the owner by the name they use now.
+        if (this.meta.ownerSub !== account || this.meta.ownerName !== name) { this.meta.ownerSub = account; this.meta.ownerName = name; this.saveMeta() }
+      }
+      return { state: 'approved', role: 'editor', scopes: [], owner: true }
+    }
+    // Members approved with a pass are kept under their account; older ones under their key.
+    const id = account && this.meta.members[account] ? account : key
+    const m = this.meta.members[id]
     if (m) {
       if (m.name !== name || m.kind !== kind) { m.name = name; m.kind = kind; this.saveMeta() }
-      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false }
+      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
     }
     return { state: 'pending', invitedAs }
   }
+
+  /**
+   * Remembers which computer keys an account has used here, so removing the
+   * account also removes members approved by one of those keys.
+   */
+  noteKey (account, key) {
+    const keys = (this.meta.accountKeys = this.meta.accountKeys || {})
+    const seen = keys[account] || []
+    if (seen.includes(key)) return
+    keys[account] = [...seen, key].slice(-20)
+    this.saveMeta()
+  }
+
+  /** The owner is their account once it's known, and until then the key that made the room. */
+  isOwner (key, account = '') {
+    if (account && this.meta.ownerSub) return this.meta.ownerSub === account
+    return this.meta.owner === key
+  }
+
+  /**
+   * With sign-in on: may this pass use the session's files over HTTP? In a session with an
+   * owner, only the owner and the people they let in may (by account, or an older member's key).
+   * Unlike accessFor, it changes nothing.
+   */
+  letIn (pass) {
+    if (!this.controlled) return true
+    const account = `${pass.kind}:${pass.sub}`
+    if (this.meta.owner && this.isOwner(pass.key, account)) return true
+    return !!(this.meta.members[account] || this.meta.members[pass.key])
+  }
+
+  /** The id the member list shows the owner under. */
+  get ownerId () { return this.meta.ownerSub || this.meta.owner }
 
   /** May this connection change this file? */
   mayWrite (a, rel) {
@@ -254,18 +311,18 @@ class Room {
 
   memberList () {
     const online = new Map()
-    for (const a of this.access.values()) online.set(a.key, true)
+    for (const a of this.access.values()) online.set(a.owner ? this.ownerId : a.id, true)
     const list = []
     if (this.meta.owner) {
-      const ownerName = Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
-      list.push({ key: this.meta.owner, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.meta.owner) })
+      const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
+      list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
     for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, role: m.role, scopes: m.scopes || [], online: online.has(key) })
     return list
   }
 
   pendingList () {
-    return [...this.pending.values()].map((p) => ({ key: p.key, name: p.name, kind: p.kind, invitedAs: p.invitedAs, since: p.since }))
+    return [...this.pending.values()].map((p) => ({ key: p.id, name: p.name, kind: p.kind, invitedAs: p.invitedAs, since: p.since }))
   }
 
   /** Sends everyone the member list; only the owner sees who's waiting. */
@@ -294,22 +351,27 @@ class Room {
       ? req.scopes.map((s) => String(s).trim().replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean).slice(0, MAX_SCOPES)
       : null
     if (scopes && scopes.some((s) => s.length > MAX_PATTERN || s.split('/').includes('..'))) throw new Error('bad folder')
-    if (key === this.meta.owner) throw new Error('the owner always has full access')
-    const waiting = [...this.pending].find(([, p]) => p.key === key)
+    if (key === this.meta.owner || key === this.meta.ownerSub) throw new Error('the owner always has full access')
+    // `key` is the id from the member or pending list. One account may be waiting on several computers.
+    const waiting = [...this.pending].filter(([, p]) => p.id === key)
     if (req.op === 'approve') {
-      if (!waiting) throw new Error('nobody with that key is waiting')
-      const [pws, p] = waiting
-      this.pending.delete(pws)
+      if (!waiting.length) throw new Error('nobody with that key is waiting')
+      const p = waiting[0][1]
       this.meta.members[key] = { name: p.name, kind: p.kind, role: role || p.invitedAs, scopes: scopes || [], since: Date.now() }
       this.saveMeta()
       this.log(`[${this.name}] ${p.name} approved as ${this.meta.members[key].role}`)
-      this.enter(pws, { key, name: p.name, kind: p.kind, role: this.meta.members[key].role, scopes: this.meta.members[key].scopes, owner: false })
+      for (const [pws, w] of waiting) {
+        this.pending.delete(pws)
+        this.enter(pws, { key: w.key, id: key, name: w.name, kind: w.kind, role: this.meta.members[key].role, scopes: this.meta.members[key].scopes, owner: false })
+      }
       return { ok: true }
     }
     if (req.op === 'deny') {
-      if (!waiting) throw new Error('nobody with that key is waiting')
-      this.pending.delete(waiting[0])
-      waiting[0].close(CLOSE_DENIED, 'The session owner did not let you in')
+      if (!waiting.length) throw new Error('nobody with that key is waiting')
+      for (const [pws] of waiting) {
+        this.pending.delete(pws)
+        pws.close(CLOSE_DENIED, 'The session owner did not let you in')
+      }
       return { ok: true }
     }
     const m = this.meta.members[key]
@@ -319,7 +381,7 @@ class Room {
       if (scopes) m.scopes = scopes
       this.saveMeta()
       for (const [cws, a] of this.access) {
-        if (a.key !== key) continue
+        if (a.id !== key) continue
         a.role = m.role
         a.scopes = m.scopes
         this.setAccess(cws, a)
@@ -328,9 +390,11 @@ class Room {
       return { ok: true }
     }
     if (req.op === 'remove') {
-      delete this.meta.members[key]
+      // An account goes with any older entries for keys it has used here, so it can't get back in by key.
+      const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
+      for (const id of gone) delete this.meta.members[id]
       this.saveMeta()
-      for (const [cws, a] of this.access) if (a.key === key) cws.close(CLOSE_DENIED, 'The session owner removed you')
+      for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
       return { ok: true }
     }
     throw new Error('unknown request')
@@ -368,33 +432,50 @@ class Room {
     return true
   }
 
+  /** Who a claim from this connection belongs to: their name, or with sign-in on, their account. */
+  claimant (ws) {
+    const name = this.names.get(ws)
+    if (!ws.pass) return { name }
+    const a = this.access.get(ws)
+    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner) }
+  }
+
   claimList () {
     return Object.values(this.meta.claims).sort((a, b) => a.ts - b.ts)
   }
 
-  /** Handles a claim/release request from a verified name. Returns the reply fields. */
-  claimRequest (name, req) {
+  /**
+   * Handles a claim/release request. `who` is { name } without sign-in, where
+   * claims belong to a verified name; with it, { name, id, owner }, where they
+   * belong to the account (id). Returns the reply fields.
+   */
+  claimRequest (who, req) {
+    const { name, id } = who
+    // Whose claim is this? Older claims in a sign-in room have no account: they belong to their
+    // name, as they did when made, and claiming one again adopts it under this account.
+    // (The owner may release any of them too.)
+    const mine = (c) => id ? (c.byId ? c.byId === id : c.by === name) : c.by === name
     const pattern = String(req.pattern ?? '').trim().replace(/^\.\//, '')
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
       const existing = this.meta.claims[pattern]
-      if (existing && existing.by !== name) throw new Error(`${pattern} is already claimed by ${existing.by}`)
+      if (existing && !mine(existing)) throw new Error(`${pattern} is already claimed by ${existing.by}`)
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
-      const other = this.claimList().find((c) => c.by !== name && patternsOverlap(c.pattern, pattern, paths))
+      const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, pattern, note: String(req.note ?? '').slice(0, 500), ts: Date.now() }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: String(req.note ?? '').slice(0, 500), ts: Date.now() }
       return { ok: true }
     }
     if (req.op === 'release') {
       if (pattern === '*' || !pattern) {
-        const mine = this.claimList().filter((c) => c.by === name)
-        for (const c of mine) delete this.meta.claims[c.pattern]
-        return { ok: true, released: mine.length }
+        const all = this.claimList().filter(mine)
+        for (const c of all) delete this.meta.claims[c.pattern]
+        return { ok: true, released: all.length }
       }
       const c = this.meta.claims[pattern]
       if (!c) return { ok: true, released: 0 }
-      if (c.by !== name) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it`)
+      if (!mine(c) && !(id && who.owner && !c.byId)) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it`)
       delete this.meta.claims[pattern]
       return { ok: true, released: 1 }
     }
@@ -427,7 +508,7 @@ class Room {
    * Challenges the client to prove it holds the key for its name, then lets
    * it into the room. Nothing else is accepted until then.
    */
-  admit (ws, name, publicKey, key, { kind = 'human', invitedAs = 'editor' } = {}, onJoin) {
+  admit (ws, name, publicKey, key, { kind = 'human', invitedAs = 'editor', account = '' } = {}, onJoin) {
     if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
     clearTimeout(this.unloadTimer)
     const nonce = crypto.randomBytes(32)
@@ -435,6 +516,12 @@ class Room {
     let waiting = false
     ws.on('message', (data) => {
       const buf = new Uint8Array(data)
+      // A fresh pass may come at any time, even while waiting for the owner.
+      // (MSG_PASS is under 128, so it is the whole first byte.)
+      if (ws.pass && buf[0] === MSG_PASS) {
+        if (!renewPass(ws, buf)) this.log(`[${this.name}] ignored a pass refresh from ${name} that wasn't theirs`)
+        return
+      }
       if (joined || this.access.has(ws)) {
         joined = true
         try { this.handle(ws, buf) } catch (err) { this.log(`[${this.name}] bad message: ${err.message}`) }
@@ -452,13 +539,16 @@ class Room {
       if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
       // The session may have started storing files while this app signed in.
       if (!this.supported(ws)) return ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
-      // Re-check: someone else may have taken the name while we waited.
-      if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
-      this.bindName(name, publicKey)
-      const acc = this.accessFor(publicKey, name, kind, invitedAs)
+      // With sign-in on, names come from accounts and can't be taken, so they aren't bound to keys.
+      if (!account) {
+        // Re-check: someone else may have taken the name while we waited.
+        if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
+        this.bindName(name, publicKey)
+      }
+      const acc = this.accessFor(publicKey, name, kind, invitedAs, account)
       if (acc.state === 'pending') {
         waiting = true
-        this.pending.set(ws, { key: publicKey, name, kind, invitedAs, since: Date.now() })
+        this.pending.set(ws, { key: publicKey, id: account || publicKey, name, kind, invitedAs, since: Date.now() })
         this.log(`[${this.name}] ${name} is waiting to be let in`)
         send(ws, jsonMessage(MSG_ACCESS, { state: 'pending', invitedAs, controlled: true }))
         this.broadcastMembers()
@@ -466,7 +556,7 @@ class Room {
         return
       }
       joined = true
-      this.enter(ws, { key: publicKey, name, kind, role: acc.role, scopes: acc.scopes, owner: acc.owner })
+      this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, owner: acc.owner })
       onJoin()
     })
     ws.on('close', () => {
@@ -537,7 +627,7 @@ class Room {
       let reply
       try {
         req = JSON.parse(decoding.readVarString(dec))
-        reply = { id: req.id, ...this.claimRequest(this.names.get(ws), req) }
+        reply = { id: req.id, ...this.claimRequest(this.claimant(ws), req) }
       } catch (err) {
         return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(), reply: { id: req.id, ok: false, error: err.message } }))
       }
@@ -578,25 +668,54 @@ class Room {
 
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
 
+/** Closes the connection when its pass runs out, unless a newer one arrives first. */
+function trackPass (ws, pass) {
+  ws.pass = pass
+  clearTimeout(ws.passTimer)
+  const left = Math.min(Math.max(pass.exp - Date.now(), 0), 2 ** 31 - 1)
+  ws.passTimer = setTimeout(() => ws.close(CLOSE_PASS_EXPIRED, PASS_EXPIRED), left)
+}
+
+/** A MSG_PASS: a valid pass for the same account (or agent) and key extends the connection. */
+function renewPass (ws, buf) {
+  let next = null
+  try {
+    const dec = decoding.createDecoder(buf)
+    decoding.readVarUint(dec)
+    next = verifyPass(String(JSON.parse(decoding.readVarString(dec)).pass || ''), ws.passKey)
+  } catch {}
+  if (!next || next.sub !== ws.pass.sub || next.kind !== ws.pass.kind || next.key !== ws.pass.key) return false
+  trackPass(ws, next)
+  return true
+}
+
 function send (ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(msg, (err) => { if (err) ws.terminate() })
 }
 
 export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, ...opts } = {}) {
   const cfg = relayConfig(opts)
+  const passKey = cfg.passPublicKey ? parsePublicKey(cfg.passPublicKey) : null
+  if (cfg.passPublicKey && !passKey) throw new Error('QUILT_PASS_PUBLIC_KEY is not an Ed25519 public key (spki, base64url)')
+  /** With sign-in on: the request's valid pass, or null. With it off: an empty pass. */
+  const httpPass = (req) => passKey ? verifyPass(String(req.headers['x-quilt-pass'] || ''), passKey) : {}
+  // Who a new session counts against: their account with sign-in on, otherwise their address.
+  const starterOf = (pass, req) => pass && pass.sub ? `${pass.kind}:${pass.sub}` : clientIp(req)
+  // Without sign-in the limit is per address, and the message says so (as before).
+  const TOO_MANY = passKey ? 'too many new sessions; try again later' : 'too many new sessions from this address; try again later'
   if (dataDir) fs.mkdirSync(dataDir, { recursive: true })
   const rooms = new Map() // loaded rooms only
   const ipConns = new Map()
-  // Sessions anyone can start (no relay key) are rate-limited per address.
-  const newRooms = new Map() // ip -> creation timestamps in the last hour
-  const canCreate = (ip) => {
+  // New sessions are rate-limited per account when sign-in is on, otherwise per address.
+  const newRooms = new Map() // starter -> creation timestamps in the last hour
+  const canCreate = (starter) => {
     if (!cfg.maxNewRoomsPerHour) return true
     const cutoff = Date.now() - 60 * 60 * 1000
-    const recent = (newRooms.get(ip) || []).filter((t) => t > cutoff)
-    if (recent.length) newRooms.set(ip, recent); else newRooms.delete(ip)
+    const recent = (newRooms.get(starter) || []).filter((t) => t > cutoff)
+    if (recent.length) newRooms.set(starter, recent); else newRooms.delete(starter)
     return recent.length < cfg.maxNewRoomsPerHour
   }
-  const noteCreated = (ip) => newRooms.set(ip, [...(newRooms.get(ip) || []), Date.now()])
+  const noteCreated = (starter) => newRooms.set(starter, [...(newRooms.get(starter) || []), Date.now()])
 
   const tooBig = new Set() // stored rooms already reported as too big to load
   /** A stored room far over the limit would run the relay out of memory while loading. */
@@ -726,10 +845,13 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const j = url.pathname.match(/^\/join\/([A-Za-z0-9_-]{1,64})\/?$/)
     if (j) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-      return res.end(joinPage(j[1]))
+      // Invites live on the website now. Browsers keep the #secret across the redirect.
+      res.writeHead(302, { location: `https://${JOIN_HOST}/${j[1]}`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+      return res.end()
     }
     if (url.pathname === '/agent/link' && req.method === 'POST') {
+      const pass = httpPass(req)
+      if (!pass) return text(401, SIGN_IN)
       return readJson(req, 4096, (err, body) => {
         if (err) return text(400, err.message)
         const { token, room: roomName, secret, name, tool } = body || {}
@@ -741,7 +863,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (!room.conns.size) room.onEmpty && room.onEmpty()
         const k = tokenKey(token)
         const prev = links.get(k) || {}
-        links.set(k, { room: roomName, name: name.trim().slice(0, 60), tool: String(tool || '').slice(0, 40), tabSeenAt: Date.now(), aiSeenAt: prev.aiSeenAt || 0 })
+        links.set(k, { room: roomName, name: (pass.name || name).trim().slice(0, 60), tool: String(tool || '').slice(0, 40), tabSeenAt: Date.now(), aiSeenAt: prev.aiSeenAt || 0 })
         saveLinks()
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
         res.end(JSON.stringify({ ok: true, aiSeenAt: prev.aiSeenAt || 0 }))
@@ -749,6 +871,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
     if (mm) {
+      // An AI link carries no pass, so with sign-in on it would get into a session without one.
+      // Agents join as their own members now; links saved before that stop working here.
+      if (passKey) return text(401, SIGN_IN)
       const k = tokenKey(mm[1])
       const link = links.get(k) || null
       let room = null
@@ -780,17 +905,21 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         return receiveBlob(req, file, Number(n), (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
       }
       if (req.method !== 'POST') return text(405, 'method not allowed')
+      const pass = httpPass(req)
+      if (!pass) return text(401, SIGN_IN)
+      const starter = starterOf(pass, req)
       const room = getRoom(name)
       if (!room) return text(413, TOO_BIG)
       const creating = !room.exists
-      if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
+      if (creating && !canCreate(starter)) { dropIfUnused(room); return text(429, TOO_MANY) }
       const auth = room.authorize(req.headers['x-quilt-secret'] || '', req.headers['x-quilt-key'] || '')
       if (auth === 'need-key' || auth === 'bad-secret') {
         dropIfUnused(room)
         return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
       }
-      if (creating) noteCreated(clientIp(req))
+      if (creating) noteCreated(starter)
       const done = () => { if (!room.conns.size && room.onEmpty) room.onEmpty() }
+      if (passKey && !room.letIn(pass)) { done(); return text(403, NOT_LET_IN) }
       return readJson(req, 1024, async (err, body) => {
         try {
           if (err) return text(400, err.message)
@@ -820,15 +949,22 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
     const [, name, id] = m
     if (roomEnded(name)) return text(410, ENDED_MESSAGE)
+    const pass = httpPass(req)
+    if (!pass) return text(401, SIGN_IN)
+    const starter = starterOf(pass, req)
     const room = getRoom(name)
     if (!room) return text(413, TOO_BIG)
     const creating = !room.exists
-    if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
+    if (creating && !canCreate(starter)) { dropIfUnused(room); return text(429, TOO_MANY) }
     const auth = room.authorize(req.headers['x-quilt-secret'] || req.headers['x-cowove-secret'] || '', req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || '')
-    if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(clientIp(req))
+    if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(starter)
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
+    }
+    if (passKey && !room.letIn(pass)) {
+      if (!room.conns.size && room.onEmpty) room.onEmpty()
+      return text(403, NOT_LET_IN)
     }
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) {
@@ -848,22 +984,28 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const url = new URL(req.url, 'http://x')
     const name = decodeURIComponent(url.pathname.slice(1))
     const secret = url.searchParams.get('secret') || ''
-    const person = (url.searchParams.get('name') || '').trim()
     const publicKey = url.searchParams.get('key') || ''
     const relayKey = url.searchParams.get('relayKey') || req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || ''
     const viewSecret = url.searchParams.get('viewSecret') || ''
-    const kind = url.searchParams.get('kind') === 'agent' ? 'agent' : 'human'
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
+    // With sign-in on, nobody gets further without a pass, and who they are comes from it.
+    const pass = passKey ? verifyPass(url.searchParams.get('pass') || '', passKey) : null
+    if (passKey && (!pass || pass.key !== publicKey)) return reject(socket, 401, SIGN_IN)
+    const person = pass ? pass.name : (url.searchParams.get('name') || '').trim()
+    const kind = pass ? (pass.kind === 'agent' ? 'agent' : 'human') : (url.searchParams.get('kind') === 'agent' ? 'agent' : 'human')
+    // People and agents come from different id spaces, so the kind is part of who they are.
+    const account = pass ? `${pass.kind}:${pass.sub}` : ''
     if (roomEnded(name)) return reject(socket, 410, ENDED_MESSAGE)
     const ip = clientIp(req)
+    const starter = pass ? account : ip
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
     if (!room) return reject(socket, 413, TOO_BIG)
     const features = String(url.searchParams.get('features') || '').split(',')
     const creating = !room.exists
-    if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
+    if (creating && !canCreate(starter)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret)
-    if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(ip)
+    if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(starter)
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
@@ -876,18 +1018,20 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
-    if (!room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
+    if (!pass && !room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.features = features
+      if (pass) { ws.passKey = passKey; trackPass(ws, pass) }
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1)
       ws.isAlive = true
       ws.on('pong', () => { ws.isAlive = true })
       ws.on('close', () => {
+        clearTimeout(ws.passTimer)
         const n = (ipConns.get(ip) || 1) - 1
         if (n) ipConns.set(ip, n)
         else ipConns.delete(ip)
       })
-      room.admit(ws, person, publicKey, key, { kind, invitedAs: auth }, () => {
+      room.admit(ws, person, publicKey, key, { kind, invitedAs: auth, account }, () => {
         log(`[${name}] ${person} connected (${room.conns.size} online)`)
         ws.on('close', () => log(`[${name}] ${person} left (${room.conns.size} online)`))
         if (room.full) log(`[${name}] ${person} joined while over quota (read-only)`)
@@ -1063,58 +1207,11 @@ function receiveBlob (req, file, limit, done) {
 const TOO_BIG = 'Session over the size limit'
 const ENDED_MESSAGE = 'The owner ended this session'
 const NEEDS_UPDATE = 'This session needs a newer version of Quilt. Update Quilt, then join again.'
+const SIGN_IN = 'Update Quilt and sign in to continue'
+const NOT_LET_IN = "The session owner hasn't let you in yet."
+const PASS_EXPIRED = 'Your sign-in expired. Reconnecting.'
 
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
-}
-
-const PAGE_STYLE = `
-:root{--bg:#f6f4f0;--card:#fff;--text:#1c1929;--muted:#6d6882;--ok:#22a06b;--border:#e7e2da;--code:#f1eee8;--accent:#1c1929;--on-accent:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#0e0c17;--card:#161327;--text:#f0edf8;--muted:#a09ab8;--border:#2a2542;--code:#221e38;--accent:#f0edf8;--on-accent:#0e0c17}}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;max-width:440px;width:100%;text-align:center}
-img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.02em}
-.ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
-p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
-
-const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download'
-
-/** Where an invite link lands in a browser: opens the Quilt app, or offers to download it. */
-function joinPage (room) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>Join on Quilt</title><link rel="icon" href="/logo.svg">
-<style>${PAGE_STYLE}
-.btn{display:block;width:100%;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:650;padding:12px 16px;margin-top:22px;cursor:pointer;text-decoration:none;font-size:16px}
-.btn.alt{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:10px;font-size:15px}
-.dl{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px}.dl a{font-weight:600}
-.small{font-size:13px}
-details{margin-top:18px;text-align:left;color:var(--muted);font-size:13px}summary{cursor:pointer;text-align:center}
-code.block{display:block;background:var(--code);border-radius:8px;padding:8px 10px;margin-top:8px;overflow-wrap:anywhere;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
-</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>You're invited to code together</h1>
-<p>Join the Quilt session <b>${room}</b>.</p>
-<a class="btn" id="open" href="#">Open in Quilt</a>
-<p id="missing" hidden>This link is missing its secret. Ask for the full invite link.</p>
-<div id="get">
-<p>Don't have Quilt yet? Download it, open it, then click <b>Open in Quilt</b> again.</p>
-<div class="dl" id="dl">
-<a href="${DOWNLOADS}/quilt-mac-arm64.dmg">Mac (Apple silicon)</a> ·
-<a href="${DOWNLOADS}/quilt-mac-x64.dmg">Mac (Intel)</a> ·
-<a href="${DOWNLOADS}/quilt-windows-x64.exe">Windows</a>
-</div>
-<p class="small">On a Mac, the first time you open it macOS may say it can't check Quilt. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>.</p>
-</div>
-<details><summary>Use the terminal instead</summary>
-In the folder where you want the project, run:<code class="block" id="cmd"></code>
-<button class="btn alt" id="copy">Copy invite link</button></details>
-</div><script>
-const link = location.href
-document.getElementById('open').href = 'quilt://join?invite=' + encodeURIComponent(link)
-document.getElementById('cmd').textContent = 'quilt join "' + link + '"'
-if (!location.hash) { document.getElementById('missing').hidden = false; document.getElementById('open').hidden = true }
-document.getElementById('copy').onclick = async (e) => {
-  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch { prompt('Copy this link:', link) }
-}
-</script></body></html>`
 }

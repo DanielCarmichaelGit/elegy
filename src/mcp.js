@@ -7,13 +7,25 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
-import { defaultRelay, normalizeRelay, keyFor } from './settings.js'
+import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
+import { sessionPasses } from './pass-source.js'
+import { pickAgent } from './agent-join.js'
+
+/**
+ * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
+ * would put the folder anywhere else is refused all the same.
+ */
+export function roomFolder (cwd, room) {
+  const root = path.resolve(cwd)
+  const dir = path.resolve(root, `quilt-${room}`)
+  if (path.dirname(dir) !== root) throw new Error(INVALID_INVITE)
+  return dir
+}
 
 export { toolLabel }
 
@@ -129,7 +141,7 @@ export async function runMcp () {
 
   // ------------------------------------------------ joining as an agent --
 
-  const startAs = async ({ conn, folder, name, inviteServer }) => {
+  const startAs = async ({ conn, folder, agent, inviteServer }) => {
     if (joined) throw new Error(`Already in session ${path.basename(joined.dir)} (${joined.dir}). Call quilt_leave_session first.`)
     const cwd = process.env.QUILT_DIR || process.cwd()
     let dir = folder ? path.resolve(cwd, folder) : null
@@ -137,7 +149,7 @@ export async function runMcp () {
       // Join into the current folder only if it's empty or already this room's folder.
       const saved = readConfig(cwd)
       const empty = !fs.existsSync(cwd) || fs.readdirSync(cwd).filter((n) => n !== '.quilt' && n !== '.DS_Store').length === 0
-      dir = empty || (saved && saved.room === conn.room) ? cwd : path.join(cwd, `quilt-${conn.room}`)
+      dir = empty || (saved && saved.room === conn.room) ? cwd : roomFolder(cwd, conn.room)
     }
     // A person is already syncing this folder: work through their session.
     if (runningElsewhere(dir)) {
@@ -149,14 +161,17 @@ export async function runMcp () {
       throw new Error(`${dir} is already synced by another quilt session. Choose another folder.`)
     }
     const tool = clientTool()
+    // Each agent joins as itself: its name, key and passes come from its saved keys.
+    const auth = sessionPasses({ agent: pickAgent({ agent }) })
     logs = []
     const run = await runSession({
       dir,
       conn,
-      // Names are tied to one person's key, so each person's agent needs its own.
-      name: name || `${tool} agent (${os.userInfo().username})`,
+      name: auth.name,
       tool,
       kind: 'agent',
+      passes: auth.passes,
+      identity: auth.identity,
       joined: !inviteServer && !conn.viewSecret,
       inviteServer,
       // This agent's own chat lives where it was started, which may be above the synced folder.
@@ -195,14 +210,14 @@ export async function runMcp () {
   server.registerTool('quilt_join_session', {
     description: 'Join a live quilt session from an invite link, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "quilt-<room>" subfolder) and kept in sync live. Other people see you in the session.',
     inputSchema: {
-      invite: z.string().describe('The invite link, like https://<relay>/join/<room>#<secret> (or the full "quilt join <link>" command)'),
+      invite: z.string().describe('The invite link, like https://join.heyquilt.com/<room>#<secret> (or the full "quilt join <link>" command)'),
       folder: z.string().optional().describe('Where to put the project, relative to the current folder'),
-      name: z.string().optional().describe('Name to show to others (default: "<tool> agent (<your user name>)")')
+      agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.')
     }
-  }, async ({ invite, folder, name }) => {
+  }, async ({ invite, folder, agent }) => {
     try {
       const conn = decodeInvite(invite)
-      const r = await startAs({ conn, folder, name })
+      const r = await startAs({ conn, folder, agent })
       const text = await describeSession(r.dir, r.attached
         ? `This folder is already in the session (someone runs quilt here), so you're working through their session.`
         : `Joined room ${conn.room}. Files are synced into ${r.dir}; edit them there.`)
@@ -213,18 +228,14 @@ export async function runMcp () {
   })
 
   server.registerTool('quilt_start_session', {
-    description: 'Start a new live quilt session for a folder, as an AI agent, and get an invite link for others. Uses the user\'s default relay (set with `quilt relay set`) unless you pass one.',
+    description: 'Start a new live quilt session for a folder, as an AI agent, and get an invite link for others.',
     inputSchema: {
-      relay: z.string().optional().describe('Relay address, e.g. wss://relay.example.com'),
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
-      name: z.string().optional().describe('Name to show to others')
+      agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.')
     }
-  }, async ({ relay, folder, name }) => {
+  }, async ({ folder, agent }) => {
     try {
-      const d = defaultRelay()
-      const server_ = relay ? normalizeRelay(relay) : d && d.relay
-      if (!server_) throw new Error('No relay address. Ask the user for one (ws:// or wss://), or have them run `quilt relay set <url>`.')
-      const r = await startAs({ conn: newConn(server_, relay ? keyFor(server_) : d.key), folder: folder || '.', name })
+      const r = await startAs({ conn: newConn(), folder: folder || '.', agent })
       return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite link below with collaborators.`) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }

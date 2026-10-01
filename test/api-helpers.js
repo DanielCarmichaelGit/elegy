@@ -6,6 +6,7 @@ import { createMemoryStore } from '../src/api/memory-store.js'
 import { BUILTIN } from '../src/api/permissions.js'
 import { uniqueSlug } from '../src/api/slugs.js'
 import { newToken, hashToken } from '../src/api/tokens.js'
+import { generateIdentity } from '../src/identity.js'
 
 export const SITE = 'https://quilt.test'
 export const API_URL = 'https://api.quilt.test'
@@ -53,10 +54,18 @@ export async function makeOrg (t, name = 'Acme') {
 }
 
 /** A joined agent with a working key pair, made straight through the store. */
-export async function makeAgent (t, { name = 'Larry', provider = 'Anthropic', type = 'coding agent', description = '', ownerUserId = null, orgId = null, invitedBy = 'owner', accessTtl = 60 * 60 * 1000, refreshTtl = 30 * 24 * 60 * 60 * 1000 } = {}) {
-  const agent = await t.store.createAgent({ name, provider, type, description, ownerUserId, orgId, invitedBy })
+export async function makeAgent (t, { name = 'Larry', provider = 'Anthropic', type = 'coding agent', description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = 'owner', accessTtl = 60 * 60 * 1000, refreshTtl = 30 * 24 * 60 * 60 * 1000 } = {}) {
+  const agent = await t.store.createAgent({ name, provider, type, description, publicKey, ownerUserId, orgId, invitedBy })
   const accessKey = newToken('qa_'); const refreshKey = newToken('qr_')
   const at = Date.now()
   await t.store.createAgentKeys({ agentId: agent.id, familyId: crypto.randomUUID(), accessHash: hashToken(accessKey), refreshHash: hashToken(refreshKey), accessExpiresAt: at + accessTtl, refreshExpiresAt: at + refreshTtl })
   return { agent, accessKey, refreshKey }
+}
+
+/** A computer linked to `userId`, made straight through the store: its identity and its qd_ token. */
+export async function linkDevice (t, userId, identity = generateIdentity()) {
+  const device = await t.store.upsertDevice({ userId, name: 'Mac', platform: 'darwin', publicKey: identity.publicKey })
+  const token = newToken('qd_')
+  await t.store.setDeviceToken(device.id, hashToken(token))
+  return { device, token, identity }
 }

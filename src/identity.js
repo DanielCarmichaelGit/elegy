@@ -9,6 +9,12 @@ import crypto from 'node:crypto'
 import { quiltHome } from './legacy.js'
 
 const AUTH_CONTEXT = 'cowove-auth-v1'
+// Linking a computer to an account signs the device code in a context of its own,
+// so a signature made to link a computer can never be replayed to join a session,
+// and a relay can never collect one by posing as a session.
+const DEVICE_LINK_CONTEXT = 'quilt-device-link-v1'
+// The room name device links used to be signed for. The relay client refuses it.
+export const RESERVED_ROOM = 'device-link'
 
 export const identityFile = () => path.join(quiltHome(), 'identity.json')
 
@@ -32,11 +38,12 @@ export function loadIdentity (file = identityFile()) {
   return id
 }
 
+const privateKeyOf = (identity) => crypto.createPrivateKey({ key: Buffer.from(identity.privateKey, 'base64url'), format: 'der', type: 'pkcs8' })
 const payload = (room, nonce) => Buffer.concat([Buffer.from(`${AUTH_CONTEXT}\0${room}\0`), Buffer.from(nonce)])
 
 export function signChallenge (identity, room, nonce) {
-  const key = crypto.createPrivateKey({ key: Buffer.from(identity.privateKey, 'base64url'), format: 'der', type: 'pkcs8' })
-  return new Uint8Array(crypto.sign(null, payload(room, nonce), key))
+  if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
+  return new Uint8Array(crypto.sign(null, payload(room, nonce), privateKeyOf(identity)))
 }
 
 /** Parses a public key sent by a client; null unless it's a valid Ed25519 key. */
@@ -49,4 +56,16 @@ export function parsePublicKey (b64) {
 
 export function verifyChallenge (key, room, nonce, signature) {
   try { return crypto.verify(null, payload(room, nonce), key, Buffer.from(signature)) } catch { return false }
+}
+
+const linkPayload = (deviceCode) => Buffer.from(`${DEVICE_LINK_CONTEXT}\0${deviceCode}`)
+
+/** Proves this computer holds its key when it collects its account token. Returns base64url. */
+export function signDeviceLink (identity, deviceCode) {
+  return crypto.sign(null, linkPayload(String(deviceCode)), privateKeyOf(identity)).toString('base64url')
+}
+
+export function verifyDeviceLink (key, deviceCode, signature) {
+  if (!key || typeof signature !== 'string') return false
+  try { return crypto.verify(null, linkPayload(String(deviceCode)), key, Buffer.from(signature, 'base64url')) } catch { return false }
 }

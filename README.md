@@ -13,7 +13,7 @@ within milliseconds. Your agents can also see what the other agents are doing.
   you + Claude Code                                friend + Cursor
   ~/my-app  <-->  quilt join                quilt join  <-->  ~/my-app
                        \                        /
-                        +--> quilt relay <-----+
+                        +--> Quilt relay <-----+
                              (WebSocket)
 
   each agent  --MCP-->  quilt_status / quilt_claim / quilt_message
@@ -28,10 +28,10 @@ within milliseconds. Your agents can also see what the other agents are doing.
 - **Real merges, not overwrites.** Text files are synced character by character.
   If your agent edits the top of `app.ts` while theirs edits the bottom, both
   edits land. Binary files (images, etc.) sync as whole files.
-- **Works apart.** A small relay server connects everyone over WebSockets
-  (host it anywhere, or tunnel it from your laptop). If your connection drops,
-  keep working: Quilt keeps a local copy of the shared state and merges your
-  offline edits when you reconnect.
+- **Works apart.** Quilt's relay at `relay.heyquilt.com` connects everyone over
+  WebSockets, and only lets in people signed in to heyquilt.com. If your
+  connection drops, keep working: Quilt keeps a local copy of the shared state
+  and merges your offline edits when you reconnect.
 - **Watch each other's AI, live.** The app shows your partner's AI conversation
   as it happens: their prompts, the AI's replies, and one-line actions like
   "Edited src/app.ts" or "Ran npm test". This works for Claude Code and Cursor.
@@ -53,6 +53,9 @@ Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/heyqu
 Everything happens in the app: start a session, send the invite link, and
 partners click it to join. Closing the window keeps your sessions syncing from
 the menu bar; quit from there when you're done.
+
+The first time you open it, sign in: Quilt opens heyquilt.com, where you
+approve this computer. New to Quilt? [Create an account](https://heyquilt.com/signup).
 
 The app isn't signed by Apple yet, so the first time you open it macOS may say
 it can't check it. Open **System Settings → Privacy & Security** and click
@@ -79,8 +82,8 @@ quilt ui
 
 This opens Quilt in your browser, where you can:
 
-- **Start a session:** pick your project folder, then either host the relay on
-  your computer with one click or point at a hosted relay. You get an invite link to send.
+- **Sign in** with your heyquilt.com account (once per computer).
+- **Start a session:** pick your project folder. You get an invite link to send.
 - **Join a session:** paste an invite link and pick where the project should go.
 - **Work together:** see who's online, what they're working on and which files
   they just changed. Chat, send direct messages, and drag and drop files to share
@@ -90,27 +93,29 @@ The app only listens on `127.0.0.1` and needs the secret link `quilt ui` prints.
 
 ### The terminal way
 
-**1. Run a relay** that both of you can reach (see [Hosting the relay](#hosting-the-relay)):
+**1. Sign in** once on each computer:
 
 ```bash
-quilt serve                      # listens on :4321
+quilt login                      # opens heyquilt.com, where you approve this computer
 ```
 
 **2. Start a session** in your project folder:
 
 ```bash
 cd ~/code/my-app
-quilt join --server wss://your-relay.example.com --name you --tool claude
+quilt join --tool claude
 ```
 
-It prints an invite link like `https://relay.heyquilt.com/join/room-1a2b#…`.
+It prints an invite link like `https://join.heyquilt.com/room-1a2b#…`.
 Send it to your friend. Opening it in a browser shows them how to join.
 
-**3. Your friend joins** from an empty folder (or their own clone of the same repo):
+**3. Your friend joins** from an empty folder (or their own clone of the same
+repo), signed in to their own account:
 
 ```bash
 mkdir my-app && cd my-app
-quilt join <invite-link> --name friend --tool cursor
+quilt login
+quilt join <invite-link> --tool cursor
 ```
 
 Keep `quilt join` running in a terminal while you work. It logs who joined,
@@ -133,10 +138,10 @@ pick up the MCP server.
 | Command | What it does |
 |---|---|
 | `quilt ui` | Open the app (start, join, chat, files) |
-| `quilt serve [--port 4321] [--data ./quilt-data]` | Run a relay |
-| `quilt relay set <url> [--key <key>]` | Use your hosted relay by default |
-| `quilt relay` / `quilt relay check <url>` / `quilt relay clear` | Show and test the default relay, test any relay, or forget it |
-| `quilt join` / `quilt join --server <url>` | Start a new session for this folder (on your default relay, or the one given) |
+| `quilt serve [--port 4321] [--data ./quilt-data]` | Run a relay (how Quilt's relay runs; see docs/hosting.md) |
+| `quilt login` / `quilt logout` / `quilt whoami` | Sign this computer in to your heyquilt.com account, sign it out, or see which account it uses |
+| `quilt join` | Start a new session for this folder |
+| `quilt join --agent <name>` | Join as a Quilt agent saved with `quilt agent join` |
 | `quilt join <invite>` | Join a session |
 | `quilt join` | Rejoin this folder's last session (merges offline edits) |
 | `quilt invite` | Print the invite link again |
@@ -157,8 +162,8 @@ pick up the MCP server.
 
 | Tool | Purpose |
 |---|---|
-| `quilt_join_session` | Join a session from an invite link, as an agent (no human needed) |
-| `quilt_start_session` | Start a new session for a folder and get an invite link |
+| `quilt_join_session` | Join a session from an invite link, as a Quilt agent saved with `quilt agent join` |
+| `quilt_start_session` | Start a new session for a folder, as that agent, and get an invite link |
 | `quilt_leave_session` / `quilt_session_info` | Leave; or see the folder, your name, who's online, and the invite |
 | `quilt_status` | Collaborators, their focus, recently edited files, claims, messages |
 | `quilt_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
@@ -222,7 +227,7 @@ It can then read partners' AI feeds, claim files, chat, and edit files that
 sync to everyone. It can also start a session with `quilt_start_session` and
 hand out the invite. The session lasts as long as the agent's MCP server runs.
 
-Agents that prefer the shell can run `quilt join <invite> --agent` instead.
+Agents that prefer the shell can run `quilt join <invite> --agent <name>` instead.
 
 ## Messaging and file sharing
 
@@ -239,38 +244,23 @@ Direct messages and files are only shown to the sender and recipient, but they
 travel through the shared room, so they're private from other collaborators'
 screens, not from the relay operator.
 
-## Hosting the relay
+## The relay
 
-Host a relay once, and starting a session becomes one click: no tunnels, and
-friends just paste an invite link. The relay is a single small process. It
-comes ready to deploy with a Fly.io config (`fly.toml`, about $2–5/month), a
-Render blueprint (`render.yaml`), a docker-compose file with automatic HTTPS
-for any server (`deploy/`), and a prebuilt image published by CI
-(`ghcr.io/danielcarmichaelgit/quilt-relay`).
+Everyone connects through Quilt's relay at `relay.heyquilt.com`. It passes
+changes between computers, keeps each session's shared state and the files
+people share in chat, and only lets in people and agents signed in to
+heyquilt.com: the app and the `quilt` command get a pass from the accounts API
+that lasts 10 minutes, and the relay checks it on every connection.
 
-**[docs/hosting.md](docs/hosting.md)** walks through each option. Once it's
-running:
+The relay is one small Node process (`quilt serve`); [docs/hosting.md](docs/hosting.md)
+describes how it's deployed and its settings. The app only connects to Quilt's
+relay for now.
 
-```bash
-quilt relay set wss://your-relay.example.com --key <relay key>
-```
-
-From then on, `quilt join`, the app and agents start sessions there by default.
-The relay key stops strangers from starting sessions on your relay. People you
-invite never need it.
-
-Hosted relays are built for the public internet:
-
-- Each session has its own secret, and starting sessions can require a key.
-- Sessions have size quotas and shared-file quotas, and there's a
-  connection limit per address.
+- Each session has its own secret, and the owner approves who gets in.
+- Sessions have size quotas and shared-file quotas, and each account can start
+  30 sessions an hour.
 - Idle sessions are unloaded from memory, and sessions nobody opens for 30
   days are deleted.
-- It serves a health check at `/healthz` and a status page at `/`.
-
-No server handy? `quilt ui` → **Host relay here** runs one on your computer.
-Use `cloudflared tunnel --url http://localhost:4321` for partners who aren't
-on your network.
 
 ## What syncs (and what doesn't)
 
@@ -295,6 +285,11 @@ and the changes sync to everyone.
 
 ## Security
 
+- You sign in to heyquilt.com on each computer. The computer's token is kept in
+  `~/.quilt/account.json`, readable only by you. The relay never sees it: it
+  sees a pass that lasts 10 minutes and names your account and this computer's
+  key. Signing a computer out (in the app, with `quilt logout`, or on the
+  website) cuts it off within 10 minutes.
 - Each room has a secret. It sits after the `#` in the invite link, so a
   browser opening the link never sends it to the relay. The first client to
   open a room sets it, and everyone else must match. Treat invite links like
@@ -308,8 +303,7 @@ and the changes sync to everyone.
   the relay's data folder.
 - Paths from peers are validated. Nothing can be written outside the project
   folder, into `.git/` (no sneaky hooks), or into files you ignore locally.
-- The relay can read project contents. Host your own relay and use `wss://`.
-  End-to-end encryption is a natural next step.
+- Whoever runs the relay can read project contents.
 - Remember that you're syncing code your partner's agent wrote, and your tools
   may run it. Only pair with people you trust.
 

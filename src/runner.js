@@ -8,41 +8,36 @@ import { Session } from './session.js'
 import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
-import { keyFor } from './settings.js'
+import { relayUrl, isHostedRelay } from './settings.js'
 import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
+import { writePrivateJson } from './private-file.js'
+import { JOIN_HOST, buildInvite, parseInvite } from './ui/invite.js'
+
+export { JOIN_HOST }
 
 /**
- * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
- * The secret sits after `#`, so browsers never send it to the relay.
+ * An invite link: https://join.heyquilt.com/<room>#<secret> for sessions on Quilt's relay,
+ * or https://<relay>/join/<room>#<secret> for any other relay (development relays).
  */
 export function encodeInvite (c) {
-  const base = String(c.server).replace(/\/+$/, '').replace(/^ws(s?):\/\//, 'http$1://')
-  return `${base}/join/${encodeURIComponent(c.room)}#${encodeURIComponent(c.secret || '')}`
+  return buildInvite(c, isHostedRelay)
 }
 
-/** Reads an invite link (or an older base64 invite code), with or without "quilt join" in front. */
+/**
+ * Reads an invite link (or an older base64 code), with or without "quilt join" or "quilt:" in front.
+ * A link naming its own relay is accepted only for Quilt's relay or the one this computer already
+ * uses (QUILT_SERVER), so a crafted link can't hand this computer's pass and files to another relay.
+ */
 export function decodeInvite (code) {
-  const raw = String(code).trim().replace(/^quilt join\s+/, '').replace(/^quilt:/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
-  const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
-  if (m) {
-    try {
-      return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]), secret: decodeURIComponent(m[4] || '') }
-    } catch {}
-  }
-  let j
-  try {
-    j = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
-  } catch {}
-  if (!j || !j.s || !j.r) throw new Error('That invite link is not valid. Copy the whole link they sent.')
-  return { server: j.s, room: j.r, secret: j.k || '' }
+  const r = parseInvite(code, { allowRelay: (s) => isHostedRelay(s) || s === relayUrl() })
+  return { server: r.relay || relayUrl(), room: r.room, secret: r.secret }
 }
 
-/** A new room: `secret` invites people to edit, `viewSecret` to only watch. */
-export function newConn (server, key = keyFor(server)) {
+/** A new room on Quilt's relay: `secret` invites people to edit, `viewSecret` to only watch. */
+export function newConn (server = relayUrl()) {
   return {
     server,
-    ...(key ? { key } : {}),
     room: `room-${crypto.randomBytes(4).toString('hex')}`,
     secret: crypto.randomBytes(18).toString('base64url'),
     viewSecret: crypto.randomBytes(18).toString('base64url')
@@ -70,13 +65,20 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {}, passes = null, identity = null }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder`)
   if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another quilt process.')
 
+  // With passes, the relay knows you by your account (or agent): its name and agent
+  // badge come from the pass. The session starts with the name saved on this computer
+  // (or one already fetched) and takes the pass's once it arrives, without waiting for
+  // one here, so being offline doesn't stop a session from starting.
+  const p = passes && passes.payload
+  if (p && p.name) name = p.name
+  if (p && p.kind === 'agent') kind = 'agent'
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
   const invite = encodeInvite({ ...conn, server: inviteServer || conn.server })
@@ -87,11 +89,16 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
   const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
   fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
-  fs.writeFileSync(path.join(dir, '.quilt', 'config.json'),
-    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize }, null, 2), { mode: 0o600 })
+  const configFile = path.join(dir, '.quilt', 'config.json')
+  // It holds the room secret: written privately and atomically (see private-file.js).
+  writePrivateJson(configFile, { ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize })
+  // Keeps the saved name in step with the pass's (the rest of the file may have changed since).
+  const saveName = (name) => {
+    try { writePrivateJson(configFile, { ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }) } catch {}
+  }
   ensureGitExclude(dir)
 
-  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent })
+  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent, identity, passes })
   const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
   if (summarize) session.summarizer = summarizer()
   if (onLog) session.on('log', onLog)
@@ -108,8 +115,11 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
     await session.stop().catch(() => {})
     throw err
   }
+  // The pass may have named us differently from the name we started with.
+  if (session.name !== name) saveName(session.name)
+  session.on('identity', ({ name }) => saveName(name))
   const control = await startControl(session, { invite, viewInvite, joined })
-  remember({ dir, room: conn.room, server: conn.server, name, tool })
+  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.
   const readers = agentFeed

@@ -1,70 +1,55 @@
-// The default ("hosted") relay: saved once, then used by `quilt join`,
-// the app, and agents; its key is used to create rooms but never shared.
+// Settings: your colour, AI tool and session defaults. There is one relay now;
+// relay settings from before are ignored and dropped.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { startServer } from '../src/server.js'
-import { normalizeRelay } from '../src/settings.js'
-import { decodeInvite } from '../src/runner.js'
+import { getSettings, saveSettings, relayUrl, isHostedRelay, unsupportedRelay, HOSTED_RELAY } from '../src/settings.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
-const run = promisify(execFile)
-const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-settings-${n}-`))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-settings-home-'))
+process.env.HOME = home
+delete process.env.QUILT_SERVER
 
-test('relay addresses are normalized', () => {
-  assert.equal(normalizeRelay('https://relay.example.com/'), 'wss://relay.example.com')
-  assert.equal(normalizeRelay('relay.example.com'), 'wss://relay.example.com')
-  assert.equal(normalizeRelay('http://10.0.0.5:4321'), 'ws://10.0.0.5:4321')
-  assert.equal(normalizeRelay('wss://x.fly.dev'), 'wss://x.fly.dev')
-  assert.throws(() => normalizeRelay(''), /relay address/)
+test('relay settings from before are ignored, and dropped the next time settings are saved', () => {
+  const file = path.join(home, '.quilt', 'settings.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({ relay: 'wss://mine.example.com', relayKey: 'k', relayMode: 'local', publicUrl: 'wss://tunnel.example.com', tool: 'Cursor' }))
+  assert.deepEqual(getSettings(), { tool: 'Cursor' })
+  saveSettings({ color: '#3b6a9a' })
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { tool: 'Cursor', color: '#3b6a9a' })
 })
 
-test('quilt relay set/check, then quilt join starts on the default relay with its key', async () => {
-  const home = tmp('home')
-  const env = { ...process.env, HOME: home, QUILT_SERVER: '', QUILT_RELAY_KEY: '' }
-  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, relayKey: 'team-key' })
-  const url = `ws://127.0.0.1:${srv.port}`
-
-  const set = await run(process.execPath, [BIN, 'relay', 'set', `http://127.0.0.1:${srv.port}`, '--key', 'team-key'], { env })
-  assert.match(set.stdout, /needs a relay key/)
-  assert.match(set.stdout, /default relay set/)
-  const saved = JSON.parse(fs.readFileSync(path.join(home, '.quilt', 'settings.json'), 'utf8'))
-  assert.deepEqual(saved, { relay: url, relayKey: 'team-key' })
-  assert.match((await run(process.execPath, [BIN, 'relay'], { env })).stdout, /\(default\).*key saved/)
-
-  // No --server and no invite: uses the default relay, and the key lets it create the room.
-  const dir = tmp('proj')
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'hello')
-  const child = spawn(process.execPath, [BIN, 'join', '--name', 'me'], { cwd: dir, env })
-  let out = ''
-  const invite = await new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('join did not start:\n' + out)), 10000)
-    const onData = (d) => {
-      out += d
-      const m = out.match(/(https?:\/\/\S+\/join\/\S+)/)
-      if (m) { clearTimeout(t); resolve(m[1]) }
-    }
-    child.stdout.on('data', onData)
-    child.stderr.on('data', onData)
-  })
-  assert.match(out, /starting a new session on your default relay/)
-  const inv = decodeInvite(invite)
-  assert.equal(inv.server, url)
-  assert.ok(!invite.includes('team-key'), 'the relay key is never in invites')
-  child.kill('SIGTERM')
-  await new Promise((r) => child.on('exit', r))
-
-  await run(process.execPath, [BIN, 'relay', 'clear'], { env })
-  assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.quilt', 'settings.json'), 'utf8')).relay, undefined)
-  await srv.close()
+test('Quilt uses the hosted relay unless QUILT_SERVER says otherwise', () => {
+  assert.equal(HOSTED_RELAY, 'wss://relay.heyquilt.com')
+  assert.equal(relayUrl(), HOSTED_RELAY)
+  process.env.QUILT_SERVER = 'ws://127.0.0.1:4999'
+  try {
+    assert.equal(relayUrl(), 'ws://127.0.0.1:4999')
+    assert.equal(unsupportedRelay('ws://127.0.0.1:4999'), false, 'the development relay in use still reopens')
+  } finally {
+    delete process.env.QUILT_SERVER
+  }
 })
 
-test('checking a relay that is not there gives a clear error', async () => {
-  const env = { ...process.env, HOME: tmp('home2') }
-  await assert.rejects(run(process.execPath, [BIN, 'relay', 'check', 'ws://127.0.0.1:9'], { env }), (err) => /couldn't reach|no answer/.test(err.stderr))
+test("the hosted relay under either address, and sessions that ran on a computer's own relay", () => {
+  assert.equal(isHostedRelay('wss://relay.heyquilt.com'), true)
+  assert.equal(isHostedRelay('wss://cowove-relay.fly.dev/'), true)
+  assert.equal(isHostedRelay('wss://relay.example.com'), false)
+  assert.equal(unsupportedRelay('ws://127.0.0.1:4321'), true)
+  assert.equal(unsupportedRelay('ws://192.168.1.4:4321'), true)
+  assert.equal(unsupportedRelay('wss://cowove-relay.fly.dev'), false)
+  assert.equal(unsupportedRelay(undefined), false)
+  // A tunnel to someone's own relay is just as unsupported as the relay itself.
+  assert.equal(unsupportedRelay('wss://quiet-fox.trycloudflare.com'), true)
+  assert.equal(unsupportedRelay('wss://relay.example.com'), true)
+})
+
+test('quilt relay is gone', () => {
+  const r = spawnSync(process.execPath, [BIN, 'relay', 'set', 'wss://x.example.com'], { env: { ...process.env, HOME: home }, encoding: 'utf8' })
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /unknown command: relay/)
 })

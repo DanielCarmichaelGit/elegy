@@ -2,7 +2,7 @@
 // Usage: QUILT_API=https://api.heyquilt.com node scripts/link-smoke.mjs
 // It prints a link: open it, sign in, click Approve. The script then collects the
 // token (signing the poll like the app will), reads your profile, and signs out.
-import { generateIdentity, signChallenge } from '../src/identity.js'
+import { generateIdentity, signDeviceLink } from '../src/identity.js'
 
 const API = process.env.QUILT_API || 'https://api.heyquilt.com'
 const call = async (m, p, b, t) => { const r = await fetch(API + p, { method: m, headers: { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) }, body: b ? JSON.stringify(b) : undefined }); return { s: r.status, b: await r.json().catch(() => null) } }
@@ -10,7 +10,7 @@ const id = generateIdentity()
 const start = await call('POST', '/v1/device/start', { publicKey: id.publicKey, deviceName: 'link smoke test', platform: 'test' })
 if (start.s !== 200) { console.error('start failed', start); process.exit(1) }
 console.log(`Open ${start.b.verificationUrl}\nCheck it shows code ${start.b.userCode}, then Approve. Waiting…`)
-const signature = Buffer.from(signChallenge(id, 'device-link', Buffer.from(start.b.deviceCode))).toString('base64url')
+const signature = signDeviceLink(id, start.b.deviceCode)
 for (let i = 0; i < 200; i++) {
   await new Promise((r) => setTimeout(r, start.b.interval * 1000))
   const p = await call('POST', '/v1/device/poll', { deviceCode: start.b.deviceCode, signature })

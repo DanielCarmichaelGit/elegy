@@ -5,17 +5,30 @@ import os from 'node:os'
 import path from 'node:path'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-home-'))
-process.env.HOME = home // keep recent.json and relay data out of the real home
+process.env.HOME = home // keep recent.json, account.json and the identity out of the real home
 
 const { startUi } = await import('../src/ui-server.js')
-let ui, base
+const { startServer } = await import('../src/server.js')
+const { startTestApi, linkDevice } = await import('./api-helpers.js')
+const { newPassKeys } = await import('../src/passes.js')
+const { loadIdentity } = await import('../src/identity.js')
+const { saveAccount } = await import('../src/account.js')
+let ui, base, relay, accounts
 let shutdowns = 0
 
 before(async () => {
-  ui = await startUi({ port: 0, relayPort: 0, onShutdown: () => { shutdowns++ } })
+  // A signed-in computer: an accounts API that signs passes, a relay that needs them, and account.json.
+  const keys = newPassKeys()
+  accounts = await startTestApi({ passKey: keys.privateKey })
+  relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, passPublicKey: keys.publicKey })
+  process.env.QUILT_API_URL = accounts.api.url
+  process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
+  const { token } = await linkDevice(accounts, 'mem', loadIdentity())
+  saveAccount({ token, account: { id: 'mem', name: 'Mo', email: 'mo@acme.com' }, signedInAt: Date.now() })
+  ui = await startUi({ port: 0, onShutdown: () => { shutdowns++ } })
   base = `http://127.0.0.1:${ui.port}`
 })
-after(async () => { await ui.close() })
+after(async () => { await ui.close(); await relay.close(); await accounts.close() })
 
 const api = (method, p, body) => fetch(base + p, {
   method,
@@ -43,15 +56,15 @@ test('rejects requests for other hostnames (DNS rebinding)', async () => {
   assert.equal(status, 403)
 })
 
-test('create a hosted session, chat, send a file, stop', async () => {
+test('create a session, chat, send a file, stop', async () => {
   const dir = path.join(home, 'proj')
   fs.mkdirSync(dir)
   fs.writeFileSync(path.join(dir, 'a.txt'), 'hello')
-  const created = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'alice', tool: 'Claude Code', hostRelay: true })
+  const created = await api('POST', '/api/sessions', { mode: 'create', dir, tool: 'Claude Code' })
   assert.equal(created.status, 200, JSON.stringify(created.body))
   const id = created.body.id
   assert.ok(created.body.invite)
-  assert.equal(created.body.status.me.name, 'alice')
+  assert.equal(created.body.status.me.name, 'Mo', 'named after the account')
 
   const said = await api('POST', `/api/sessions/${id}/say`, { text: 'hi' })
   assert.equal(said.body.text, 'hi')
@@ -104,7 +117,7 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
     { type: 'assistant', uuid: 'a1', sessionId: 't', cwd: dir, timestamp: new Date().toISOString(), message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: path.join(dir, 'src/auth/login.ts') } }, { type: 'text', text: 'Added it.' }] } }
   ].map((l) => JSON.stringify(l)).join('\n') + '\n')
 
-  const created = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'sam', tool: 'Claude Code', hostRelay: true })
+  const created = await api('POST', '/api/sessions', { mode: 'create', dir, tool: 'Claude Code' })
   assert.equal(created.status, 200, JSON.stringify(created.body))
   const id = created.body.id
 
@@ -112,7 +125,7 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
   const byPath = Object.fromEntries(tree.body.files.map((f) => [f.path, f]))
   assert.ok(byPath['src/auth/login.ts'])
   assert.equal(byPath['logo.png'].binary, true)
-  assert.equal(byPath['src/auth/login.ts'].edited.by, 'sam')
+  assert.equal(byPath['src/auth/login.ts'].edited.by, 'Mo')
 
   const text = await api('GET', `/api/sessions/${id}/file?path=${encodeURIComponent('src/auth/login.ts')}`)
   assert.equal(text.body.text, 'export const login = 1\n')
@@ -131,9 +144,9 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
   // The transcript was picked up and shared.
   let feed
   for (let i = 0; i < 40; i++) {
-    feed = await api('GET', `/api/sessions/${id}/feed?who=sam`)
+    feed = await api('GET', `/api/sessions/${id}/feed?who=Mo`)
     if (feed.body.entries.length >= 3) break
-    await new Promise((r) => setTimeout(r, 50))
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
   assert.deepEqual(feed.body.entries.map((e) => [e.kind, e.text]), [
     ['prompt', 'Add a login form'], ['action', 'Edited src/auth/login.ts'], ['reply', 'Added it.']
@@ -145,49 +158,78 @@ test('agent feed workspace: tree, file, folder claim, sharing, feed', async () =
   const st = await api('GET', '/api/state')
   assert.equal(st.body.sessions.find((s) => s.id === id).status.me.agent.sharing, false)
   await api('POST', `/api/sessions/${id}/sharing`, { on: true })
-  feed = await api('GET', `/api/sessions/${id}/feed?who=sam`)
+  feed = await api('GET', `/api/sessions/${id}/feed?who=Mo`)
   assert.deepEqual(feed.body.entries.slice(-2).map((e) => e.kind), ['paused', 'resumed'])
   await api('POST', `/api/sessions/${id}/stop`)
 })
 
-test('hosted relay: check it, start a session on it, and save it as the default', async () => {
-  const { startServer } = await import('../src/server.js')
-  const relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, relayKey: 'k1' })
-  const url = `http://127.0.0.1:${relay.port}`
-  const check = await api('POST', '/api/relay/check', { url })
-  assert.equal(check.status, 200)
-  assert.equal(check.body.requiresKey, true)
-  const bad = await api('POST', '/api/relay/check', { url: 'ws://127.0.0.1:9' })
-  assert.equal(bad.status, 400)
-
-  const dir = path.join(home, 'hosted')
-  const noKey = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'sam', server: url })
-  assert.equal(noKey.status, 400)
-  assert.match(noKey.body.error, /relay key/)
-  const ok = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'sam', server: url, relayKey: 'k1', saveDefault: true })
-  assert.equal(ok.status, 200, JSON.stringify(ok.body))
+test("a session that ran on this computer's own relay is marked, and can't be reopened", async () => {
+  const dir = path.join(home, 'old-local')
+  fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify({ server: 'ws://127.0.0.1:4321', room: 'room-old', secret: 's', name: 'me' }))
+  const recentFile = path.join(home, '.quilt', 'recent.json')
+  const list = fs.existsSync(recentFile) ? JSON.parse(fs.readFileSync(recentFile, 'utf8')) : []
+  fs.writeFileSync(recentFile, JSON.stringify([{ dir, room: 'room-old', server: 'ws://127.0.0.1:4321', name: 'me', tool: 'Cursor', lastUsed: Date.now() }, ...list]))
   const st = await api('GET', '/api/state')
-  assert.deepEqual(st.body.profile.relay, { url: `ws://127.0.0.1:${relay.port}`, hasKey: true })
-  assert.equal(st.body.profile.relayMode, 'hosted')
-  await api('POST', `/api/sessions/${ok.body.id}/stop`)
-  await relay.close()
+  assert.equal(st.body.recent.find((r) => r.dir === dir).unsupported, true)
+  assert.equal(st.body.relay, undefined, 'no relay settings any more')
+  assert.ok(st.body.recent.filter((r) => r.dir !== dir).every((r) => r.unsupported === false))
+  const r = await api('POST', '/api/sessions', { mode: 'rejoin', dir })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.error, "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched.")
+  assert.ok(fs.existsSync(path.join(dir, '.quilt', 'config.json')), 'the folder is untouched')
+  assert.equal((await api('POST', '/api/relay/check', { url: 'ws://127.0.0.1:9' })).status, 404)
 })
 
-test('settings: profile is validated, saved, and used by new sessions', async () => {
-  const bad = await api('POST', '/api/settings', { name: '  ' })
-  assert.equal(bad.status, 400)
+test('a session on a tunnel to a computer\'s own relay is unsupported too', async () => {
+  const dir = path.join(home, 'old-tunnel')
+  const server = 'wss://quiet-fox.trycloudflare.com'
+  fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
+  fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify({ server, room: 'room-tun', secret: 's', name: 'me' }))
+  const recentFile = path.join(home, '.quilt', 'recent.json')
+  const list = fs.existsSync(recentFile) ? JSON.parse(fs.readFileSync(recentFile, 'utf8')) : []
+  fs.writeFileSync(recentFile, JSON.stringify([{ dir, room: 'room-tun', server, name: 'me', tool: 'Cursor', lastUsed: Date.now() }, ...list]))
+  const st = await api('GET', '/api/state')
+  assert.equal(st.body.recent.find((r) => r.dir === dir).unsupported, true)
+  assert.equal(st.body.defaults.relay, process.env.QUILT_SERVER, 'the app knows which relay invites may name')
+  const r = await api('POST', '/api/sessions', { mode: 'rejoin', dir })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.error, "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched.")
+})
+
+test('a crafted invite can\'t name another relay, or put the folder outside the join folder', async () => {
+  const invalid = 'That invite link is not valid. Copy the whole link they sent.'
+  const before = fs.readdirSync(home).sort()
+  for (const invite of ['https://evil.example/join/..%2F..%2F..#x', 'https://evil.example/join/room-ok#x', `http://127.0.0.1:${relay.port}/join/..%2F..#x`]) {
+    const r = await api('POST', '/api/sessions', { mode: 'join', invite })
+    assert.equal(r.status, 400, invite)
+    assert.equal(r.body.error, invalid, invite)
+  }
+  assert.deepEqual(fs.readdirSync(home).sort(), before, 'no folder was made or synced')
+  const { underJoinDir } = await import('../src/ui-server.js')
+  const root = path.join(home, 'Quilt')
+  assert.equal(underJoinDir(root, 'room-1a2b'), path.join(root, 'room-1a2b'))
+  for (const name of ['..', '../..', '../../etc', '/etc', 'a/b', '', '.']) {
+    assert.throws(() => underJoinDir(root, name), (err) => err.status === 400 && err.message === invalid, JSON.stringify(name))
+  }
+})
+
+test('settings: colour and AI tool are saved and used by new sessions; the name comes from the account', async () => {
   assert.equal((await api('POST', '/api/settings', { color: 'red' })).status, 400)
   assert.equal((await api('POST', '/api/settings', { tool: 'Notepad' })).status, 400)
-  const saved = await api('POST', '/api/settings', { name: 'Robin', color: '#3b6a9a', tool: 'Cursor', shareAgent: false, relayMode: 'local' })
+  const renamed = await api('POST', '/api/settings', { name: 'Robin' })
+  assert.equal(renamed.status, 400)
+  assert.equal(renamed.body.error, 'Change your name on heyquilt.com.')
+  const saved = await api('POST', '/api/settings', { color: '#3b6a9a', tool: 'Cursor', shareAgent: false })
   assert.equal(saved.status, 200, JSON.stringify(saved.body))
-  assert.equal(saved.body.name, 'Robin')
+  assert.equal(saved.body.name, 'Mo')
   assert.equal(saved.body.shareAgent, false)
   assert.equal((await api('GET', '/api/state')).body.profile.color, '#3b6a9a')
 
   const dir = path.join(home, 'profiled')
   const s = await api('POST', '/api/sessions', { mode: 'create', dir })
   assert.equal(s.status, 200, JSON.stringify(s.body))
-  assert.equal(s.body.status.me.name, 'Robin')
+  assert.equal(s.body.status.me.name, 'Mo')
   assert.equal(s.body.status.me.tool, 'Cursor')
   assert.equal(s.body.status.me.color, '#3b6a9a')
   assert.equal(s.body.status.me.agent.sharing, false, 'sharing follows the setting')
@@ -202,7 +244,7 @@ test('the owner can end a session for everyone from the app', async () => {
   const dir = path.join(home, 'ending')
   fs.mkdirSync(dir)
   fs.writeFileSync(path.join(dir, 'a.txt'), 'bye')
-  const created = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'olive', tool: 'Claude Code', hostRelay: true })
+  const created = await api('POST', '/api/sessions', { mode: 'create', dir, tool: 'Claude Code' })
   assert.equal(created.status, 200, JSON.stringify(created.body))
   const id = created.body.id
   for (let i = 0; i < 50; i++) {

@@ -9,48 +9,43 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent } from './runner.js'
-import { startServer } from './server.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
-import { getSettings, saveSettings, normalizeRelay, keyFor, checkRelay } from './settings.js'
+import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
-import { quiltHome, migrateDir } from './legacy.js'
-
-// The saved default relay, without its key.
-const savedRelay = () => {
-  const s = getSettings()
-  return s.relay ? { url: s.relay, hasKey: !!s.relayKey } : null
-}
+import { migrateDir } from './legacy.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile } from './account.js'
+import { personPasses } from './pass-source.js'
+import { INVALID_INVITE } from './ui/invite.js'
+import { loadIdentity } from './identity.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
+const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
+const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
+// Until this computer is signed in, only these answer.
+const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown'])
 
-/** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. Never includes the relay key. */
+/** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. */
 function profile () {
   const s = getSettings()
+  const account = readAccount()
   return {
-    name: s.name || os.userInfo().username,
+    name: account ? account.account.name : os.userInfo().username,
     tool: s.tool || detectTool(),
     color: s.color || null,
     joinDir: s.joinDir || '~/quilt',
     shareAgent: s.shareAgent !== false,
     summarize: !!s.summarize,
-    preferLocal: !!s.preferLocal,
-    relayMode: s.relayMode === 'local' || !s.relay ? 'local' : 'hosted',
-    publicUrl: s.publicUrl || '',
-    relay: savedRelay()
+    preferLocal: !!s.preferLocal
   }
 }
 
 /** Checks and saves profile/preference changes. Returns the new profile. */
 function updateProfile (b) {
   const patch = {}
-  if ('name' in b) {
-    const name = String(b.name || '').trim()
-    if (!name) throw httpError(400, 'Your name can\'t be empty.')
-    if (name.length > 64) throw httpError(400, 'Keep your name under 64 characters.')
-    patch.name = name
-  }
+  // Your name is your account's: it's changed on the website.
+  if ('name' in b) throw httpError(400, 'Change your name on heyquilt.com.')
   if ('tool' in b) {
     if (!TOOL_NAMES.includes(b.tool)) throw httpError(400, 'Pick an AI tool from the list.')
     patch.tool = b.tool
@@ -63,16 +58,6 @@ function updateProfile (b) {
   if ('shareAgent' in b) patch.shareAgent = b.shareAgent ? undefined : false
   if ('summarize' in b) patch.summarize = b.summarize ? true : undefined
   if ('preferLocal' in b) patch.preferLocal = b.preferLocal ? true : undefined
-  if ('relayMode' in b) patch.relayMode = b.relayMode === 'local' ? 'local' : undefined
-  if ('publicUrl' in b) patch.publicUrl = String(b.publicUrl || '').trim() || undefined
-  if ('relay' in b) {
-    const prev = getSettings()
-    if (!b.relay) { patch.relay = undefined; patch.relayKey = undefined } else {
-      patch.relay = normalizeRelay(b.relay)
-      if (patch.relay !== prev.relay) patch.relayKey = undefined
-    }
-  }
-  if (b.relayKey) patch.relayKey = String(b.relayKey)
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }
@@ -93,23 +78,105 @@ const STATIC = {
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/common.js': ['common.js', 'text/javascript; charset=utf-8'],
   '/mark.js': ['mark.js', 'text/javascript; charset=utf-8'],
+  '/invite.js': ['invite.js', 'text/javascript; charset=utf-8'],
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
+  '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/git.js': ['git.js', 'text/javascript; charset=utf-8']
 }
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
 // link, so a dev preview pane can show the app. Any local page could then open it too.
-export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, preview = false } = {}) {
+export async function startUi ({ port = 7420, onShutdown, preview = false } = {}) {
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
   const clients = new Set() // SSE responses
-  let relay = null
+  let passes = null // this computer's passes, shared by all its sessions
+  let link = null // signing in: what startLink returned, plus { state, error }
+  let signedOutReason = null // 'revoked' once the API turned this computer's token away
+  let checkedToken = false // asked the API about the saved token since the app started
+
+  const accountPasses = () => {
+    if (passes) return passes
+    const account = readAccount()
+    if (!account) throw Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
+    passes = personPasses({ token: account.token })
+    return passes
+  }
+
+  /** Forgets this computer's sign-in and stops its sessions. 'revoked': the API turned the token away. */
+  async function signedOut (reason) {
+    // Forget the sign-in first, so a start can't pick it up again while sessions stop.
+    passes = null
+    clearAccount()
+    for (const id of [...runs.keys()]) await stop(id)
+    signedOutReason = reason
+    broadcast('signed-out', { reason })
+  }
+
+  async function accountState () {
+    let account = readAccount()
+    if (account && !checkedToken) {
+      checkedToken = true
+      try {
+        // Picks up a name changed on heyquilt.com, and notices a computer signed out from there.
+        const fresh = { ...account, account: accountFromProfile(await fetchMe({ token: account.token })) }
+        saveAccount(fresh)
+        account = fresh
+      } catch (err) {
+        if (err.status === 401) { await signedOut('revoked'); account = null }
+        // Anything else (offline): keep the saved sign-in.
+      }
+    }
+    return {
+      signedIn: !!account,
+      account: account ? account.account : null,
+      reason: account ? null : signedOutReason,
+      link: link ? { state: link.state, userCode: link.userCode, verificationUrl: link.verificationUrl, error: link.error } : null
+    }
+  }
+
+  /** Starts linking this computer; the website approves it, and we collect the token in the background. */
+  async function beginLink () {
+    if (readAccount()) throw httpError(409, 'Already signed in.')
+    const identity = loadIdentity()
+    const mine = { ...await startLink({ identity }), state: 'waiting', error: null }
+    link = mine
+    waitForLink({ identity, link: mine, stopped: () => link !== mine }).then((r) => {
+      // Approved after it was cancelled or replaced: don't leave that token live on the server.
+      if (link !== mine) return revokeToken({ token: r.token })
+      // Not saved (or an odd reply), so this computer isn't signed in: don't leave the token live either.
+      const failed = (message) => {
+        revokeToken({ token: r.token })
+        mine.state = 'failed'
+        mine.error = message
+      }
+      let account
+      try { account = accountFromProfile(r.profile) } catch (err) { return failed(err.message) }
+      try {
+        saveAccount({ token: r.token, account, signedInAt: Date.now() })
+      } catch {
+        return failed(SAVE_FAILED)
+      }
+      link = null
+      passes = null
+      signedOutReason = null
+      checkedToken = true
+      broadcast('signed-in', {})
+    }, (err) => {
+      if (link !== mine) return
+      mine.state = err.expired ? 'expired' : err.denied ? 'denied' : 'failed'
+      mine.error = err.message
+    })
+    return accountState()
+  }
 
   const idFor = (dir) => crypto.createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 10)
+  // Recent sessions not open now. Ones that ran on another relay are marked: they can't reopen.
+  const recentList = () => recentSessions().filter((r) => !runs.has(idFor(r.dir))).map((r) => ({ ...r, unsupported: unsupportedRelay(r.server) }))
   const broadcast = (type, data) => {
     const frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
     for (const res of clients) res.write(frame)
@@ -125,22 +192,29 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
   // clients) fall back to "didn't join it from an invite".
   const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
-  async function start ({ mode, dir, name, tool, server, invite, prefer, hostRelay, publicUrl, relayKey, saveDefault, repo, branch, newBranch, base }) {
+  async function start ({ mode, dir, tool, invite, prefer, repo, branch, newBranch, base }) {
     const me = profile()
+    // Every session signs in to the relay as this computer's account.
+    const sessionPasses = accountPasses()
+    // Signing out (or in again) replaces `passes`, so a start that outlives the sign-in it began under can tell.
+    const current = () => passes === sessionPasses
+    const outlived = () => readAccount()
+      ? httpError(409, 'Your sign-in changed while this session was starting. Start it again.')
+      : Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
     if (mode === 'github') {
       // Clone first, then start a normal session on the clone.
       const repoName = String(repo || '').split('/').pop()
-      dir = path.resolve(expandHome(dir || path.join(me.joinDir, repoName || 'repo')))
+      dir = path.resolve(expandHome(dir || underJoinDir(me.joinDir, repoName || 'repo', 'That repository name is not valid.')))
       if (runs.has(idFor(dir))) throw httpError(400, 'A session is already running in that folder.')
       await gitops.cloneRepo({ repo, dir, branch, newBranch, base })
+      if (!current()) throw outlived()
       mode = 'create'
     }
-    name = name || me.name
     tool = tool || me.tool
     prefer = prefer || (me.preferLocal ? 'local' : 'remote')
     if (mode === 'join' && !dir) {
       const inv = decodeInvite(invite || '')
-      dir = path.join(expandHome(me.joinDir), inv.room)
+      dir = underJoinDir(me.joinDir, inv.room)
     }
     if (!dir) throw new Error('Choose a project folder.')
     dir = path.resolve(expandHome(dir))
@@ -154,30 +228,12 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     } else if (mode === 'rejoin') {
       const saved = readConfig(dir)
       if (!saved) throw new Error('No previous session in that folder.')
-      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}), ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
-      inviteServer = saved.inviteServer
-      name = name || saved.name
+      if (unsupportedRelay(saved.server)) throw httpError(400, LOCAL_RELAY_GONE)
+      conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
+      inviteServer = unsupportedRelay(saved.inviteServer) ? undefined : saved.inviteServer
       tool = tool || saved.tool
-      if (saved.server.startsWith(`ws://127.0.0.1:${relayPort}`)) await ensureRelay()
     } else {
-      // An explicit relay address wins; otherwise use what Settings says.
-      if (hostRelay === undefined) hostRelay = !server && me.relayMode === 'local'
-      if (hostRelay) {
-        publicUrl = publicUrl ?? me.publicUrl
-        await ensureRelay()
-        conn = newConn(`ws://127.0.0.1:${relay.port}`)
-        inviteServer = (publicUrl || '').trim() || `ws://${lanAddress()}:${relay.port}`
-        if (!/^wss?:\/\//.test(inviteServer)) inviteServer = inviteServer.replace(/^http/, 'ws')
-      } else {
-        server = server || me.relay?.url
-        if (!server) throw new Error('Set up a relay in Settings, or host one on this computer.')
-        const url = normalizeRelay(server)
-        conn = newConn(url, relayKey || keyFor(url))
-        if (saveDefault) {
-          const prev = getSettings()
-          saveSettings({ relay: url, relayKey: relayKey || (prev.relay === url ? prev.relayKey : undefined), relayMode: undefined })
-        }
-      }
+      conn = newConn()
     }
 
     const entry = { logs: [], joined: mode === 'join' }
@@ -186,23 +242,41 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
       if (entry.logs.length > 200) entry.logs.shift()
       broadcast('log', { id, ts: Date.now(), line })
     }
-    entry.run = await runSession({
-      dir,
-      conn,
-      name,
-      tool,
-      color: me.color,
-      shareByDefault: me.shareAgent,
-      summarizeByDefault: me.summarize,
-      joined: mode === 'join',
-      prefer: prefer === 'local' ? 'local' : 'remote',
-      inviteServer,
-      onLog: log,
-      onFatal: async (err) => {
-        log(`stopped: ${err.message}`)
-        await stop(id)
+    try {
+      entry.run = await runSession({
+        dir,
+        conn,
+        // The account's name until the first pass names us (the same name, from the API).
+        name: me.name,
+        tool,
+        color: me.color,
+        shareByDefault: me.shareAgent,
+        summarizeByDefault: me.summarize,
+        joined: mode === 'join',
+        prefer: prefer === 'local' ? 'local' : 'remote',
+        inviteServer,
+        passes: sessionPasses,
+        onLog: log,
+        onFatal: async (err) => {
+          log(`stopped: ${err.message}`)
+          await stop(id)
+          // Only this sign-in's passes may sign it out: a stale session's 401 is about a token already gone.
+          if (err.signedOut && current()) await signedOut('revoked')
+        }
+      })
+    } catch (err) {
+      if (!current()) throw outlived()
+      if (err.signedOut) {
+        await signedOut('revoked')
+        throw Object.assign(httpError(401, err.message), { signedOut: true })
       }
-    })
+      throw err
+    }
+    if (!current()) {
+      // Signed out while it was starting: it must not keep running on the old sign-in.
+      await entry.run.stop().catch(() => {})
+      throw outlived()
+    }
     runs.set(id, entry)
     const s = entry.run.session
     s.on('status-changed', () => pushStatus(id))
@@ -221,19 +295,6 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     runs.delete(id)
     await r.run.stop()
     broadcast('stopped', { id })
-  }
-
-  async function ensureRelay () {
-    if (relay) return relay
-    try {
-      relay = await startServer({ port: relayPort, dataDir: path.join(quiltHome(), 'relay-data'), log: () => {} })
-    } catch (err) {
-      if (err.code === 'EADDRINUSE') {
-        // Probably an `quilt serve` already running here; use it.
-        relay = { port: relayPort, external: true }
-      } else throw err
-    }
-    return relay
   }
 
   const get = (id) => {
@@ -262,12 +323,25 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
   }
 
   const api = {
+    'GET /api/account': () => accountState(),
+    'POST /api/account/start': () => beginLink(),
+    'POST /api/account/cancel': () => { link = null; return accountState() },
+    'POST /api/account/signout': async () => {
+      const account = readAccount()
+      // Forget the sign-in first, so a start can't pick it up again while sessions stop.
+      passes = null
+      link = null
+      clearAccount()
+      for (const id of [...runs.keys()]) await stop(id)
+      await signOut({ token: account?.token })
+      signedOutReason = null
+      return { ok: true }
+    },
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
-      recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))),
-      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors() },
+      recent: recentList(),
+      defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors(), relay: relayUrl() },
       profile: profile(),
-      relay: relay ? { port: relay.port, lan: `ws://${lanAddress()}:${relay.port}` } : null,
       maxFileBytes: MAX_SHARED_FILE_BYTES
     }),
     'POST /api/sessions': (b) => start(b),
@@ -300,12 +374,9 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
       return { on: r.run.session.setSummarize(b.on ? r.run.summarizer() : null) }
     },
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
-    'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentSessions().filter((r) => !runs.has(idFor(r.dir))) } },
+    'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentList() } },
     'GET /api/settings': () => profile(),
     'POST /api/settings': (b) => updateProfile(b),
-    'POST /api/relay/check': async (b) => {
-      try { return await checkRelay(b.url) } catch (err) { throw httpError(400, err.message) }
-    },
     'GET /api/github/status': () => gitops.ghStatus(),
     'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
@@ -360,6 +431,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     if (supplied !== token) return json(401, { error: 'Open quilt from the link printed by `quilt ui`.' })
 
     try {
+      if (!OPEN_ROUTES.has(`${req.method} ${url.pathname}`) && !readAccount()) return json(401, { error: 'Sign in to Quilt first.', signedOut: true })
       if (req.method === 'GET' && url.pathname === '/api/events') return events(req, res)
 
       let m = url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)\/send$/)
@@ -375,7 +447,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
       for await (const chunk of req) raw += chunk
       return json(200, await handler(raw ? JSON.parse(raw) : {}, sid, url))
     } catch (err) {
-      return json(err.status || 400, { error: err.message })
+      return json(err.status || 400, { error: err.message, ...(err.signedOut ? { signedOut: true } : {}) })
     }
   })
 
@@ -434,9 +506,9 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     port: actualPort,
     token,
     close: async () => {
+      link = null
       for (const id of [...runs.keys()]) await stop(id)
       for (const res of clients) res.end()
-      if (relay && !relay.external) await relay.close()
       await new Promise((r) => server.close(r))
     }
   }
@@ -474,11 +546,15 @@ function expandHome (p) {
   return p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p
 }
 
-function lanAddress () {
-  for (const list of Object.values(os.networkInterfaces())) {
-    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) return a.address
-  }
-  return '127.0.0.1'
+/**
+ * The folder for `name` (a room or repo name) inside the join folder. Invites only carry plain
+ * room names, but a name that would land anywhere else (`..`, a path) is refused all the same.
+ */
+export function underJoinDir (joinDir, name, message = INVALID_INVITE) {
+  const root = path.resolve(expandHome(joinDir))
+  const dir = path.resolve(root, String(name))
+  if (path.dirname(dir) !== root) throw httpError(400, message)
+  return dir
 }
 
 function httpError (status, message) {

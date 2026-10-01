@@ -4,19 +4,29 @@ import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remem
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
+import { renderSignIn } from './signin.js'
 
 // ---------------------------------------------------------------- boot --
+const SIGNED_OUT = 'This computer was signed out. Sign in again.'
+
+// Once per page, not per boot: signing in again calls boot() and mustn't add listeners twice.
+startDropdowns()
+
 async function boot () {
-  startDropdowns()
   if (!TOKEN) return renderLocked()
   // Shown only if loading takes a moment: the Q pieces itself together while we wait.
   const waiting = setTimeout(() => { if (!state.loaded) $('#app').innerHTML = `<div class="booting">${quiltMark({ word: false, loop: true })}</div>` }, 250)
   try {
+    const acc = await api('GET', '/api/account')
+    if (!acc.signedIn) {
+      clearTimeout(waiting)
+      return renderSignIn(acc.reason === 'revoked' ? SIGNED_OUT : '', boot)
+    }
+    state.account = acc.account
     const s = await api('GET', '/api/state')
     state.recent = s.recent
     state.defaults = s.defaults
     state.profile = s.profile
-    state.relay = s.relay
     state.maxFileBytes = s.maxFileBytes
     for (const sum of s.sessions) state.sessions.set(sum.id, sum)
     state.loaded = true
@@ -24,13 +34,29 @@ async function boot () {
     const last = recall('view')
     state.view = state.sessions.has(last) || last === 'settings' ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
     if (isSession(state.view)) await loadMessages(state.view)
-    connectEvents()
+    if (!state.events) connectEvents()
     render()
-    window.quiltDesktop?.onInvite(openInviteLink)
+    // Invite links that opened the desktop app wait until you're signed in.
+    if (!boot.invites) { boot.invites = true; window.quiltDesktop?.onInvite(openInviteLink) }
   } catch (err) {
-    renderLocked(err.message)
+    clearTimeout(waiting)
+    if (!err.signedOut) renderLocked(err.message)
   }
 }
+
+/** Back to the sign-in screen: after Sign out, or when the API turned this computer away. */
+export function signedOutNow (message = '') {
+  sessionUnmount() // stops an open session view's timers and bindings
+  state.events?.close()
+  state.events = null
+  state.loaded = false
+  state.account = null
+  for (const m of [state.sessions, state.messages, state.feeds, state.trees, state.files]) m.clear()
+  document.querySelectorAll('.modal-back').forEach((m) => m.remove())
+  renderSignIn(message, boot)
+}
+
+window.addEventListener('quilt-signed-out', () => signedOutNow(SIGNED_OUT))
 
 function connectEvents () {
   const es = state.events = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
@@ -77,6 +103,10 @@ function connectEvents () {
     if (state.view === id) { state.view = 'home'; refreshRecent() }
     render()
   })
+  es.addEventListener('signed-out', (e) => {
+    const { reason } = JSON.parse(e.data)
+    signedOutNow(reason === 'revoked' ? SIGNED_OUT : '')
+  })
 }
 
 const isSession = (view) => view !== 'home' && view !== 'settings'
@@ -121,7 +151,7 @@ export async function go (view) {
 
 // --------------------------------------------------------------- render --
 export async function shutdown () {
-  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session, the relay, and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
+  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
   try {
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop
@@ -239,7 +269,6 @@ export function openInvite (id) {
   const s = state.sessions.get(id)
   if (!s) return
   const d = decodeInvite(s.invite)
-  const local = d && !d.server.startsWith('wss://')
   const back = document.createElement('div')
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
@@ -250,7 +279,6 @@ export function openInvite (id) {
     ${s.viewInvite ? `<div class="label" style="margin-bottom:6px">View only</div>
     <div class="codebox"><code id="inv-view">${esc(s.viewInvite)}</code><button class="btn icon" data-copy="inv-view" title="Copy" aria-label="Copy view-only link">${I.copy}</button></div>` : ''}
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
-    ${local ? '<p class="hint warn">This is a local-network address. If your partner is somewhere else, run <code>cloudflared tunnel --url http://localhost:4321</code> and start a new session with the tunnel address as the public address (or use a hosted relay).</p>' : ''}
     <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later from the people menu.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`

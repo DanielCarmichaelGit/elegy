@@ -1,14 +1,23 @@
-// Per-user settings in ~/.quilt/settings.json, such as the default relay
-// (the hosted relay you and your friends use) and its key.
+// Per-user settings in ~/.quilt/settings.json: your colour, AI tool and session
+// defaults. And the one relay Quilt uses.
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { quiltHome } from './legacy.js'
+
+/** The relay every session uses. QUILT_SERVER overrides it, for development and tests only. */
+export const HOSTED_RELAY = 'wss://relay.heyquilt.com'
+// The hosted relay's older address points at the same relay, so its sessions reopen as they are.
+const HOSTED_ALIASES = [HOSTED_RELAY, 'wss://cowove-relay.fly.dev']
+// Settings from when you could pick a relay. Ignored, and dropped the next time settings are saved.
+const RETIRED = ['relay', 'relayKey', 'relayMode', 'publicUrl']
 
 const file = () => path.join(quiltHome(), 'settings.json')
 
 export function getSettings () {
-  try { return JSON.parse(fs.readFileSync(file(), 'utf8')) } catch { return {} }
+  let s = {}
+  try { s = JSON.parse(fs.readFileSync(file(), 'utf8')) || {} } catch {}
+  for (const k of RETIRED) delete s[k]
+  return s
 }
 
 export function saveSettings (patch) {
@@ -19,47 +28,19 @@ export function saveSettings (patch) {
   return next
 }
 
-/** "https://relay.example.com/" -> "wss://relay.example.com". Throws on anything that isn't a web address. */
-export function normalizeRelay (url) {
-  let u = String(url || '').trim().replace(/\/+$/, '')
-  if (!u) throw new Error('Enter a relay address, like wss://relay.example.com')
-  if (!/^[a-z]+:\/\//i.test(u)) u = `wss://${u}`
-  u = u.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:')
-  if (!/^wss?:\/\/[^\s/]+/i.test(u)) throw new Error('A relay address looks like wss://relay.example.com')
-  return u
+export function relayUrl () {
+  return process.env.QUILT_SERVER || HOSTED_RELAY
 }
 
-/** The relay to use for a new session, and the key to create rooms on it. */
-export function defaultRelay () {
-  const s = getSettings()
-  const relay = process.env.QUILT_SERVER || s.relay || ''
-  const key = process.env.QUILT_RELAY_KEY || (relay && relay === s.relay ? s.relayKey || '' : '')
-  return relay ? { relay, key } : null
+export function isHostedRelay (server) {
+  return HOSTED_ALIASES.includes(String(server || '').replace(/\/+$/, ''))
 }
 
-/** Key for creating rooms on `server`, if it's the saved default relay. */
-export function keyFor (server) {
-  const d = defaultRelay()
-  return d && d.relay === server ? d.key : (process.env.QUILT_RELAY_KEY || '')
-}
-
-/** Asks a relay how it's doing. Resolves to its /healthz data, or throws. */
-export async function checkRelay (url, { timeoutMs = 8000 } = {}) {
-  const http = normalizeRelay(url).replace(/^ws/i, 'http')
-  const started = Date.now()
-  const ctrl = new AbortController()
-  const t = setTimeout(() => ctrl.abort(), timeoutMs)
-  try {
-    const res = await fetch(`${http}/healthz`, { signal: ctrl.signal })
-    if (!res.ok) throw new Error(`the relay answered HTTP ${res.status}`)
-    const data = await res.json()
-    if (!data || data.ok !== true) throw new Error('that address answered, but it isn\'t a quilt relay')
-    return { ...data, latencyMs: Date.now() - started }
-  } catch (err) {
-    if (err.name === 'AbortError') throw new Error(`no answer from ${http} within ${timeoutMs / 1000}s`)
-    if (/fetch failed/.test(err.message)) throw new Error(`couldn't reach ${http} (${err.cause?.code || 'network error'})`)
-    throw err
-  } finally {
-    clearTimeout(t)
-  }
+/**
+ * A saved session on any relay other than Quilt's own (or the QUILT_SERVER relay in use): one that
+ * ran on someone's own computer, or through a tunnel to it. Quilt no longer runs those, and must
+ * never send this computer's pass to them.
+ */
+export function unsupportedRelay (server) {
+  return !!server && !isHostedRelay(server) && server !== relayUrl()
 }

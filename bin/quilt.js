@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { adoptLegacyEnv } from '../src/legacy.js'
@@ -11,15 +10,15 @@ const HELP = `quilt: real-time pair vibe coding with any AI tool
 
 Usage:
   quilt ui                                            Open the app in your browser (start, join, chat)
+  quilt login [--no-browser]                          Sign in to your heyquilt.com account
+  quilt logout                                        Sign this computer out
+  quilt whoami                                        Show which account this computer is signed in to
   quilt serve [--port 4321] [--data ./quilt-data]   Run a relay server (see docs/hosting.md)
   quilt api [--port 8787] [--memory]                   Run the accounts API (needs SUPABASE_URL etc.; --memory for local testing)
   quilt agent join <link> --name <name>               Join Quilt as an agent with an invite link from the website
   quilt agent whoami --name <name>                    Show who a joined agent is
-  quilt relay set <url> [--key <key>]                 Use a hosted relay by default
-  quilt relay [check [url] | clear]                   Show, test, or forget the default relay
-  quilt join [--server <ws(s)://relay>]               Start a new session in this folder
+  quilt join                                          Rejoin this folder's last session, or start a new one
   quilt join <invite-link>                            Join a partner's session in this folder
-  quilt join                                          Rejoin this folder's last session
   quilt setup                                         Connect Claude Code / Cursor / others via MCP
   quilt status                                        Show collaborators, claims, activity, chat
   quilt chat                                          Live chat (messages, DMs, files) in this terminal
@@ -36,11 +35,10 @@ Usage:
   quilt mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
-  --name <you>        Your display name (default: OS username)
+  --agent <name>      Join as a Quilt agent saved with \`quilt agent join\` (default: your account)
   --tool <tool>       What you're coding with, e.g. claude, cursor (shown to others)
   --dir <folder>      Project folder (default: current folder)
   --room <name> --secret <secret>   Join/create a specific room instead of using an invite
-  --agent            Join as an AI agent (shown with an agent badge)
   --prefer local      On first join, keep your local version of files that differ
                       (default: take the session's version and back yours up)
 `
@@ -54,7 +52,9 @@ async function main () {
     case 'api': return apiCmd()
     case 'agent': return agentCmd()
     case 'ui': return ui()
-    case 'relay': return relayCmd()
+    case 'login': return login()
+    case 'logout': return logout()
+    case 'whoami': return whoami()
     case 'join': return join()
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
@@ -91,9 +91,10 @@ async function serve () {
   const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir, ...(values.key ? { relayKey: values.key } : {}) })
   const c = srv.config
   console.log(`quilt relay listening on :${srv.port} (data: ${dataDir})`)
-  console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set QUILT_RELAY_KEY to restrict)'}`)
+  console.log(`  sign-in: ${c.passPublicKey ? 'a pass from the accounts API is required; new sessions are limited per account' : 'off (set QUILT_PASS_PUBLIC_KEY to require it)'}`)
+  if (!c.passPublicKey) console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set QUILT_RELAY_KEY to restrict)'}`)
   console.log(`  limits: ${Math.round(c.maxRoomBytes / 1048576)} MB per session, ${Math.round(c.maxRoomFileBytes / 1048576)} MB of shared files, ${c.maxConnsPerIp} connections per address, idle sessions removed after ${c.roomTtlDays} days`)
-  console.log(`start a session with:  quilt join --server ws://<this-host>:${srv.port}`)
+  console.log(`for development, point Quilt at it with QUILT_SERVER=ws://<this-host>:${srv.port}`)
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('relay', { port: srv.port, dataDir })
   const shutdown = async () => { await srv.close(); process.exit(0) }
@@ -114,7 +115,7 @@ async function apiCmd () {
     const { createConsoleMailer } = await import('../src/api/mailer.js')
     mailer = createConsoleMailer(console.log)
   } else {
-    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM']) if (!env[k]) fail(`${k} is not set`)
+    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM', 'PASS_SIGNING_KEY']) if (!env[k]) fail(`${k} is not set`)
     const { createSupabaseStore } = await import('../src/api/supabase-store.js')
     const { createUserVerifier } = await import('../src/api/auth.js')
     store = createSupabaseStore({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY })
@@ -122,11 +123,18 @@ async function apiCmd () {
     const { createSmtpMailer } = await import('../src/api/mailer.js')
     mailer = createSmtpMailer({ url: env.SMTP_URL, from: env.SMTP_FROM })
   }
+  let passKey = env.PASS_SIGNING_KEY || ''
+  if (values.memory && !passKey) {
+    const { newPassKeys } = await import('../src/passes.js')
+    const keys = newPassKeys()
+    passKey = keys.privateKey
+    console.log(`pass signing key made for this run; start a local relay with QUILT_PASS_PUBLIC_KEY=${keys.publicKey}`)
+  }
   // In memory anyone may use "Bearer local", so only listen on this machine unless asked.
   const host = values.host || (values.memory ? '127.0.0.1' : '0.0.0.0')
   const port = Number(values.port || env.PORT || 8787)
   const api = await startApi({
-    port, host, store, verifyUser, mailer,
+    port, host, store, verifyUser, mailer, passKey,
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
@@ -160,53 +168,62 @@ async function join () {
     args: argv,
     allowPositionals: true,
     options: {
-      server: { type: 'string' }, room: { type: 'string' }, secret: { type: 'string' },
-      name: { type: 'string' }, tool: { type: 'string' }, dir: { type: 'string' },
-      prefer: { type: 'string' }, agent: { type: 'boolean' }
+      room: { type: 'string' }, secret: { type: 'string' },
+      tool: { type: 'string' }, dir: { type: 'string' }, prefer: { type: 'string' }, agent: { type: 'string' }
     }
   })
   const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
+  const { sessionPasses } = await import('../src/pass-source.js')
+  const { clearAccount } = await import('../src/account.js')
+  // Every session signs in: as this computer's account, or as a saved agent.
+  let auth
+  try { auth = sessionPasses({ agent: values.agent || null }) } catch (err) { fail(err.message) }
+  const whyStopped = (err) => {
+    if (!err.signedOut || values.agent) return err.message
+    clearAccount()
+    return 'This computer was signed out. Run quilt login again.'
+  }
   const dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
+  const { unsupportedRelay } = await import('../src/settings.js')
   let conn
   if (positionals[0]) {
     try { conn = decodeInvite(positionals[0]) } catch (err) { fail(err.message) }
-  } else if (values.server || process.env.QUILT_SERVER) {
-    conn = newConn(values.server || process.env.QUILT_SERVER)
-    if (values.room) conn.room = values.room
+  } else if (values.room) {
+    conn = newConn()
+    conn.room = values.room
     if (values.secret || process.env.QUILT_SECRET) conn.secret = values.secret || process.env.QUILT_SECRET
-  } else if (saved.server) {
-    conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.key ? { key: saved.key } : {}) }
+  } else if (saved.server && !unsupportedRelay(saved.server)) {
+    conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
   } else {
-    const { defaultRelay } = await import('../src/settings.js')
-    const d = defaultRelay()
-    if (!d) fail('Give a relay to start a session (quilt join --server wss://…), set a default with `quilt relay set <url>`,\nor pass an invite link to join one. Or run `quilt ui` to do it in your browser.')
-    conn = newConn(d.relay, d.key)
-    console.log(`starting a new session on your default relay ${d.relay}`)
+    if (saved.server) console.log("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Starting a new session.")
+    conn = newConn()
+    console.log('starting a new session')
   }
 
   const stamp = () => new Date().toLocaleTimeString()
-  const name = values.name || saved.name || os.userInfo().username
   console.log(`quilt: syncing ${dir}`)
-  console.log(`  room ${conn.room} on ${conn.server} as "${name}"`)
   let run
   try {
     run = await runSession({
       dir,
       conn,
-      name,
+      name: auth.name,
       tool: values.tool || saved.tool,
       prefer: values.prefer === 'local' ? 'local' : 'remote',
-      kind: values.agent ? 'agent' : 'human',
+      kind: auth.kind,
+      passes: auth.passes,
+      identity: auth.identity,
       inviteServer: saved.room === conn.room ? saved.inviteServer : undefined,
       onLog: (m) => console.log(`[${stamp()}] ${m}`),
       onDebug: process.env.QUILT_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
-      onFatal: (err) => fail(err.message)
+      onFatal: (err) => fail(whyStopped(err))
     })
   } catch (err) {
-    fail(err.message)
+    fail(whyStopped(err))
   }
+  console.log(`  room ${conn.room} on ${conn.server} as "${run.session.name}"`)
 
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('sync', { dir })
@@ -220,42 +237,6 @@ async function join () {
   }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
-}
-
-async function relayCmd () {
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { key: { type: 'string' } } })
-  const { getSettings, saveSettings, normalizeRelay, checkRelay } = await import('../src/settings.js')
-  const [sub, arg] = positionals
-  const show = (h) => `ok · ${h.latencyMs} ms · ${h.requiresKey ? 'starting sessions needs a relay key' : 'open to anyone'}`
-  if (sub === 'set') {
-    if (!arg) fail('usage: quilt relay set <url> [--key <key>]')
-    let url
-    try { url = normalizeRelay(arg) } catch (err) { fail(err.message) }
-    try {
-      const h = await checkRelay(url)
-      console.log(`${url}: ${show(h)}`)
-      if (h.requiresKey && !values.key && getSettings().relay !== url) console.log('note: this relay needs a key to start sessions; add --key <key> (joining others\' sessions works without it)')
-    } catch (err) {
-      console.log(`warning: ${err.message}. Saving it anyway.`)
-    }
-    const prev = getSettings()
-    saveSettings({ relay: url, relayKey: values.key ?? (prev.relay === url ? prev.relayKey : undefined) })
-    return console.log(`default relay set. \`quilt join\` and the app now start sessions on ${url}.`)
-  }
-  if (sub === 'clear') {
-    saveSettings({ relay: undefined, relayKey: undefined })
-    return console.log('default relay cleared')
-  }
-  const s = getSettings()
-  const url = sub === 'check' ? (arg || s.relay) : s.relay
-  if (!sub && !url) return console.log('no default relay. Set one with `quilt relay set wss://your-relay.example.com` (see docs/hosting.md).')
-  if (!url) fail('usage: quilt relay check <url>')
-  try {
-    const h = await checkRelay(url)
-    console.log(`${normalizeRelay(url)}${url === s.relay ? ' (default)' : ''}: ${show(h)}${url === s.relay && s.relayKey ? ' · key saved' : ''}`)
-  } catch (err) {
-    fail(`${url}: ${err.message}`)
-  }
 }
 
 async function ui () {
@@ -280,6 +261,43 @@ async function ui () {
   const stop = async () => { console.log('\nstopping…'); await app.close(); process.exit(0) }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
+}
+
+async function login () {
+  const { values } = parseArgs({ args: argv, options: { 'no-browser': { type: 'boolean' } } })
+  const { readAccount, saveAccount, startLink, waitForLink, accountFromProfile } = await import('../src/account.js')
+  const { loadIdentity } = await import('../src/identity.js')
+  const current = readAccount()
+  if (current) return console.log(`Already signed in as ${current.account.name} (${current.account.email}). Run quilt logout first to switch accounts.`)
+  const identity = loadIdentity()
+  let link
+  try { link = await startLink({ identity }) } catch (err) { fail(err.message) }
+  console.log(`To sign in, open this page and approve this computer:\n\n  ${link.verificationUrl}\n\nCheck it shows the code ${link.userCode}. Waiting…`)
+  if (!values['no-browser']) openBrowser(link.verificationUrl)
+  let r
+  try { r = await waitForLink({ identity, link }) } catch (err) { fail(err.expired ? 'The code expired. Run quilt login again.' : err.message) }
+  const account = accountFromProfile(r.profile)
+  saveAccount({ token: r.token, account, signedInAt: Date.now() })
+  console.log(`Signed in as ${account.name} (${account.email}).`)
+}
+
+async function logout () {
+  const { readAccount, signOut } = await import('../src/account.js')
+  const current = readAccount()
+  if (!current) return console.log('Not signed in')
+  await signOut({ token: current.token })
+  console.log(`Signed out of ${current.account.email}.`)
+}
+
+async function whoami () {
+  const { readAccount } = await import('../src/account.js')
+  const current = readAccount()
+  if (!current) {
+    console.log('Not signed in')
+    process.exitCode = 1
+    return
+  }
+  console.log(`${current.account.name} (${current.account.email})`)
 }
 
 async function openBrowser (url) {
@@ -441,12 +459,15 @@ async function chat () {
 
 async function invite () {
   const { encodeInvite } = await import('../src/runner.js')
+  const { unsupportedRelay } = await import('../src/settings.js')
   let dir = process.cwd()
   while (true) {
     const f = path.join(dir, '.quilt', 'config.json')
     if (fs.existsSync(f)) {
       const c = JSON.parse(fs.readFileSync(f, 'utf8'))
-      return console.log(encodeInvite({ ...c, server: c.inviteServer || c.server }))
+      // Never hand out an invite to a relay Quilt won't connect to (or let anyone else connect to).
+      if (unsupportedRelay(c.server)) fail("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Run quilt join here to start a new session.")
+      return console.log(encodeInvite({ ...c, server: c.inviteServer && !unsupportedRelay(c.inviteServer) ? c.inviteServer : c.server }))
     }
     if (path.dirname(dir) === dir) fail('no session configured in this folder')
     dir = path.dirname(dir)

@@ -1,4 +1,4 @@
-# Hosting a quilt relay
+# Hosting the Quilt relay
 
 The relay is the one piece everyone in a session connects to. Host it once,
 and starting a session becomes one click with no tunnels or networking to
@@ -66,28 +66,29 @@ use `wss://`. The first time the image is published, GitHub makes the package
 private. To pull it without logging in, make it public under your GitHub
 profile → **Packages** → `quilt-relay` → **Package settings**. You can also build it yourself with `docker build -t quilt-relay .`
 
-## 2. Point Quilt at it
+## 2. Turn on sign-in
 
-On your machine:
+Quilt's relay only lets in people and agents signed in to heyquilt.com. The
+accounts API signs each of them a pass that lasts 10 minutes, and the relay
+checks it with the API's public key, which the API publishes. This reads it,
+checks it is a real Ed25519 key, and hands it to Fly (if anything is wrong it
+stops with a message, Fly gets nothing to set, and the relay keeps its current setting):
 
 ```bash
-quilt relay set wss://your-relay.example.com --key <your relay key>
-quilt relay            # check it: "ok · 40 ms · …"
+node scripts/relay-pass-key.mjs | fly secrets import --app cowove-relay
 ```
 
-From then on:
+With it set:
 
-- `quilt join` in a folder starts a new session on your relay.
-- The app (`quilt ui`) has it selected under **Hosted relay** when you start a
-  session.
-- Agents calling `quilt_start_session` use it too.
+- Every connection needs a pass. Apps too old to get one are refused with
+  "Update Quilt and sign in to continue".
+- The relay takes each person's name from their pass.
+- The relay key isn't used, and new sessions are limited per account
+  (`QUILT_MAX_NEW_ROOMS_PER_HOUR`) instead of per address.
 
-You can also set it from the app: enter the address and key when starting a
-session and leave **Make this my default relay** ticked.
-
-**People you invite don't need the key.** The key only lets you start new
-sessions. Joining a session only needs its invite link, which carries the
-relay address and that session's own secret, but never your relay key.
+Without it the relay works as it always has, with the relay key. The Quilt app
+only connects to Quilt's own relay for now; other relays are for development
+(`QUILT_SERVER=ws://localhost:4321 quilt ui`).
 
 ## Settings
 
@@ -95,13 +96,14 @@ All settings are environment variables on the relay.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `QUILT_RELAY_KEY` | *(none)* | Required to **start** sessions. Without it, anyone who can reach the relay can start sessions on it. |
+| `QUILT_PASS_PUBLIC_KEY` | *(none)* | The accounts API's public key (`/v1/passes/key`). With it, every connection needs a pass from the API. Set it as a secret. |
+| `QUILT_RELAY_KEY` | *(none)* | Required to **start** sessions when sign-in is off. Ignored when `QUILT_PASS_PUBLIC_KEY` is set. |
 | `PORT` | `4321` | Port to listen on (Render and Fly set this for you). |
 | `QUILT_DATA` | `/data` in Docker | Where sessions and shared files are stored. |
 | `QUILT_MAX_ROOM_MB` | `256` | Size limit for one session's shared project. Past it, the session stays readable, but new changes are refused. |
 | `QUILT_MAX_ROOM_FILES_MB` | `2048` | Storage for one session's files: those shared in chat (each at most 100 MB) and its stored large files together. |
 | `QUILT_MAX_CONNS_PER_IP` | `50` | Connections allowed from one address. |
-| `QUILT_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one address can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
+| `QUILT_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one account (or, with sign-in off, one address) can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
 | `QUILT_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
 | `QUILT_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
 | `QUILT_STORAGE_URL` | none | A Supabase project URL. With `QUILT_STORAGE_KEY`, large files go to Supabase Storage instead of the relay's disk. |
@@ -112,10 +114,11 @@ All settings are environment variables on the relay.
 ## Checking on it
 
 - The relay shows no page at its address: anything other than a session, an
-  invite link or a shared file answers "not found".
+  old invite link (which redirects to join.heyquilt.com) or a shared file
+  answers "not found".
 - `https://your-relay/healthz` returns JSON for monitoring (`ok`, and whether
   starting sessions needs a key). It doesn't reveal usage.
-- `quilt relay check wss://your-relay` tests it from any machine.
+- `curl https://your-relay/healthz` tests it from any machine.
 - Logs show sessions connecting and leaving, but never their contents.
 
 ## Large files

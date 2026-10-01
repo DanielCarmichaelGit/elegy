@@ -3,7 +3,8 @@
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
-import { parsePublicKey, verifyChallenge } from '../identity.js'
+import { parsePublicKey, verifyDeviceLink } from '../identity.js'
+import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
 import { HttpError, Raw } from './http.js'
 import { orgRoutes } from './routes/orgs.js'
 import { memberRoutes } from './routes/members.js'
@@ -20,7 +21,9 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60 }) {
+  // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
+  if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
   // Where agents reach this API: invite links and the join instructions point here.
   const api = String(apiUrl).replace(/\/+$/, '')
@@ -64,7 +67,28 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const limitInviteSend = makeLimiter(inviteSendLimit, 'too many invites sent; wait a bit and try again', { windowMs: 60 * 60_000, keyOf: (userId) => userId })
   const limitTokens = makeLimiter(tokenLimit, 'too many key refreshes; try again in a minute')
   const limitJoin = makeLimiter(joinLimit, 'too many tries; wait a minute and try again')
+  // Passes, per token (keyed on its hash, counted once the token checks out).
+  const limitPasses = makeLimiter(passLimit, 'too many passes; try again in a minute', { keyOf: (tokenHash) => tokenHash })
   const agentAuth = makeAgentAuth({ store, now, bearer })
+
+  /** Who a pass is for: a linked computer's account, or an agent and the key it registered. */
+  async function passHolder (req) {
+    if (bearer(req).startsWith('qa_')) {
+      const { agent } = await agentAuth.agentFromRequest(req)
+      if (!agent.publicKey) throw new HttpError(409, 'This agent has no key. Invite it again.')
+      return { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey }
+    }
+    const d = await device(req)
+    const p = await store.profile(d.userId)
+    return { sub: d.userId, kind: 'person', name: ((p && p.name) || 'Quilt user').slice(0, 64), key: d.publicKey }
+  }
+  const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
+
+  /** A person's profile and sign-in email, which the app keeps in account.json. */
+  async function profileWithEmail (userId) {
+    const p = await store.profile(userId)
+    return p && { ...p, email: (await store.userEmail(userId))?.email || '' }
+  }
 
   const COLOR = /^#[0-9a-fA-F]{6}$/
   function cleanProfile (b) {
@@ -105,14 +129,13 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (waiting) return [202, { status: 'pending' }]
       // Proof of possession: anyone can start a link with a computer's public key
       // (it's shared with session members), but only the computer can sign for it.
-      const sig = typeof body.signature === 'string' ? Buffer.from(body.signature, 'base64url') : null
-      if (!sig || !verifyChallenge(parsePublicKey(link.publicKey), 'device-link', Buffer.from(String(body.deviceCode)), sig)) throw new HttpError(401, "this computer's signature doesn't match")
+      if (!verifyDeviceLink(parsePublicKey(link.publicKey), String(body.deviceCode), body.signature)) throw new HttpError(401, "this computer's signature doesn't match")
       // Approved: claim the link before minting, so two polls racing on the same
       // link can't both win a token — only the caller that flips it gets one.
       if (!await store.claimLink(link.id, 'approved', 'consumed')) throw new HttpError(410, 'expired')
       const token = newToken('qd_')
       await store.setDeviceToken(link.deviceId, hashToken(token))
-      return { status: 'approved', token, profile: await store.profile(link.userId) }
+      return { status: 'approved', token, profile: await profileWithEmail(link.userId) }
     }],
 
     ['GET', /^\/v1\/device\/link\/([^/]+)$/, async (req, body, [code]) => {
@@ -141,7 +164,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
     ['GET', /^\/v1\/me$/, async (req) => {
       const d = await device(req)
-      return { profile: await store.profile(d.userId), device: { id: d.id, name: d.name } }
+      return { profile: await profileWithEmail(d.userId), device: { id: d.id, name: d.name } }
     }],
 
     ['PUT', /^\/v1\/me\/profile$/, async (req, body) => {
@@ -155,6 +178,21 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       const d = await device(req)
       await store.revokeDevice(d.id)
       return { ok: true }
+    }],
+
+    // A pass lets its holder into sessions on the relay for 10 minutes (see src/passes.js).
+    ['POST', /^\/v1\/passes$/, async (req) => {
+      needPassKey()
+      const holder = await passHolder(req)
+      limitPasses(hashToken(bearer(req)))
+      const exp = now() + PASS_TTL_MS
+      return { pass: signPass({ v: PASS_VERSION, ...holder, exp }, passKey), expiresAt: exp }
+    }],
+
+    // The relay's QUILT_PASS_PUBLIC_KEY. Public: it only checks passes.
+    ['GET', /^\/v1\/passes\/key$/, async () => {
+      needPassKey()
+      return { publicKey: passPublicKey(passKey) }
     }],
 
     ['DELETE', /^\/v1\/me\/account$/, async (req) => {
