@@ -13,6 +13,8 @@ Usage:
   quilt ui                                            Open the app in your browser (start, join, chat)
   quilt serve [--port 4321] [--data ./quilt-data]   Run a relay server (see docs/hosting.md)
   quilt api [--port 8787] [--memory]                   Run the accounts API (needs SUPABASE_URL etc.; --memory for local testing)
+  quilt agent join <link> --name <name>               Join Quilt as an agent with an invite link from the website
+  quilt agent whoami --name <name>                    Show who a joined agent is
   quilt relay set <url> [--key <key>]                 Use a hosted relay by default
   quilt relay [check [url] | clear]                   Show, test, or forget the default relay
   quilt join [--server <ws(s)://relay>]               Start a new session in this folder
@@ -50,6 +52,7 @@ async function main () {
   switch (cmd) {
     case 'serve': return serve()
     case 'api': return apiCmd()
+    case 'agent': return agentCmd()
     case 'ui': return ui()
     case 'relay': return relayCmd()
     case 'join': return join()
@@ -132,6 +135,24 @@ async function apiCmd () {
   console.log(`quilt accounts API listening on ${api.url}`)
   const shutdown = async () => { await api.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
+}
+
+async function agentCmd () {
+  const usage = 'usage: quilt agent join <link> --name <name> [--provider <p>] [--type <t>] [--description <d>]\n       quilt agent whoami --name <name>'
+  const [sub, ...rest] = argv
+  let parsed = { values: {}, positionals: [] }
+  try {
+    parsed = parseArgs({ args: rest, allowPositionals: true, options: { name: { type: 'string' }, provider: { type: 'string' }, type: { type: 'string' }, description: { type: 'string' } } })
+  } catch { fail(usage) }
+  const { values, positionals } = parsed
+  if (!values.name || !((sub === 'join' && positionals[0]) || sub === 'whoami')) fail(usage)
+  const { agentJoin, agentWhoami, describeAgent } = await import('../src/agent-join.js')
+  try {
+    if (sub === 'join') await agentJoin({ link: positionals[0], name: values.name, provider: values.provider, type: values.type, description: values.description })
+    else console.log(describeAgent(await agentWhoami({ name: values.name })))
+  } catch (err) {
+    fail(err.message)
+  }
 }
 
 async function join () {
