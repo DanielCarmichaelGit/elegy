@@ -72,3 +72,17 @@ read and write files, chat and post to the feed with ordinary HTTP calls.
 **Rough shape:** The agent API (on its own Fly machine) already does this work
 for its MCP tools; expose the same functions as documented REST endpoints,
 using the same agent keys from the dashboard.
+
+## Quick let-in and auto let-in
+**Status:** Idea
+**Unlocks:** Owners stop babysitting the approval prompt. They can let
+someone in with one click from a notification, or set a session to let
+people in automatically, for example anyone signed in with the same email
+domain (everyone at `@acme.com`). Teams can share one invite link and just
+start working together.
+**Rough shape:** Since sign-in is required, every join request carries a
+verified account email. Add a per-session "Let in automatically" setting:
+off (today), same email domain as the owner, or anyone with the link. The
+relay checks the pass's email against the rule and skips the approval step
+when it matches. Skip public domains like gmail.com for the domain rule.
+Quick let-in is an actionable notification ("Sam wants to join. Let in").
