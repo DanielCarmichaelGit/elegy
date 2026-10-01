@@ -8,7 +8,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import { startServer, relayConfig } from '../src/server.js'
 import { generateIdentity, signChallenge } from '../src/identity.js'
-import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS, CLOSE_PASS_EXPIRED, CLOSE_DENIED, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
+import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_CLAIM, MSG_CLAIMS, MSG_PASS, CLOSE_PASS_EXPIRED, CLOSE_DENIED, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
 import { newPassKeys } from '../src/passes.js'
 import { PASS_KEYS, makePass } from './pass-helpers.js'
 
@@ -32,7 +32,8 @@ async function relay (t, opts = {}) {
 /**
  * Connects the way the app does: signs the relay's challenge, then records what
  * the relay says. Resolves once let in (or told to wait for the owner), or with
- * { status, reason } when the upgrade is refused.
+ * { status, reason } when the upgrade is refused. Rejects if the relay closes
+ * the connection first, so a slow round-trip fails instead of hanging.
  */
 function connect (srv, r, { identity = generateIdentity(), pass, secret = 's', name = 'url-name', kind = 'human', viewSecret } = {}) {
   const q = new URLSearchParams({ secret, name, key: identity.publicKey, kind, features: 'large-files' })
@@ -40,19 +41,23 @@ function connect (srv, r, { identity = generateIdentity(), pass, secret = 's', n
   if (viewSecret) q.set('viewSecret', viewSecret)
   const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${r}?${q}`)
   ws.binaryType = 'arraybuffer'
-  const c = { ws, access: [], members: [] }
+  const c = { ws, access: [], members: [], claims: [] }
   c.closed = new Promise((resolve) => ws.on('close', (code, reason) => resolve({ code, reason: String(reason) })))
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     ws.on('unexpected-response', (req, res) => resolve({ status: res.statusCode, reason: res.statusMessage }))
+    c.closed.then(({ code, reason }) => reject(Object.assign(new Error(`closed with ${code} (${reason}) before being let in`), { code })))
     ws.on('error', () => {})
     ws.on('message', (data) => {
       const dec = decoding.createDecoder(new Uint8Array(data))
       const type = decoding.readVarUint(dec)
       if (type === MSG_AUTH) ws.send(bytesMessage(MSG_AUTH, signChallenge(identity, r, decoding.readVarUint8Array(dec))))
       else if (type === MSG_ACCESS) { c.access.push(JSON.parse(decoding.readVarString(dec))); resolve(c) } else if (type === MSG_MEMBERS) c.members.push(JSON.parse(decoding.readVarString(dec)))
+      else if (type === MSG_CLAIMS) c.claims.push(JSON.parse(decoding.readVarString(dec)))
     })
   })
 }
+/** How the relay closed the connection, failing (not hanging) if it doesn't within `ms`. */
+const closedWithin = (c, ms = 5000) => Promise.race([c.closed, wait(ms).then(() => { throw new Error('still open') })])
 const refresh = (c, pass) => c.ws.send(jsonMessage(MSG_PASS, { pass }))
 const http = (srv, p, init) => fetch(`http://127.0.0.1:${srv.port}${p}`, init)
 
@@ -279,4 +284,74 @@ test("a room owned by a computer key gets its owner's account the first time the
   const desktop = generateIdentity()
   const d = await connect(srv, r, { identity: desktop, pass: makePass({ identity: desktop, name: 'Olive', sub: 'user-olive' }) })
   assert.equal(d.access[0].owner, true, 'and then on any computer')
+})
+
+let claimIds = 0
+function claim (c, req) {
+  const id = ++claimIds
+  c.ws.send(jsonMessage(MSG_CLAIM, { id, ...req }))
+  return waitFor(() => c.claims.find((m) => m.reply && m.reply.id === id)?.reply)
+}
+
+test('claims belong to the account: two people named Sam cannot release each other\'s', async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const asSam = (identity, sub) => makePass({ identity, name: 'Sam', sub })
+  const k1 = generateIdentity()
+  const k2 = generateIdentity()
+  const k3 = generateIdentity()
+  const sam1 = await connect(srv, r, { identity: k1, pass: asSam(k1, 'user-sam-1') })
+  const sam2 = await connect(srv, r, { identity: k2, pass: asSam(k2, 'user-sam-2') })
+  assert.equal((await claim(sam1, { op: 'claim', pattern: 'src/a.js' })).ok, true)
+  assert.deepEqual(srv.rooms.get(r).meta.claims['src/a.js'].byId, 'person:user-sam-1')
+  const theirs = await claim(sam2, { op: 'release', pattern: 'src/a.js' })
+  assert.equal(theirs.ok, false)
+  assert.match(theirs.error, /only they can release it/)
+  assert.equal((await claim(sam2, { op: 'claim', pattern: 'src/a.js' })).ok, false, 'nor claim it over them')
+  assert.deepEqual(await claim(sam2, { op: 'release', pattern: '*' }), { id: claimIds, ok: true, released: 0 })
+  // The same account on another computer can.
+  const sam1b = await connect(srv, r, { identity: k3, pass: asSam(k3, 'user-sam-1') })
+  assert.deepEqual(await claim(sam1b, { op: 'release', pattern: 'src/a.js' }), { id: claimIds, ok: true, released: 1 })
+})
+
+test('older claims with no account can only be released by the owner', async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const owner = generateIdentity()
+  const o = await connect(srv, r, { identity: owner, pass: makePass({ identity: owner, name: 'Olive', sub: 'user-olive' }), viewSecret: 'v' })
+  const rm = srv.rooms.get(r)
+  rm.meta.claims['old.js'] = { by: 'Sam', pattern: 'old.js', note: '', ts: 1 }
+  rm.meta.members['person:user-sam'] = { name: 'Sam', kind: 'human', role: 'editor', scopes: [], since: 1 }
+  const k = generateIdentity()
+  const sam = await connect(srv, r, { identity: k, pass: makePass({ identity: k, name: 'Sam', sub: 'user-sam' }) })
+  assert.equal((await claim(sam, { op: 'release', pattern: 'old.js' })).ok, false, 'the same name is not enough')
+  assert.equal((await claim(o, { op: 'release', pattern: 'old.js' })).released, 1)
+})
+
+test('removing an account also removes its older key entries', async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const owner = generateIdentity()
+  const o = await connect(srv, r, { identity: owner, pass: makePass({ identity: owner, name: 'Olive', sub: 'user-olive' }), viewSecret: 'v' })
+  const rm = srv.rooms.get(r)
+  const old = generateIdentity()
+  rm.meta.members[old.publicKey] = { name: 'Gus', kind: 'human', role: 'editor', scopes: [], since: 1 }
+  const asGus = (identity) => makePass({ identity, name: 'Gus', sub: 'user-gus' })
+  const g = await connect(srv, r, { identity: old, pass: asGus(old) })
+  assert.equal(g.access[0].state, 'approved', 'let in by the key-keyed entry')
+  rm.meta.members['person:user-gus'] = { name: 'Gus', kind: 'human', role: 'editor', scopes: [], since: 2 }
+  assert.equal((await admin(o, { op: 'remove', key: 'person:user-gus' })).ok, true)
+  assert.equal((await closedWithin(g)).code, CLOSE_DENIED)
+  assert.equal(rm.meta.members[old.publicKey], undefined)
+  const back = await connect(srv, r, { identity: old, pass: asGus(old) })
+  assert.equal(back.access[0].state, 'pending', "can't get back in by key")
+})
+
+test('without passes, claims still belong to names', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {} })
+  t.after(() => srv.close())
+  const r = room()
+  const c = await connect(srv, r, { name: 'plain' })
+  assert.equal((await claim(c, { op: 'claim', pattern: 'x.js' })).ok, true)
+  assert.deepEqual(Object.keys(srv.rooms.get(r).meta.claims['x.js']).sort(), ['by', 'note', 'pattern', 'ts'])
 })

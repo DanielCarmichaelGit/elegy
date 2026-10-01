@@ -1,7 +1,9 @@
 // Relay server: holds one shared Yjs document per room, relays updates and
 // presence between clients, stores files shared in chat, and persists rooms
 // to disk. It checks who each client is (see identity.js) and owns the
-// room's claims, so only the person who made a claim can release it. Safe to
+// room's claims, so only the person who made a claim can release it (with
+// sign-in on, the account that made it, so two people who share a display
+// name can't release each other's claims). Safe to
 // run on the public internet: rooms need their secret, creating rooms can
 // require a relay key, and rooms have size quotas.
 //
@@ -95,7 +97,7 @@ class Room {
       if (fs.existsSync(this.metaFile)) this.meta = JSON.parse(fs.readFileSync(this.metaFile, 'utf8'))
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
-    this.meta.claims = this.meta.claims || {} // pattern -> { by, pattern, note, ts }
+    this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
     // Member id -> { name, kind, role, scopes, since }. The id is the public key, or
     // '<kind>:<sub>' for members approved with a pass (an account, on any computer).
     this.meta.members = this.meta.members || {}
@@ -168,6 +170,7 @@ class Room {
   accessFor (key, name, kind, invitedAs, account = '') {
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false }
     if (!this.meta.owner) { this.meta.owner = key; this.saveMeta() } // the room's creator signs in first
+    if (account) this.noteKey(account, key)
     if (this.isOwner(key, account)) {
       if (account) {
         // Remember the owner's account, so they're the owner on any computer.
@@ -184,6 +187,18 @@ class Room {
       return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
     }
     return { state: 'pending', invitedAs }
+  }
+
+  /**
+   * Remembers which computer keys an account has used here, so removing the
+   * account also removes members approved by one of those keys.
+   */
+  noteKey (account, key) {
+    const keys = (this.meta.accountKeys = this.meta.accountKeys || {})
+    const seen = keys[account] || []
+    if (seen.includes(key)) return
+    keys[account] = [...seen, key].slice(-20)
+    this.saveMeta()
   }
 
   /** The owner is their account once it's known, and until then the key that made the room. */
@@ -362,9 +377,11 @@ class Room {
       return { ok: true }
     }
     if (req.op === 'remove') {
-      delete this.meta.members[key]
+      // An account goes with any older entries for keys it has used here, so it can't get back in by key.
+      const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
+      for (const id of gone) delete this.meta.members[id]
       this.saveMeta()
-      for (const [cws, a] of this.access) if (a.id === key) cws.close(CLOSE_DENIED, 'The session owner removed you')
+      for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
       return { ok: true }
     }
     throw new Error('unknown request')
@@ -402,33 +419,48 @@ class Room {
     return true
   }
 
+  /** Who a claim from this connection belongs to: their name, or with sign-in on, their account. */
+  claimant (ws) {
+    const name = this.names.get(ws)
+    if (!ws.pass) return { name }
+    const a = this.access.get(ws)
+    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner) }
+  }
+
   claimList () {
     return Object.values(this.meta.claims).sort((a, b) => a.ts - b.ts)
   }
 
-  /** Handles a claim/release request from a verified name. Returns the reply fields. */
-  claimRequest (name, req) {
+  /**
+   * Handles a claim/release request. `who` is { name } without sign-in, where
+   * claims belong to a verified name; with it, { name, id, owner }, where they
+   * belong to the account (id). Returns the reply fields.
+   */
+  claimRequest (who, req) {
+    const { name, id } = who
+    // Whose claim is this? Older claims in a sign-in room have no account: only the owner may release them.
+    const mine = (c) => id ? c.byId === id : c.by === name
     const pattern = String(req.pattern ?? '').trim().replace(/^\.\//, '')
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
       const existing = this.meta.claims[pattern]
-      if (existing && existing.by !== name) throw new Error(`${pattern} is already claimed by ${existing.by}`)
+      if (existing && !mine(existing)) throw new Error(`${pattern} is already claimed by ${existing.by}`)
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
-      const other = this.claimList().find((c) => c.by !== name && patternsOverlap(c.pattern, pattern, paths))
+      const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, pattern, note: String(req.note ?? '').slice(0, 500), ts: Date.now() }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: String(req.note ?? '').slice(0, 500), ts: Date.now() }
       return { ok: true }
     }
     if (req.op === 'release') {
       if (pattern === '*' || !pattern) {
-        const mine = this.claimList().filter((c) => c.by === name)
-        for (const c of mine) delete this.meta.claims[c.pattern]
-        return { ok: true, released: mine.length }
+        const all = this.claimList().filter(mine)
+        for (const c of all) delete this.meta.claims[c.pattern]
+        return { ok: true, released: all.length }
       }
       const c = this.meta.claims[pattern]
       if (!c) return { ok: true, released: 0 }
-      if (c.by !== name) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it`)
+      if (!mine(c) && !(id && who.owner && !c.byId)) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it`)
       delete this.meta.claims[pattern]
       return { ok: true, released: 1 }
     }
@@ -580,7 +612,7 @@ class Room {
       let reply
       try {
         req = JSON.parse(decoding.readVarString(dec))
-        reply = { id: req.id, ...this.claimRequest(this.names.get(ws), req) }
+        reply = { id: req.id, ...this.claimRequest(this.claimant(ws), req) }
       } catch (err) {
         return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(), reply: { id: req.id, ok: false, error: err.message } }))
       }
