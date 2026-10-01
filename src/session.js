@@ -14,8 +14,9 @@ import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { formatBytes } from './status.js'
 import {
   loadIgnore, IGNORE_FILES, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
-  toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES
+  toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES, LARGE_FILE_BYTES, MAX_STORED_BINARY_BYTES
 } from './fsutil.js'
+import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob, blobId } from './largefiles.js'
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
 
@@ -53,7 +54,12 @@ export class Session extends EventEmitter {
 
     this.doc = new Y.Doc()
     this.files = this.doc.getMap('files') // path -> Y.Text
-    this.blobs = this.doc.getMap('blobs') // path -> { hash, data(base64) }
+    this.blobs = this.doc.getMap('blobs') // path -> { hash, data(base64) } or { hash, size, stored: { id, key } }
+    // keyId -> { wraps, ts }: file keys for large files, each wrapped for editors and viewers.
+    this.fileKeys = this.doc.getMap('fileKeys')
+    this.uploading = new Map() // path -> hash being uploaded
+    this.downloading = new Map() // path -> hash being downloaded
+    this.largeFilesOff = false // the relay has no file storage (an older relay)
     // pattern -> { by, pattern, note, ts }. The relay owns claims (it checks
     // who asks), so they live outside the shared doc; we keep the last list.
     this.claims = new Map()
@@ -210,6 +216,12 @@ export class Session extends EventEmitter {
       if (tr.origin === LOCAL) return
       for (const k of ev.changes.keys.keys()) this.fromRemote(k)
     })
+    this.fileKeys.observe(() => {
+      this.shareKeysWithViewers()
+      // Files whose key just arrived can be downloaded now.
+      for (const [rel, b] of this.blobs) if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
+    })
+    this.shareKeysWithViewers()
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
         for (const msg of item.content.getContent()) {
@@ -339,9 +351,10 @@ export class Session extends EventEmitter {
     let st
     try { st = fs.lstatSync(abs) } catch { return null }
     if (!st.isFile()) return { skip: true }
-    if (st.size > MAX_BINARY_BYTES) return { tooLarge: true }
+    if (st.size > MAX_STORED_BINARY_BYTES) return { tooLarge: true }
     const buf = fs.readFileSync(abs)
     if (looksBinary(buf)) {
+      if (buf.length > MAX_BINARY_BYTES && this.largeFilesOff) return { tooLarge: true }
       const hash = sha1(buf)
       return { binary: true, buf, hash, key: `bin:${hash}` }
     }
@@ -370,6 +383,7 @@ export class Session extends EventEmitter {
   /** Pushes the on-disk state of a path into the shared doc. Returns true if anything changed. */
   ingest (rel) {
     if (!this.syncable(rel)) return false
+    if (this.downloading.has(rel)) return false // our copy is being replaced by a download
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) {
@@ -404,6 +418,10 @@ export class Session extends EventEmitter {
     }
 
     if (disk.key === this.sharedKey(rel)) { this.lastKnown.set(rel, disk.key); return false }
+    if (disk.binary && disk.buf.length >= LARGE_FILE_BYTES && !this.largeFilesOff) {
+      this.uploadLarge(rel, disk)
+      return false
+    }
 
     let detail = ''
     this.doc.transact(() => {
@@ -445,7 +463,9 @@ export class Session extends EventEmitter {
     const abs = path.join(this.root, ...rel.split('/'))
     const t = this.files.get(rel)
     const b = this.blobs.get(rel)
-    if (t || b) {
+    if (b && b.stored) {
+      this.downloadLarge(rel, b)
+    } else if (t || b) {
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
       this.lastKnown.set(rel, this.sharedKey(rel))
@@ -492,7 +512,7 @@ export class Session extends EventEmitter {
     if (!this.syncable(rel)) return
     const t = this.files.get(rel)
     const b = this.blobs.get(rel)
-    if ((t || b) && this.sharedKey(rel) !== this.lastKnown.get(rel)) {
+    if ((t || (b && !b.stored)) && this.sharedKey(rel) !== this.lastKnown.get(rel)) {
       const dest = path.join(this.stateDir, 'rejected', `${Date.now()}`, ...rel.split('/'))
       fs.mkdirSync(path.dirname(dest), { recursive: true })
       fs.writeFileSync(dest, t ? t.toString() : Buffer.from(b.data, 'base64'))
@@ -530,10 +550,14 @@ export class Session extends EventEmitter {
       }
       this.lastKnown.delete(rel)
     } else {
-      if (!disk || disk.key !== shared) {
+      const b = this.blobs.get(rel)
+      if (b && b.stored) {
+        // Written once it's downloaded; downloadLarge sets lastKnown and says who changed it.
+        if (!disk || disk.key !== shared) { this.downloadLarge(rel, b); return }
+      } else if (!disk || disk.key !== shared) {
         fs.mkdirSync(path.dirname(abs), { recursive: true })
         const t = this.files.get(rel)
-        fs.writeFileSync(abs, t ? t.toString() : Buffer.from(this.blobs.get(rel).data, 'base64'))
+        fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
       }
       this.lastKnown.set(rel, shared)
     }
@@ -556,6 +580,130 @@ export class Session extends EventEmitter {
     }
     return null
   }
+
+  // ------------------------------------------------------- large files --
+
+  wrapKeys () {
+    const keys = [deriveWrapKey(this.secret, this.room)]
+    if (this.viewSecret) keys.push(deriveWrapKey(this.viewSecret, this.room))
+    return keys
+  }
+
+  /** The file keys this app can open: keyId -> key. */
+  fileKeysICanOpen () {
+    const mine = this.wrapKeys()
+    const out = new Map()
+    for (const [id, entry] of this.fileKeys) {
+      for (const w of (entry && entry.wraps) || []) {
+        const key = mine.map((wk) => unwrapKey(w, wk)).find(Boolean)
+        if (key) { out.set(id, key); break }
+      }
+    }
+    return out
+  }
+
+  /** The key for new uploads: the first one we can open, or a new one. */
+  currentFileKey () {
+    const open = this.fileKeysICanOpen()
+    if (open.size) {
+      const id = [...open.keys()].sort()[0]
+      return { id, key: open.get(id) }
+    }
+    const key = newFileKey()
+    const id = crypto.randomBytes(4).toString('hex')
+    const wraps = this.wrapKeys().map((wk) => wrapKey(key, wk))
+    this.doc.transact(() => this.fileKeys.set(id, { wraps, ts: Date.now() }), LOCAL)
+    return { id, key }
+  }
+
+  /** The owner (the only one with the view secret) makes every key open for viewers too. */
+  shareKeysWithViewers () {
+    if (!this.viewSecret) return
+    const vk = deriveWrapKey(this.viewSecret, this.room)
+    for (const [id, key] of this.fileKeysICanOpen()) {
+      const entry = this.fileKeys.get(id)
+      if (entry.wraps.some((w) => unwrapKey(w, vk))) continue
+      this.doc.transact(() => this.fileKeys.set(id, { ...entry, wraps: [...entry.wraps, wrapKey(key, vk)] }), LOCAL)
+    }
+  }
+
+  async blobRequest (id, action, body = {}) {
+    const res = await fetch(`${this.httpBase()}/blobs/${encodeURIComponent(this.room)}/${id}/${action}`, {
+      method: 'POST',
+      headers: { 'x-quilt-secret': this.secret, 'content-type': 'application/json', ...(this.key ? { 'x-quilt-key': this.key } : {}) },
+      body: JSON.stringify(body)
+    })
+    if (!res.ok) throw Object.assign(new Error(await res.text()), { status: res.status })
+    return res.json()
+  }
+
+  /** Encrypts and uploads a large file, then points the shared document at it. */
+  async uploadLarge (rel, disk) {
+    if (this.uploading.get(rel) === disk.hash) return
+    this.uploading.set(rel, disk.hash)
+    try {
+      const { id: keyId, key } = this.currentFileKey()
+      const id = blobId(key, disk.hash)
+      // Encrypted first: the upload link is signed for exactly the size we send.
+      const sealed = encryptBlob(disk.buf, key)
+      const target = await this.blobRequest(id, 'upload', { size: sealed.length })
+      const res = await fetch(new URL(target.url, this.httpBase() + '/'), {
+        method: target.method || 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: sealed
+      })
+      if (!res.ok) throw new Error(`upload failed (HTTP ${res.status})`)
+      const now = this.readDisk(rel)
+      if (!now || now.key !== disk.key) return // it changed again; that change is already queued
+      const existed = this.files.has(rel) || this.blobs.has(rel)
+      this.doc.transact(() => {
+        this.files.delete(rel)
+        this.blobs.set(rel, { hash: disk.hash, size: disk.buf.length, stored: { id, key: keyId } })
+        this.recordActivity(rel, existed ? 'edited' : 'created', `${disk.buf.length} bytes`)
+      }, LOCAL)
+      this.lastKnown.set(rel, disk.key)
+      this.noteMyEdit(rel)
+    } catch (err) {
+      if (err.status === 404) {
+        // An older relay without file storage: share it inside the document if it fits.
+        this.largeFilesOff = true
+        this.queue(rel)
+      } else {
+        this.log(`could not upload ${rel}: ${err.message}`)
+      }
+    } finally {
+      if (this.uploading.get(rel) === disk.hash) this.uploading.delete(rel)
+    }
+  }
+
+  /** Downloads and decrypts a large file, then writes it into the folder. */
+  async downloadLarge (rel, entry) {
+    if (this.downloading.get(rel) === entry.hash) return
+    this.downloading.set(rel, entry.hash)
+    try {
+      const key = this.fileKeysICanOpen().get(entry.stored.key)
+      if (!key) return // its key hasn't arrived yet; the fileKeys observer retries
+      const { url } = await this.blobRequest(entry.stored.id, 'download')
+      const res = await fetch(new URL(url, this.httpBase() + '/'))
+      if (!res.ok) throw new Error(`download failed (HTTP ${res.status})`)
+      const buf = decryptBlob(Buffer.from(await res.arrayBuffer()), key)
+      if (sha1(buf) !== entry.hash) throw new Error('the downloaded file did not match')
+      const cur = this.blobs.get(rel)
+      if (!cur || cur.hash !== entry.hash) return // replaced meanwhile; that version is on its way
+      const abs = resolveInside(this.root, rel)
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, buf)
+      this.lastKnown.set(rel, `bin:${entry.hash}`)
+      if (this.ready) this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })
+    } catch (err) {
+      this.log(`could not download ${rel}: ${err.message}`)
+    } finally {
+      if (this.downloading.get(rel) === entry.hash) this.downloading.delete(rel)
+    }
+  }
+
+  /** Owner only: deletes the session from the relay and sends everyone away. */
+  endForEveryone () { return this.conn.adminRequest({ op: 'end' }) }
 
   // --------------------------------------------------------------- watcher --
 
@@ -1053,7 +1201,7 @@ export class Session extends EventEmitter {
     const t = this.files.get(rel)
     if (t) return { path: rel, text: t.toString() }
     const b = this.blobs.get(rel)
-    if (b) return { path: rel, binary: true, size: Math.floor(b.data.length * 3 / 4) - (b.data.endsWith('==') ? 2 : b.data.endsWith('=') ? 1 : 0) }
+    if (b) return { path: rel, binary: true, size: b.size ?? (Math.floor(b.data.length * 3 / 4) - (b.data.endsWith('==') ? 2 : b.data.endsWith('=') ? 1 : 0)) }
     return null
   }
 

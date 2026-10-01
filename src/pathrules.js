@@ -4,6 +4,10 @@ import ignore from 'ignore'
 
 export const MAX_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_BINARY_BYTES = 8 * 1024 * 1024
+// Binary files this big or bigger are stored encrypted outside the session document.
+export const LARGE_FILE_BYTES = 256 * 1024
+// The most a stored file may be (the relay may allow less).
+export const MAX_STORED_BINARY_BYTES = 100 * 1024 * 1024
 
 // Never synced, regardless of .gitignore. .env files are excluded so secrets
 // stay on each person's machine; Claude Code worktrees are whole private
