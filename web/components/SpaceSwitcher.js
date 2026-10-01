@@ -40,7 +40,7 @@ export default function SpaceSwitcher ({ orgs, current }) {
   // Keep the active option in view when the list is long.
   useEffect(() => {
     if (open) document.getElementById(optionId(active))?.scrollIntoView({ block: 'nearest' })
-  })
+  }, [open, active]) // optionId only depends on the stable useId
 
   const show = (at = selected) => { setActive(at); setOpen(true) }
   const close = (refocus = true) => {
