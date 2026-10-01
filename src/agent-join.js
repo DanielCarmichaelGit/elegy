@@ -3,6 +3,7 @@
 // keep them in ~/.quilt/agents/<name>.json (readable only by you).
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { quiltHome } from './legacy.js'
 import { generateIdentity } from './identity.js'
 
@@ -17,12 +18,16 @@ export function agentFile (name, dir = quiltHome()) {
   return path.join(dir, 'agents', `${name}.json`)
 }
 
-/** The API's address and the token in an invite link. */
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+
+/** The API's address and the token in an invite link. Plain http is only
+ * allowed for a local address (testing); anything else must be https. */
 export function parseJoinLink (link) {
   let u
   try { u = new URL(String(link)) } catch { throw new Error(NOT_A_LINK) }
   const m = u.pathname.match(/^\/v1\/join\/(qj_[A-Za-z0-9_-]+)\/?$/)
-  if (!m || !['http:', 'https:'].includes(u.protocol)) throw new Error(NOT_A_LINK)
+  const protoOk = u.protocol === 'https:' || (u.protocol === 'http:' && LOCAL_HOSTS.has(u.hostname))
+  if (!m || !protoOk) throw new Error(NOT_A_LINK)
   return { api: u.origin, token: m[1] }
 }
 
@@ -35,15 +40,61 @@ async function send (fetchImpl, api, method, route, body, key) {
   return { status: res.status, ok: res.ok, body: await res.json().catch(() => null) }
 }
 
+/** Makes sure the agents directory exists, is not a symlink, and is private. */
+function ensureAgentsDir (dir) {
+  let st
+  try { st = fs.lstatSync(dir) } catch (err) {
+    if (err.code !== 'ENOENT') throw err
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    return
+  }
+  if (st.isSymbolicLink()) throw new Error(`Refusing to use ${dir}: it's a symlink`)
+  // Tighten up permissions someone (or some older version) left too loose.
+  if ((st.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700)
+}
+
+/** Writes the agent's file atomically: a private temp file in the same
+ * directory, fsynced, then renamed over the target. The rename replaces
+ * whatever is at the destination (even a symlink) without following it, and
+ * a half-written file can never be observed at the real path. */
 function save (file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 })
-  // writeFileSync's mode only applies when it creates the file.
-  fs.chmodSync(file, 0o600)
+  const dir = path.dirname(file)
+  ensureAgentsDir(dir)
+  let st
+  try { st = fs.lstatSync(file) } catch (err) { if (err.code !== 'ENOENT') throw err }
+  if (st && st.isSymbolicLink()) throw new Error(`Refusing to write ${file}: it's a symlink`)
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`)
+  const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
+  try {
+    fs.writeSync(fd, JSON.stringify(data, null, 2))
+    fs.fsyncSync(fd)
+  } catch (err) {
+    fs.closeSync(fd)
+    try { fs.unlinkSync(tmp) } catch {}
+    throw err
+  }
+  fs.closeSync(fd)
+  try {
+    fs.renameSync(tmp, file)
+  } catch (err) {
+    try { fs.unlinkSync(tmp) } catch {}
+    throw err
+  }
 }
 
 function load (file, name) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { throw new Error(`No agent called ${name} here. Run: quilt agent join <link> --name ${name}`) }
+  let raw
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch (err) {
+    if (err.code === 'ENOENT') throw new Error(`No agent called ${name} here. Run: quilt agent join <link> --name ${name}`)
+    throw new Error(`Couldn't read the saved agent file for ${name} (corrupt or unreadable): ${err.message}`)
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`Couldn't read the saved agent file for ${name} (corrupt or unreadable): ${err.message}`)
+  }
 }
 
 /** Uses an invite link once and saves the agent's keys. */

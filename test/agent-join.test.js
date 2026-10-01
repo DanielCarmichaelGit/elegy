@@ -61,6 +61,53 @@ test('used and malformed links, bad names and unknown agents are refused clearly
   await assert.rejects(agentWhoami({ name: 'nobody', dir: tmp() }), /quilt agent join <link> --name nobody/)
 })
 
+test('agent files are saved atomically with no leftover temp files', async () => {
+  const dir = tmp()
+  await agentJoin({ link: await newLink(), name: 'atomic', dir, log: () => {} })
+  const agentsDir = path.join(dir, 'agents')
+  const leftovers = fs.readdirSync(agentsDir).filter((f) => f.includes('.tmp-'))
+  assert.deepEqual(leftovers, [])
+  assert.deepEqual(fs.readdirSync(agentsDir), ['atomic.json'])
+})
+
+test('refuses to write through a symlinked agent file or agents directory', async () => {
+  const dir = tmp()
+  const file = agentFile('sym', dir)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const elsewhere = path.join(tmp(), 'elsewhere.json')
+  fs.symlinkSync(elsewhere, file)
+  await assert.rejects(agentJoin({ link: await newLink(), name: 'sym', dir, log: () => {} }), /symlink/)
+  assert.ok(!fs.existsSync(elsewhere), "the symlink's target was never written")
+
+  const dir2 = tmp()
+  fs.symlinkSync(tmp(), path.join(dir2, 'agents'))
+  await assert.rejects(agentJoin({ link: await newLink(), name: 'x', dir: dir2, log: () => {} }), /symlink/)
+})
+
+test('tightens an agents directory left with loose permissions', async () => {
+  const dir = tmp()
+  const agentsDir = path.join(dir, 'agents')
+  fs.mkdirSync(agentsDir, { mode: 0o755 })
+  await agentJoin({ link: await newLink(), name: 'loose', dir, log: () => {} })
+  assert.equal(fs.statSync(agentsDir).mode & 0o777, 0o700)
+})
+
+test('parseJoinLink requires https except for a local address', () => {
+  assert.throws(() => parseJoinLink('http://example.com/v1/join/qj_a'), /invite link/)
+  assert.deepEqual(parseJoinLink('http://127.0.0.1:4000/v1/join/qj_a'), { api: 'http://127.0.0.1:4000', token: 'qj_a' })
+  assert.deepEqual(parseJoinLink('http://localhost:4000/v1/join/qj_a'), { api: 'http://localhost:4000', token: 'qj_a' })
+  assert.deepEqual(parseJoinLink('http://[::1]:4000/v1/join/qj_a'), { api: 'http://[::1]:4000', token: 'qj_a' })
+  assert.deepEqual(parseJoinLink('https://example.com/v1/join/qj_a'), { api: 'https://example.com', token: 'qj_a' })
+})
+
+test('a corrupt saved agent file is reported differently from a missing one', async () => {
+  const dir = tmp()
+  await agentJoin({ link: await newLink(), name: 'corrupt', dir, log: () => {} })
+  fs.writeFileSync(agentFile('corrupt', dir), '{ not json')
+  await assert.rejects(agentWhoami({ name: 'corrupt', dir }), /corrupt or unreadable/)
+  await assert.rejects(agentWhoami({ name: 'nobody-here', dir }), /No agent called nobody-here here/)
+})
+
 test('quilt agent needs a subcommand, a link to join, and a name', () => {
   const bin = new URL('../bin/quilt.js', import.meta.url).pathname
   for (const args of [['agent'], ['agent', 'join', '--name', 'x'], ['agent', 'join', 'https://x/v1/join/qj_a'], ['agent', 'whoami'], ['agent', 'dance', '--name', 'x']]) {
