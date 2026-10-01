@@ -384,3 +384,44 @@ test('without passes, claims still belong to names', async (t) => {
   assert.equal((await claim(c, { op: 'claim', pattern: 'x.js' })).ok, true)
   assert.deepEqual(Object.keys(srv.rooms.get(r).meta.claims['x.js']).sort(), ['by', 'note', 'pattern', 'ts'])
 })
+
+test("in a session with an owner, files and stored files need the owner's approval, not just the secret", async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const owner = generateIdentity()
+  const ownerPass = makePass({ identity: owner, name: 'Olive', sub: 'user-olive' })
+  const o = await connect(srv, r, { identity: owner, pass: ownerPass, viewSecret: 'v' })
+  const NOT_LET_IN = "The session owner hasn't let you in yet."
+  const blobId = 'b'.repeat(32)
+  const routes = (pass) => ({
+    upload: () => http(srv, `/files/${r}`, { method: 'POST', headers: { 'x-quilt-secret': 's', 'x-quilt-pass': pass }, body: 'hi' }),
+    download: (id) => http(srv, `/files/${r}/${id}`, { headers: { 'x-quilt-secret': 's', 'x-quilt-pass': pass } }),
+    blob: (action) => http(srv, `/blobs/${r}/${blobId}/${action}`, { method: 'POST', headers: { 'x-quilt-secret': 's', 'x-quilt-pass': pass, 'content-type': 'application/json' }, body: JSON.stringify({ size: 4 }) })
+  })
+  const mine = routes(ownerPass)
+  const up = await mine.upload()
+  assert.equal(up.status, 201, 'the owner can')
+  const fileId = await up.text()
+  assert.equal((await mine.blob('upload')).status, 200)
+
+  const gus = generateIdentity()
+  const gusPass = makePass({ identity: gus, name: 'Gus', sub: 'user-gus' })
+  const g = await connect(srv, r, { identity: gus, pass: gusPass })
+  assert.equal(g.access[0].state, 'pending')
+  const theirs = routes(gusPass)
+  for (const res of [await theirs.upload(), await theirs.download(fileId), await theirs.blob('upload'), await theirs.blob('download')]) {
+    assert.equal(res.status, 403)
+    assert.equal(await res.text(), NOT_LET_IN)
+  }
+  const waiting = await waitFor(() => latest(o).pending?.find((p) => p.name === 'Gus'))
+  assert.equal((await admin(o, { op: 'approve', key: waiting.key })).ok, true)
+  assert.equal((await theirs.upload()).status, 201)
+  assert.equal(await (await theirs.download(fileId)).text(), 'hi')
+  assert.equal((await theirs.blob('upload')).status, 200)
+  assert.equal((await theirs.blob('download')).status, 200)
+
+  // A member approved before sign-in, under their computer's key, still counts.
+  const old = generateIdentity()
+  srv.rooms.get(r).meta.members[old.publicKey] = { name: 'Lee', kind: 'human', role: 'editor', scopes: [], since: 1 }
+  assert.equal((await routes(makePass({ identity: old, name: 'Lee', sub: 'user-lee' })).upload()).status, 201)
+})

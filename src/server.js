@@ -208,6 +208,18 @@ class Room {
     return this.meta.owner === key
   }
 
+  /**
+   * With sign-in on: may this pass use the session's files over HTTP? In a session with an
+   * owner, only the owner and the people they let in may (by account, or an older member's key).
+   * Unlike accessFor, it changes nothing.
+   */
+  letIn (pass) {
+    if (!this.controlled) return true
+    const account = `${pass.kind}:${pass.sub}`
+    if (this.meta.owner && this.isOwner(pass.key, account)) return true
+    return !!(this.meta.members[account] || this.meta.members[pass.key])
+  }
+
   /** The id the member list shows the owner under. */
   get ownerId () { return this.meta.ownerSub || this.meta.owner }
 
@@ -907,6 +919,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       }
       if (creating) noteCreated(starter)
       const done = () => { if (!room.conns.size && room.onEmpty) room.onEmpty() }
+      if (passKey && !room.letIn(pass)) { done(); return text(403, NOT_LET_IN) }
       return readJson(req, 1024, async (err, body) => {
         try {
           if (err) return text(400, err.message)
@@ -948,6 +961,10 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
       return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
+    }
+    if (passKey && !room.letIn(pass)) {
+      if (!room.conns.size && room.onEmpty) room.onEmpty()
+      return text(403, NOT_LET_IN)
     }
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) {
@@ -1191,6 +1208,7 @@ const TOO_BIG = 'Session over the size limit'
 const ENDED_MESSAGE = 'The owner ended this session'
 const NEEDS_UPDATE = 'This session needs a newer version of Quilt. Update Quilt, then join again.'
 const SIGN_IN = 'Update Quilt and sign in to continue'
+const NOT_LET_IN = "The session owner hasn't let you in yet."
 const PASS_EXPIRED = 'Your sign-in expired. Reconnecting.'
 
 function reject (socket, code, message) {
