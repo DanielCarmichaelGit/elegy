@@ -17,6 +17,7 @@ import { PASS_REFRESH_MS } from './pass-source.js'
 const ROOM_FULL_MESSAGE = 'This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'
 
 const REQUEST_TIMEOUT_MS = 10000
+const IDENTITY_CHANGED = "This computer's Quilt identity changed. Sign out and sign in again."
 // Never quote the relay URL in errors: it carries the room secret and the session pass.
 const BAD_ADDRESS = "Couldn't connect to the relay: the address isn't valid."
 // A pass that lapses this soon after connecting wasn't really valid: after a few in a
@@ -92,6 +93,13 @@ export class Connection extends EventEmitter {
       if (this.closed) return
       // Only now: if fetching failed, the retry must still ask for a fresh pass.
       this.passStale = false
+      // The relay would refuse a pass for another key with "update and sign in", which isn't the
+      // fix: ~/.quilt/identity.json changed since this computer signed in.
+      const payload = this.passes.payload
+      if (payload && payload.key && payload.key !== this.identity.publicKey) {
+        this.emit('fatal', new Error(IDENTITY_CHANGED))
+        return this.close()
+      }
       const q = new URLSearchParams(this.query)
       q.set('pass', pass)
       this.emit('pass', this.passes.payload)

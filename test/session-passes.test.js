@@ -175,9 +175,21 @@ test('a pass the relay turns away twice is fatal', async (t) => {
   assert.match((await fatalOf(conn)).message, /Update Quilt and sign in to continue/)
 })
 
+test("a pass for another key (this computer's identity changed) stops before connecting, saying so", async () => {
+  const id = generateIdentity()
+  const conn = new Connection({ server, room: 'sp-4k', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes: testPasses(generateIdentity()) })
+  const err = await fatalOf(conn)
+  assert.equal(err.message, "This computer's Quilt identity changed. Sign out and sign in again.")
+  assert.equal(conn.closed, true)
+  assert.equal(conn.ws, null, 'never connected to the relay')
+  assert.equal(srv.rooms.has('sp-4k'), false)
+})
+
 test('a relay address that is not valid is fatal, and the error never shows the secret or the pass', async () => {
-  for (const passes of [null, testPasses(generateIdentity())]) {
-    const conn = new Connection({ server: 'ws://bad host', room: 'sp-x', secret: 'TOPSECRET', name: 'Dana', identity: generateIdentity(), doc: new Y.Doc(), passes })
+  for (const withPasses of [false, true]) {
+    const identity = generateIdentity()
+    const passes = withPasses ? testPasses(identity) : null
+    const conn = new Connection({ server: 'ws://bad host', room: 'sp-x', secret: 'TOPSECRET', name: 'Dana', identity, doc: new Y.Doc(), passes })
     const err = await fatalOf(conn)
     assert.equal(err.message, "Couldn't connect to the relay: the address isn't valid.")
     assert.ok(!/TOPSECRET|pass=/.test(String(err.stack)))
