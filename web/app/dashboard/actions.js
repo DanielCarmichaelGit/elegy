@@ -15,15 +15,19 @@ export async function unlinkComputer (formData) {
   revalidatePath('/dashboard')
 }
 
-// Creating an agent mints a key and an identity, so it goes through the API. The key comes back once.
-export async function createAgent (prev, formData) {
+// An agent invite link is shown once, so it comes back to the form rather than through a redirect.
+export async function createAgentInvite () {
   const user = await requireUser('/dashboard')
-  const name = String(formData.get('name') || '').trim()
-  if (!name) return { error: 'Give the agent a name.' }
-  const r = await apiCall(user, 'POST', '/v1/agents', { name })
-  if (!r.ok) return { error: r.data?.error || 'Couldn’t create the agent. Try again.' }
+  const r = await apiCall(user, 'POST', '/v1/agent-invites', {})
+  if (!r.ok) return { error: r.data?.error || 'Couldn’t make an invite link. Try again.' }
   revalidatePath('/dashboard')
-  return { agent: r.data.agent, key: r.data.key }
+  return { link: r.data.link }
+}
+
+export async function cancelAgentInvite (formData) {
+  const user = await requireUser('/dashboard')
+  await apiCall(user, 'DELETE', `/v1/agent-invites/${encodeURIComponent(String(formData.get('id')))}`)
+  revalidatePath('/dashboard')
 }
 
 export async function revokeAgent (formData) {
