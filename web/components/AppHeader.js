@@ -11,7 +11,6 @@ import { SPACE_COOKIE, PERSONAL, spaceHome } from '@/lib/space.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { PERSONAL_NAV } from '@/lib/nav.js'
 
-
 /** Initials for the avatar: from the profile name, else the email. */
 export function initials (name, email) {
   const words = String(name || '').trim().split(/\s+/).filter(Boolean)

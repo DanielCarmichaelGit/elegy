@@ -41,7 +41,8 @@ export default async function Agents () {
                       <span className='muted'>{s ? s.why : `Added ${when(a.createdAt)} · last used ${when(a.lastUsedAt)}`}</span>
                     </span>
                     <form action={revokeAgent}><input type='hidden' name='id' value={a.id} /><button className='btn ghost danger'>Revoke</button></form>
-                  </div>)
+                  </div>
+                )
               })}
             </div>)}
         </section>
