@@ -63,7 +63,7 @@ function sidebarHtml (view) {
     </nav>
 
     <div class="side-foot">
-      <button class="relay-status" id="relay-status" data-view="settings" data-anchor="relay-sec" title="Relay settings"></button>
+      <div class="relay-status" id="relay-status"></div>
       <button class="btn sm ghost side-off" data-shutdown>${I.power}<span>Shut down</span></button>
     </div>
   </aside>`
@@ -142,7 +142,7 @@ function paintRelayStatus () {
   const line = !st ? 'Checking…' : st.ok ? `Online · ${st.latencyMs} ms` : 'Can’t reach it'
   el.innerHTML = `<span class="dot" style="background:${!st ? 'var(--faint)' : st.ok ? 'var(--ok)' : 'var(--bad)'}"></span>
     <span class="rs-main"><b>${esc(host)}</b><span>${esc(line)}</span></span>`
-  el.title = st && !st.ok ? st.error : 'Relay settings'
+  el.title = st && !st.ok ? st.error : ''
 }
 
 // ------------------------------------------------------------------ home --
@@ -215,7 +215,7 @@ function homeHtml () {
 
   <section class="card relay-note">
     ${I.globe}
-    <p>${relayExplainer()} <button type="button" class="linkish" data-view="settings" data-anchor="relay-sec">Relay settings</button></p>
+    <p>${relayExplainer()}</p>
   </section>`
 }
 
@@ -531,7 +531,8 @@ function settingsHtml () {
     </div>
   </form>
 
-  <form class="card settings-sec" id="relay-sec" autocomplete="off">
+  <!-- Hidden for now: everyone uses the hosted relay, so this isn't something people should need to think about. -->
+  <form class="card settings-sec" id="relay-sec" autocomplete="off" hidden>
     <div class="sec-intro"><h2>Relay</h2><p>The server that connects you and your partners. Sessions left unused for 30 days are deleted from it.</p></div>
     <div class="sec-body">
       <div class="choice-cards" role="radiogroup" aria-label="Relay">

@@ -784,3 +784,8 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .pm-empty { color: var(--muted); font-size: 13px; padding: 2px 0 8px; }
 .pm-foot { padding: 8px 12px 12px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; }
 @media (prefers-reduced-motion: reduce) { .pm-switch input, .pm-switch input::after { transition: none; } }
+
+/* The relay section is hidden for now; [hidden] must beat .settings-sec display:grid. */
+.settings-sec[hidden] { display: none; }
+.relay-status { cursor: default; }
+.relay-status:hover { border-color: var(--border); }
