@@ -21,7 +21,15 @@ export async function createAgentInvite () {
   const r = await apiCall(user, 'POST', '/v1/agent-invites', {})
   if (!r.ok) return { error: r.data?.error || 'Couldn’t make an invite link. Try again.' }
   revalidatePath('/dashboard')
-  return { link: r.data.link }
+  return { link: r.data.link, id: r.data.invite.id }
+}
+
+// Whether a shown invite link is still waiting, so the page can notice the agent join.
+export async function agentInviteWaiting (id) {
+  const user = await requireUser('/dashboard')
+  const r = await apiCall(user, 'GET', '/v1/agent-invites')
+  if (!r.ok) return true
+  return (r.data?.invites || []).find((i) => i.id === id)?.status === 'waiting'
 }
 
 export async function cancelAgentInvite (formData) {

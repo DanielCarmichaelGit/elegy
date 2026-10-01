@@ -51,8 +51,14 @@ if (!app.requestSingleInstanceLock()) {
     showWindow()
     openInvite(argv.map(inviteFrom).find(Boolean))
   })
-  // macOS delivers invite links here, possibly before the app is ready.
-  app.on('open-url', (e, url) => { e.preventDefault(); openInvite(inviteFrom(url)) })
+  // macOS delivers quilt:// links here, possibly before the app is ready.
+  // Any other quilt:// link (e.g. quilt://open from the website) just brings the app forward.
+  app.on('open-url', (e, url) => {
+    e.preventDefault()
+    const link = inviteFrom(url)
+    if (link) openInvite(link)
+    else if (win) showWindow()
+  })
 
   if (process.defaultApp) app.setAsDefaultProtocolClient('quilt', process.execPath, [path.resolve(process.argv[1])])
   else app.setAsDefaultProtocolClient('quilt')

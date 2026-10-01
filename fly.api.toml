@@ -22,7 +22,8 @@ primary_region = "iad"
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep one machine warm: a cold start made "Approve" on /link hang for seconds.
+  min_machines_running = 1
   processes = ["app"]
 
   [[http_service.checks]]

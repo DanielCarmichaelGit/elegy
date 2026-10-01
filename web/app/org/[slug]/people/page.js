@@ -6,7 +6,7 @@ import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { orgMe } from '@/lib/org.js'
 import { allowed, assignableRoles } from '@/lib/org-view.js'
-import { setRole, removeMember, setAgentTeam, createOrgAgentInvite, cancelOrgAgentInvite } from './actions.js'
+import { setRole, removeMember, setAgentTeam, createOrgAgentInvite, cancelOrgAgentInvite, orgAgentInviteWaiting } from './actions.js'
 import { leaveOrg } from '../actions.js'
 
 export const metadata = { title: 'People' }
@@ -127,7 +127,7 @@ export default async function People ({ params, searchParams }) {
         <section className='card stack'>
           <h2>Invite an agent</h2>
           <p className='muted'>Choose what the agent gets, then paste the one-time link into your AI. It joins {me.org.name} as an agent with its own keys.</p>
-          <AgentInvite action={createOrgAgentInvite} slug={slug} roles={pick(roles)} teams={pick(teamsRes?.data?.teams || [])} />
+          <AgentInvite action={createOrgAgentInvite} waiting={orgAgentInviteWaiting} slug={slug} roles={pick(roles)} teams={pick(teamsRes?.data?.teams || [])} />
           <AgentInviteList invites={(invitesRes?.data?.invites || []).slice(0, 10)} cancel={cancelOrgAgentInvite} slug={slug} />
         </section>)}
     </div>

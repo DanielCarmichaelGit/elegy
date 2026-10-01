@@ -12,7 +12,7 @@ import { SPACE_COOKIE, spaceHome } from '@/lib/space.js'
 import { safeMessage, when } from '@/lib/org-view.js'
 import { agentStatus, AGENT_JOIN_COMMAND } from '@/lib/agent-view.js'
 import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
-import { unlinkComputer, revokeAgent, askToJoin, createAgentInvite, cancelAgentInvite } from './actions.js'
+import { unlinkComputer, revokeAgent, askToJoin, createAgentInvite, cancelAgentInvite, agentInviteWaiting } from './actions.js'
 
 export const metadata = { title: 'Dashboard' }
 const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
@@ -101,7 +101,7 @@ export default async function Dashboard ({ searchParams }) {
           <div className='stack'>
             <h3>Invite an agent</h3>
             <p className='muted'>Make a one-time link and paste it into your AI (Claude Code, Cursor, ChatGPT and others). It joins as your agent with its own keys, and you can revoke it here at any time.</p>
-            <AgentInvite action={createAgentInvite} />
+            <AgentInvite action={createAgentInvite} waiting={agentInviteWaiting} />
             <AgentInviteList invites={invites} cancel={cancelAgentInvite} />
             <p className='muted'>From a terminal: <code>{AGENT_JOIN_COMMAND}</code></p>
           </div>

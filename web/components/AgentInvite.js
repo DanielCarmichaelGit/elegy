@@ -1,5 +1,6 @@
 'use client'
-import { useActionState, useState } from 'react'
+import { useActionState, useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
 function TeamRow ({ teams }) {
   return (
@@ -42,12 +43,30 @@ function OrgChoices ({ roles, teams }) {
 }
 
 /** "Invite an agent": makes a one-time link and shows it once, with Copy. */
-export default function AgentInvite ({ action, slug, roles, teams }) {
+export default function AgentInvite ({ action, waiting, slug, roles, teams }) {
   const [state, formAction, pending] = useActionState(action, null)
+  const router = useRouter()
   // Done hides the link without touching the action state, so it isn't shown again until a new invite.
   const [shown, setShown] = useState(true)
   const [copied, setCopied] = useState(false)
   const forOrg = Array.isArray(roles) || Array.isArray(teams)
+
+  // While the link is shown, check every few seconds whether an agent used it;
+  // once it has, close the link and refresh so the new agent shows up.
+  const watching = Boolean(state?.id && shown && waiting)
+  useEffect(() => {
+    if (!watching) return
+    let stopped = false
+    const timer = setInterval(async () => {
+      const still = await waiting(state.id, state.slug).catch(() => true)
+      if (stopped || still) return
+      stopped = true
+      clearInterval(timer)
+      setShown(false)
+      router.refresh()
+    }, 3000)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [watching, state, waiting, router])
 
   const copyLink = async () => {
     await navigator.clipboard.writeText(state.link)

@@ -31,7 +31,16 @@ export async function createOrgAgentInvite (prev, formData) {
   const r = await apiCall(user, 'POST', `/v1/orgs/${slug}/agent-invites`, inviteFromForm(formData))
   if (!r.ok) return { error: r.data?.error || 'Couldn’t make an invite link. Try again.' }
   revalidatePath(`/org/${slug}/people`)
-  return { link: r.data.link }
+  return { link: r.data.link, id: r.data.invite.id, slug }
+}
+
+// Whether a shown invite link is still waiting, so the page can notice the agent join.
+export async function orgAgentInviteWaiting (id, slug) {
+  if (!isSlug(slug)) return false
+  const user = await requireUser(`/org/${slug}/people`)
+  const r = await apiCall(user, 'GET', `/v1/orgs/${slug}/agent-invites`)
+  if (!r.ok) return true
+  return (r.data?.invites || []).find((i) => i.id === id)?.status === 'waiting'
 }
 
 export async function cancelOrgAgentInvite (formData) {
