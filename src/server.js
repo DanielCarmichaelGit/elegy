@@ -439,8 +439,10 @@ class Room {
    */
   claimRequest (who, req) {
     const { name, id } = who
-    // Whose claim is this? Older claims in a sign-in room have no account: only the owner may release them.
-    const mine = (c) => id ? c.byId === id : c.by === name
+    // Whose claim is this? Older claims in a sign-in room have no account: they belong to their
+    // name, as they did when made, and claiming one again adopts it under this account.
+    // (The owner may release any of them too.)
+    const mine = (c) => id ? (c.byId ? c.byId === id : c.by === name) : c.by === name
     const pattern = String(req.pattern ?? '').trim().replace(/^\.\//, '')
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')

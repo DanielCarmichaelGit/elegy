@@ -328,18 +328,33 @@ test('claims belong to the account: two people named Sam cannot release each oth
   assert.deepEqual(await claim(sam1b, { op: 'release', pattern: 'src/a.js' }), { id: claimIds, ok: true, released: 1 })
 })
 
-test('older claims with no account can only be released by the owner', async (t) => {
+test('older claims with no account: the owner, or someone with the same name, can release them', async (t) => {
   const srv = await relay(t)
   const r = room()
   const owner = generateIdentity()
   const o = await connect(srv, r, { identity: owner, pass: makePass({ identity: owner, name: 'Olive', sub: 'user-olive' }), viewSecret: 'v' })
   const rm = srv.rooms.get(r)
-  rm.meta.claims['old.js'] = { by: 'Sam', pattern: 'old.js', note: '', ts: 1 }
+  for (const p of ['old.js', 'kept.js', 'mine.js']) rm.meta.claims[p] = { by: 'Sam', pattern: p, note: '', ts: 1 }
+  rm.meta.claims['pat.js'] = { by: 'Pat', pattern: 'pat.js', note: '', ts: 1 }
   rm.meta.members['person:user-sam'] = { name: 'Sam', kind: 'human', role: 'editor', scopes: [], since: 1 }
   const k = generateIdentity()
   const sam = await connect(srv, r, { identity: k, pass: makePass({ identity: k, name: 'Sam', sub: 'user-sam' }) })
-  assert.equal((await claim(sam, { op: 'release', pattern: 'old.js' })).ok, false, 'the same name is not enough')
-  assert.equal((await claim(o, { op: 'release', pattern: 'old.js' })).released, 1)
+  // Someone else's older claim is still theirs.
+  const pats = await claim(sam, { op: 'release', pattern: 'pat.js' })
+  assert.equal(pats.ok, false)
+  assert.match(pats.error, /only they can release it/)
+  // Sam's own older claims: released, or claimed again and adopted by Sam's account.
+  assert.equal((await claim(sam, { op: 'release', pattern: 'old.js' })).released, 1)
+  assert.equal((await claim(sam, { op: 'claim', pattern: 'mine.js', note: 'again' })).ok, true)
+  assert.equal(rm.meta.claims['mine.js'].byId, 'person:user-sam', 'adopted')
+  // Once adopted, the name alone is no longer enough: another Sam can't release it.
+  rm.meta.members['person:user-sam-2'] = { name: 'Sam', kind: 'human', role: 'editor', scopes: [], since: 1 }
+  const k2 = generateIdentity()
+  const sam2 = await connect(srv, r, { identity: k2, pass: makePass({ identity: k2, name: 'Sam', sub: 'user-sam-2' }) })
+  assert.equal((await claim(sam2, { op: 'release', pattern: 'mine.js' })).ok, false)
+  // The owner can release any older claim.
+  assert.equal((await claim(o, { op: 'release', pattern: 'pat.js' })).released, 1)
+  assert.equal((await claim(o, { op: 'release', pattern: 'kept.js' })).released, 1)
 })
 
 test('removing an account also removes its older key entries', async (t) => {
