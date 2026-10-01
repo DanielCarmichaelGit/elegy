@@ -200,3 +200,68 @@ test('new sessions are rate-limited per address; joining existing ones is not', 
   assert.equal(await open('r1'), 'open', 'rejoining an existing room still works')
   await srv.close()
 })
+
+test('the owner can end a session: everyone is sent away and its data is deleted', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('end')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  defer(() => srv.close())
+  const server = `ws://127.0.0.1:${srv.port}`
+  const ownerDoc = new Y.Doc()
+  const owner = new Connection({ server, room: 'ending', secret: 's', viewSecret: 'v', name: 'olive', identity: generateIdentity(), doc: ownerDoc })
+  defer(() => owner.close())
+  await owner.waitForSync()
+  await waitFor(() => owner.access && owner.access.owner)
+  ownerDoc.getText('t').insert(0, 'bye')
+  await waitFor(() => fs.existsSync(path.join(dataDir, 'ending.ydoc')))
+  fs.mkdirSync(path.join(dataDir, 'blobs', 'ending'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'blobs', 'ending', 'a'.repeat(32)), 'x')
+
+  const ended = new Promise((resolve) => owner.on('fatal', resolve))
+  await owner.adminRequest({ op: 'end' })
+  const err = await ended
+  assert.equal(err.ended, true)
+  await waitFor(() => !srv.rooms.has('ending'))
+  assert.equal(fs.existsSync(path.join(dataDir, 'ending.ydoc')), false)
+  assert.equal(fs.existsSync(path.join(dataDir, 'ending.json')), false)
+  await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'ending')))
+})
+
+test('only the owner can end a session', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir: tmp('end2') })
+  defer(() => srv.close())
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'open-room', secret: 's', name: 'eve', identity: generateIdentity(), doc: new Y.Doc() })
+  defer(() => c.close())
+  await c.waitForSync()
+  await assert.rejects(c.adminRequest({ op: 'end' }), /only the session owner/)
+})
+
+test('stored files go with their room when it expires, and unreferenced ones when it unloads', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('gc')
+  fs.writeFileSync(path.join(dataDir, 'old.json'), JSON.stringify({ secretHash: 'ab', lastActive: Date.now() - 40 * 86400e3 }))
+  fs.mkdirSync(path.join(dataDir, 'blobs', 'old'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'blobs', 'old', 'a'.repeat(32)), 'x')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, roomTtlDays: 30, idleUnloadMs: 50 })
+  defer(() => srv.close())
+  await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'old')))
+
+  // A room that stored two files but only references one of them now.
+  const doc = new Y.Doc()
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'gc', secret: 's', name: 'gil', identity: generateIdentity(), doc })
+  defer(() => { if (!c.closed) c.close() })
+  await c.waitForSync()
+  const keep = 'a'.repeat(32)
+  const drop = 'b'.repeat(32)
+  const room = srv.rooms.get('gc')
+  const old = Date.now() - 2 * 60 * 60 * 1000
+  room.meta.blobs = { [keep]: { size: 1, ts: old }, [drop]: { size: 1, ts: old } }
+  for (const id of [keep, drop]) { fs.mkdirSync(path.join(dataDir, 'blobs', 'gc'), { recursive: true }); fs.writeFileSync(path.join(dataDir, 'blobs', 'gc', id), 'x') }
+  doc.getMap('blobs').set('img.png', { hash: 'h', size: 1, stored: { id: keep, key: 'k1' } })
+  await waitFor(() => room.doc.getMap('blobs').has('img.png'))
+  c.close()
+  await waitFor(() => !srv.rooms.has('gc'), 3000)
+  await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'gc', drop)))
+  assert.equal(fs.existsSync(path.join(dataDir, 'blobs', 'gc', keep)), true)
+})

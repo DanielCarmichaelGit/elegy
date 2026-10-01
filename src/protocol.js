@@ -24,6 +24,8 @@ export const CLOSE_DENIED = 4406 // the owner said no, or removed you
 // WebSocket close code the relay uses when a room is over its size quota.
 export const CLOSE_ROOM_FULL = 4413
 
+export const CLOSE_ENDED = 4410 // the owner ended the session and it was deleted
+
 // Largest file that can be sent in chat.
 export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
 

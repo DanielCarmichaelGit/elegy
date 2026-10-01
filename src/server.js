@@ -22,7 +22,7 @@ import { handleAgentMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -255,6 +255,11 @@ class Room {
   adminRequest (ws, req) {
     const me = this.access.get(ws)
     if (!me || !me.owner) throw new Error('only the session owner can do that')
+    if (req.op === 'end') {
+      // Reply first; the relay then sends everyone away and deletes the room.
+      setTimeout(() => this.onEnd && this.onEnd(), 50)
+      return { ok: true }
+    }
     const key = String(req.key || '')
     const role = ROLES.includes(req.role) ? req.role : null
     const scopes = Array.isArray(req.scopes)
@@ -369,6 +374,7 @@ class Room {
   }
 
   saveMeta () {
+    if (this.ended) return
     if (this.metaFile) fs.writeFileSync(this.metaFile, JSON.stringify(this.meta))
   }
 
@@ -378,6 +384,7 @@ class Room {
   }
 
   save () {
+    if (this.ended) return
     clearTimeout(this.saveTimer)
     this.saveTimer = null
     if (!this.docFile || !this.exists) return
@@ -528,6 +535,13 @@ class Room {
     this.awareness.destroy()
     this.doc.destroy()
   }
+
+  /** Stored-file ids the document still points at. */
+  storedIds () {
+    const ids = new Set()
+    for (const b of this.blobs.values()) if (b && b.stored && b.stored.id) ids.add(b.stored.id)
+    return ids
+  }
 }
 
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
@@ -576,9 +590,19 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         clearTimeout(room.unloadTimer)
         room.unloadTimer = setTimeout(() => {
           if (room.conns.size || rooms.get(name) !== room) return
+          collectStored(room)
           room.destroy()
           rooms.delete(name)
         }, cfg.idleUnloadMs)
+      }
+      room.onEnd = () => {
+        room.ended = true
+        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) ws.close(CLOSE_ENDED, 'The owner ended this session')
+        clearTimeout(room.unloadTimer)
+        room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
+        rooms.delete(name)
+        removeRoomData(name)
+        log(`[${name}] ended by its owner`)
       }
     }
     return room
@@ -620,6 +644,26 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   // Large files, already encrypted by the apps. See blobstore.js.
   const store = makeStore(cfg, path.join(path.dirname(filesDir), 'blobs'))
   const storedBytes = (room) => Object.values(room.meta.blobs || {}).reduce((n, b) => n + (b.size || 0), 0)
+  /** Deletes everything a room left on the relay and in storage. */
+  const removeRoomData = (name) => {
+    if (dataDir) {
+      fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
+      fs.rmSync(path.join(dataDir, `${name}.json`), { force: true })
+    }
+    fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+    store.removeRoom(name).catch((err) => log(`[${name}] could not delete stored files: ${err.message}`))
+  }
+  /** Deletes stored files nothing points at any more (an hour's grace for uploads in flight). */
+  const collectStored = (room) => {
+    const blobs = room.meta.blobs || {}
+    const used = room.storedIds()
+    const cutoff = Date.now() - 60 * 60 * 1000
+    const unused = Object.keys(blobs).filter((id) => !used.has(id) && (blobs[id].ts || 0) < cutoff)
+    if (!unused.length) return
+    for (const id of unused) delete blobs[id]
+    room.saveMeta()
+    store.remove(room.name, unused).catch((err) => log(`[${room.name}] could not delete stored files: ${err.message}`))
+  }
 
   // Public: the app's relay check reads this. It says nothing about who's using the relay.
   const health = () => ({ ok: true, version: 1, requiresKey: !!cfg.relayKey })
@@ -828,9 +872,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         const meta = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))
         if ((meta.lastActive || meta.createdAt || 0) > cutoff) continue
       } catch {}
-      fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
-      fs.rmSync(path.join(dataDir, f), { force: true })
-      fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+      removeRoomData(name)
       removed++
     }
     if (removed) log(`removed ${removed} room(s) idle for more than ${cfg.roomTtlDays} days`)

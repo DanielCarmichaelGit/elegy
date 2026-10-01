@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -101,7 +101,10 @@ export class Connection extends EventEmitter {
     ws.on('error', (err) => this.emit('warn', `connection error: ${err.message}`))
 
     ws.on('close', (code, reason) => {
-      if (code === CLOSE_DENIED) {
+      if (code === CLOSE_ENDED) {
+        this.emit('fatal', Object.assign(new Error(String(reason) || 'The owner ended this session'), { ended: true }))
+        this.close()
+      } else if (code === CLOSE_DENIED) {
         this.emit('fatal', Object.assign(new Error(String(reason) || 'The session owner did not let you in'), { denied: true }))
         this.close()
       } else if (code === CLOSE_AUTH_FAILED || code === CLOSE_NAME_TAKEN) {
