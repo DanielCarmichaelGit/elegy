@@ -572,7 +572,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       rooms.set(name, room)
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
-        if (!dataDir) return
+        if (!dataDir || rooms.get(name) !== room) return
         clearTimeout(room.unloadTimer)
         room.unloadTimer = setTimeout(() => {
           if (room.conns.size || rooms.get(name) !== room) return
@@ -684,14 +684,15 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         // The disk store's signed links: no secret needed, the signature is the permission.
         if (!(store instanceof DiskStore)) return text(404, 'not found')
         const method = req.method === 'PUT' ? 'PUT' : 'GET'
-        if (url.searchParams.get('m') !== method || !store.verify(name, id, method, url.searchParams.get('exp'), url.searchParams.get('sig'))) return text(403, 'this link has expired')
+        const n = url.searchParams.get('n')
+        if (url.searchParams.get('m') !== method || !store.verify(name, id, method, url.searchParams.get('exp'), url.searchParams.get('sig'), method === 'PUT' ? Number(n) : undefined)) return text(403, 'this link has expired')
         const file = store.file(name, id)
         if (method === 'GET') {
           if (!fs.existsSync(file)) return text(404, 'no such file')
           res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(file).size })
           return fs.createReadStream(file).pipe(res)
         }
-        return receiveBlob(req, file, cfg.maxStoredFileBytes, (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
+        return receiveBlob(req, file, Number(n), (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
       }
       if (req.method !== 'POST') return text(405, 'method not allowed')
       const room = getRoom(name)
@@ -722,7 +723,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           room.meta.blobs[id] = { size, ts: Date.now() }
           room.meta.largeFiles = true
           room.saveMeta()
-          json(200, await store.uploadTarget(name, id))
+          json(200, await store.uploadTarget(name, id, size))
         } catch (e) {
           log(`[${name}] storage error: ${e.message}`)
           if (!res.headersSent) text(502, 'file storage is unavailable right now')

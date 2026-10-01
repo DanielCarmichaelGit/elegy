@@ -16,23 +16,26 @@ export class DiskStore {
 
   file (room, id) { return path.join(this.dir, room, id) }
 
-  sign (room, id, method, exp) {
-    return crypto.createHmac('sha256', this.signing).update(`${method} ${room}/${id} ${exp}`).digest('hex')
+  sign (room, id, method, exp, size) {
+    return crypto.createHmac('sha256', this.signing).update(`${method} ${room}/${id} ${exp} ${size ?? ''}`).digest('hex')
   }
 
-  link (room, id, method) {
+  link (room, id, method, size) {
     const exp = Date.now() + LINK_MS
-    return `/blobs/${room}/${id}/data?m=${method}&exp=${exp}&sig=${this.sign(room, id, method, exp)}`
+    const n = size === undefined ? '' : `&n=${size}`
+    return `/blobs/${room}/${id}/data?m=${method}&exp=${exp}&sig=${this.sign(room, id, method, exp, size)}${n}`
   }
 
-  verify (room, id, method, exp, sig) {
+  verify (room, id, method, exp, sig, size) {
     if (!(Number(exp) > Date.now())) return false
-    const want = Buffer.from(this.sign(room, id, method, exp), 'hex')
+    const want = Buffer.from(this.sign(room, id, method, exp, size), 'hex')
     const got = Buffer.from(String(sig || ''), 'hex')
     return got.length === want.length && crypto.timingSafeEqual(got, want)
   }
 
-  async uploadTarget (room, id) { return { method: 'PUT', url: this.link(room, id, 'PUT') } }
+  // The declared size is signed into the PUT link, so a client can't upload
+  // more than it told the relay it would; GET links carry no size.
+  async uploadTarget (room, id, size) { return { method: 'PUT', url: this.link(room, id, 'PUT', size) } }
   async downloadTarget (room, id) { return { url: this.link(room, id, 'GET') } }
   async remove (room, ids) { for (const id of ids) fs.rmSync(this.file(room, id), { force: true }) }
   async removeRoom (room) { fs.rmSync(path.join(this.dir, room), { recursive: true, force: true }) }
@@ -46,7 +49,8 @@ export class SupabaseStore {
 
   static path (room, id) { return `${room}/${id}` }
 
-  async uploadTarget (room, id) {
+  // `size` is accepted but ignored: Supabase signed uploads can't bound size; the bucket's file_size_limit caps each object.
+  async uploadTarget (room, id, size) {
     const { data, error } = await this.bucket.createSignedUploadUrl(SupabaseStore.path(room, id), { upsert: true })
     if (error) throw new Error(`storage: ${error.message}`)
     return { method: 'PUT', url: data.signedUrl }

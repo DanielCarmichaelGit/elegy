@@ -22,6 +22,10 @@ test('disk store links are signed, method-bound and expire', async () => {
   assert.equal(store.verify('room', ID, 'GET', q.get('exp'), q.get('sig')), false, 'bound to the method')
   assert.equal(store.verify('other', ID, 'PUT', q.get('exp'), q.get('sig')), false, 'bound to the room')
   assert.equal(store.verify('room', ID, 'PUT', String(Date.now() - 1), q.get('sig')), false, 'expired or altered')
+  const up4 = await store.uploadTarget('room', ID, 4)
+  const q4 = new URL(up4.url, 'http://x').searchParams
+  assert.equal(store.verify('room', ID, 'PUT', q4.get('exp'), q4.get('sig'), 4), true)
+  assert.equal(store.verify('room', ID, 'PUT', q4.get('exp'), q4.get('sig'), 5), false, 'bound to the declared size')
 })
 
 test('disk store removes files and whole rooms', async () => {
@@ -79,8 +83,8 @@ test('uploads are refused over the size cap or the room quota', async (t) => {
   assert.equal((await ask(base, 'r2', ID, 'upload', 's', { size: 11 })).status, 413)
   assert.equal((await ask(base, 'r2', ID, 'upload', 's', { size: 10 })).status, 200)
   assert.equal((await ask(base, 'r2', 'b'.repeat(32), 'upload', 's', { size: 10 })).status, 413)
-  // A PUT larger than it said is cut off.
-  const { base: b2 } = await relay(t, { maxStoredFileBytes: 10 })
+  // A PUT larger than the size it declared is cut off, even well under the global cap.
+  const { base: b2 } = await relay(t)
   const target = await (await ask(b2, 'r3', ID, 'upload', 's', { size: 4 })).json()
   assert.equal((await fetch(new URL(target.url, b2), { method: 'PUT', body: 'x'.repeat(50) })).status, 413)
 })
