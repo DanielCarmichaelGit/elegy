@@ -96,9 +96,10 @@ class Room {
     this.pending = new Map() // ws -> { key, name, kind, invitedAs, since } waiting for the owner
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
+    this.fileKeys = this.doc.getMap('fileKeys')
     // Undoes file changes from people who may not make them (viewers, and
     // agents outside their folders). Only their connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs], { trackedOrigins: new Set(), captureTimeout: 0 })
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
@@ -180,7 +181,17 @@ class Room {
   checkChange (ws, update, tr) {
     const a = this.access.get(ws)
     const touched = new Set()
+    const refused = []
     for (const [type, events] of tr.changedParentTypes) {
+      if (type === this.fileKeys) {
+        // Keys to stored files: viewers may not touch them, and others may
+        // only add new ones, so nobody can lock people out of stored files.
+        for (const e of events) {
+          if (e.target !== type) { refused.push('a file key'); continue }
+          for (const [id, c] of e.changes.keys) if (a?.role === 'viewer' || c.action !== 'add') refused.push(`file key ${id}`)
+        }
+        continue
+      }
       if (type !== this.files && type !== this.blobs) continue
       for (const e of events) {
         if (e.target === type) for (const k of e.changes.keys.keys()) touched.add(k)
@@ -192,7 +203,7 @@ class Room {
         }
       }
     }
-    const refused = [...touched].filter((rel) => !this.mayWrite(a, rel))
+    refused.push(...[...touched].filter((rel) => !this.mayWrite(a, rel)))
     if (!refused.length) { queueMicrotask(() => this.guard.clear()); return true }
     this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
     queueMicrotask(() => {

@@ -666,9 +666,8 @@ export class Session extends EventEmitter {
     return keys
   }
 
-  /** The file keys this app can open: keyId -> key. */
-  fileKeysICanOpen () {
-    const mine = this.wrapKeys()
+  /** The file keys this app can open (with `mine`, by default every wrap key it has): keyId -> key. */
+  fileKeysICanOpen (mine = this.wrapKeys()) {
     const out = new Map()
     for (const [id, entry] of this.fileKeys) {
       for (const w of (entry && entry.wraps) || []) {
@@ -679,9 +678,13 @@ export class Session extends EventEmitter {
     return out
   }
 
-  /** The key for new uploads: the first one we can open, or a new one. */
+  /**
+   * The key for new uploads: the first one our own secret opens, or a new one.
+   * Not one only the view secret opens: anyone who can view could have made
+   * that, and editors couldn't open what we stored with it.
+   */
   currentFileKey () {
-    const open = this.fileKeysICanOpen()
+    const open = this.fileKeysICanOpen([deriveWrapKey(this.secret, this.room)])
     if (open.size) {
       const id = [...open.keys()].sort()[0]
       return { id, key: open.get(id) }
