@@ -1011,7 +1011,11 @@ function streamFile (res, file, text) {
   })
 }
 
-/** Streams a request body to `file`, refusing anything over `limit` bytes. */
+/**
+ * Streams a request body to `file`, refusing anything over `limit` bytes.
+ * Stored files are written once: their ids come from their content, so one
+ * that's already there is refused with 409 and left as it is.
+ */
 function receiveBlob (req, file, limit, done) {
   let size = 0
   let failed = false
@@ -1033,6 +1037,7 @@ function receiveBlob (req, file, limit, done) {
     if (size > limit) fail(413, 'file too large')
   })
   req.on('error', () => fail(400, 'upload interrupted'))
+  if (fs.existsSync(file)) return fail(409, 'already stored')
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     tmp = `${file}.${crypto.randomBytes(4).toString('hex')}.tmp`
@@ -1041,8 +1046,14 @@ function receiveBlob (req, file, limit, done) {
   out.on('error', () => fail(500, 'could not save the file'))
   out.on('finish', () => {
     if (failed) return
-    // The room's folder may be gone by now (the room ended, or the sweep ran).
-    try { fs.renameSync(tmp, file) } catch { return fail(500, 'could not save the file') }
+    // link, unlike rename, never replaces a file that's already there. It
+    // also fails if the room's folder is gone by now (it ended, or was swept).
+    try {
+      fs.linkSync(tmp, file)
+    } catch (err) {
+      return err.code === 'EEXIST' ? fail(409, 'already stored') : fail(500, 'could not save the file')
+    }
+    fs.rm(tmp, { force: true }, () => {})
     done(null)
   })
   req.pipe(out)

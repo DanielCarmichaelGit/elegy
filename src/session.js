@@ -727,12 +727,14 @@ export class Session extends EventEmitter {
       // Encrypted first: the upload link is signed for exactly the size we send.
       const sealed = encryptBlob(disk.buf, key)
       const target = await this.blobRequest(id, 'upload', { size: sealed.length })
-      const res = await fetch(new URL(target.url, this.httpBase() + '/'), {
-        method: target.method || 'PUT',
-        headers: { 'content-type': 'application/octet-stream' },
-        body: sealed
-      })
-      if (!res.ok) throw new Error(`upload failed (HTTP ${res.status})`)
+      if (!target.exists) {
+        const res = await fetch(new URL(target.url, this.httpBase() + '/'), {
+          method: target.method || 'PUT',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: sealed
+        })
+        if (!res.ok && !(await alreadyStored(res))) throw Object.assign(new Error(`upload failed (HTTP ${res.status})`), { status: res.status, put: true })
+      }
       const now = this.readDisk(rel)
       if (!now || now.key !== disk.key) return // it changed again; that change is already queued
       const existed = this.files.has(rel) || this.blobs.has(rel)
@@ -1375,6 +1377,18 @@ export function formatMessage (m) {
   const head = m.to ? `${m.by} → ${m.to} (direct)` : m.by
   const file = m.file ? ` 📎 ${m.file.name} (${formatBytes(m.file.size)})` : ''
   return `${head}: ${m.text}${file}`
+}
+
+/**
+ * Storage refused an upload because that file is already there: as good as
+ * done, since ids come from the content. The relay's disk answers 409;
+ * Supabase answers 400 or 409 saying the object already exists.
+ */
+async function alreadyStored (res) {
+  if (res.status !== 409 && res.status !== 400) return false
+  if (res.status === 409) return true
+  const body = await res.text().catch(() => '')
+  return /exists|duplicate/i.test(body)
 }
 
 function safeName (name) {

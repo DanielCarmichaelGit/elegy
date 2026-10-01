@@ -165,3 +165,30 @@ test('an app without large-file support needs the right secret to learn the sess
 function roundTrip (c) {
   return c.claimRequest({ op: 'release', pattern: '*' })
 }
+
+test('stored files are written once', async (t) => {
+  const { srv, base } = await relay(t)
+  const put = async (body) => {
+    const target = await (await ask(base, 'r8', ID, 'upload', 's', { size: body.length })).json()
+    return fetch(new URL(target.url, base), { method: 'PUT', body })
+  }
+  assert.equal((await put('first')).status, 201)
+  const again = await put('other')
+  assert.equal(again.status, 409)
+  assert.equal(fs.readFileSync(srv.store.file('r8', ID), 'utf8'), 'first')
+})
+
+test('Supabase upload links never replace a stored file', async () => {
+  const store = new SupabaseStore({ url: 'https://x.supabase.co', key: 'sb_secret_x', bucket: 'b' })
+  const seen = []
+  store.bucket = {
+    async createSignedUploadUrl (p, opts) {
+      seen.push(opts)
+      if (p.endsWith(ID)) return { data: null, error: { message: 'The resource already exists', statusCode: '409' } }
+      return { data: { signedUrl: 'https://x.supabase.co/sign' }, error: null }
+    }
+  }
+  assert.deepEqual(await store.uploadTarget('room', 'b'.repeat(32), 1), { method: 'PUT', url: 'https://x.supabase.co/sign' })
+  assert.deepEqual(await store.uploadTarget('room', ID, 1), { exists: true })
+  assert.deepEqual(seen.map((o) => o.upsert), [false, false])
+})

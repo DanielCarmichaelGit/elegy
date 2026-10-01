@@ -218,3 +218,30 @@ test('an edit made while a download is in flight is kept as a conflict copy', as
   await roundTrip(B, A)
   assert.equal(A.blobs.get('photo.png').hash, sha1(next))
 })
+
+test('uploading a file that is already stored counts as done', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  const A = await open(dirA, 'alice', { room })
+  const B = await open(dirB, 'bob', { room })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img))
+  const id = A.blobs.get('photo.png').stored.id
+  fs.rmSync(path.join(dirA, 'photo.png'))
+  await waitFor(() => !B.blobs.has('photo.png') && bytes(dirB, 'photo.png') === null)
+
+  // The same file again has the same id, and the relay already has it.
+  const real = globalThis.fetch
+  const puts = []
+  globalThis.fetch = async (url, opts) => {
+    const res = await real(url, opts)
+    if (opts && opts.method === 'PUT') puts.push(res.status)
+    return res
+  }
+  t.after(() => { globalThis.fetch = real })
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img))
+  assert.deepEqual(puts, [409])
+  assert.equal(A.blobs.get('photo.png').stored.id, id)
+})

@@ -50,8 +50,11 @@ export class SupabaseStore {
   static path (room, id) { return `${room}/${id}` }
 
   // `size` is accepted but ignored: Supabase signed uploads can't bound size; the bucket's file_size_limit caps each object.
+  // Write-once: ids come from the content, so an upload never replaces what's stored.
   async uploadTarget (room, id, size) {
-    const { data, error } = await this.bucket.createSignedUploadUrl(SupabaseStore.path(room, id), { upsert: true })
+    const { data, error } = await this.bucket.createSignedUploadUrl(SupabaseStore.path(room, id), { upsert: false })
+    // Storage may refuse to sign at all when the file is already there.
+    if (error && alreadyExists(error)) return { exists: true }
     if (error) throw new Error(`storage: ${error.message}`)
     return { method: 'PUT', url: data.signedUrl }
   }
@@ -77,6 +80,8 @@ export class SupabaseStore {
     }
   }
 }
+
+const alreadyExists = (error) => String(error.statusCode) === '409' || /exists|duplicate/i.test(String(error.message))
 
 export function makeStore (cfg, dir) {
   if (cfg.storageUrl && cfg.storageKey) return new SupabaseStore({ url: cfg.storageUrl, key: cfg.storageKey, bucket: cfg.storageBucket })
