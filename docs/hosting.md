@@ -70,10 +70,12 @@ profile → **Packages** → `quilt-relay` → **Package settings**. You can als
 
 Quilt's relay only lets in people and agents signed in to heyquilt.com. The
 accounts API signs each of them a pass that lasts 10 minutes, and the relay
-checks it with the API's public key, which the API publishes:
+checks it with the API's public key, which the API publishes. This reads it,
+checks it is a real Ed25519 key, and hands it to Fly (if anything is wrong it
+stops with a message, Fly gets nothing to set, and the relay keeps its current setting):
 
 ```bash
-fly secrets set QUILT_PASS_PUBLIC_KEY="$(curl -s https://api.heyquilt.com/v1/passes/key | node -pe 'JSON.parse(require("fs").readFileSync(0)).publicKey')"
+node scripts/relay-pass-key.mjs | fly secrets import --app cowove-relay
 ```
 
 With it set:

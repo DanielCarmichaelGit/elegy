@@ -4624,8 +4624,9 @@ This is for the controller, after every task above is merged to `main`. Run depl
 4. **Live check, before the relay switches over.** Use a test relay on the Mac with the real public key, so nobody else is affected:
 
    ```bash
-   QUILT_PASS_PUBLIC_KEY="$(curl -s https://api.heyquilt.com/v1/passes/key | node -pe 'JSON.parse(require("fs").readFileSync(0)).publicKey')" \
-     node bin/quilt.js serve --port 4399 --data "$(mktemp -d)"
+   # Stops here, without starting the relay, if the API's key is missing or not an Ed25519 key.
+   KEYLINE="$(node scripts/relay-pass-key.mjs)" && \
+     env "$KEYLINE" node bin/quilt.js serve --port 4399 --data "$(mktemp -d)"
    ```
 
    - **(user)** Sign in on the Mac: start Quilt 0.3.0 pointed at the test relay (`QUILT_SERVER=ws://127.0.0.1:4399 /Applications/Quilt.app/Contents/MacOS/Quilt`), click **Sign in**, approve in the browser.
@@ -4640,7 +4641,8 @@ This is for the controller, after every task above is merged to `main`. Run depl
    - Turn on sign-in (this restarts the relay with the key):
 
      ```bash
-     fly secrets set --app cowove-relay QUILT_PASS_PUBLIC_KEY="$(curl -s https://api.heyquilt.com/v1/passes/key | node -pe 'JSON.parse(require("fs").readFileSync(0)).publicKey')"
+     # Checks the key first: on any problem it prints why, and fly gets nothing to set.
+     node scripts/relay-pass-key.mjs | fly secrets import --app cowove-relay
      ```
 
    - Check: the unsigned `curl` upgrade above, against `https://relay.heyquilt.com/room-x?…`, prints `401`; the Mac app (now without `QUILT_SERVER`) reconnects and its sessions keep syncing; `fly logs --app cowove-relay` shows connections under account names.
