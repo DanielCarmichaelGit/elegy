@@ -56,6 +56,13 @@ test('Computers and Agents have their own pages under the dashboard', () => {
   for (const page of ['/dashboard/page', '/dashboard/computers/page', '/dashboard/agents/page']) assert.ok(pages.includes(page), page)
 })
 
+// Static images skip the proxy: it would run getClaims() and could add Set-Cookie, which stops CDN caching.
+test('screenshots are served without running the proxy (no Set-Cookie)', async () => {
+  const res = await get('/shots/session-1280.webp')
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('set-cookie'), null)
+})
+
 test('private pages send signed-out people to sign in, and come back after', async () => {
   for (const path of ['/dashboard', '/dashboard/computers', '/dashboard/agents', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
     const res = await get(path)
