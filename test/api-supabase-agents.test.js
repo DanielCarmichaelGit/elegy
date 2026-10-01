@@ -94,6 +94,7 @@ test('supabase agent invites: ISO expiry, filtered lists, and check-and-set clai
   assert.equal(await s.cancelAgentInvite('i1'), true)
   assert.ok(has(calls[5], 'is', 'used_at', null))
   assert.ok(has(calls[5], 'is', 'cancelled_at', null))
+  assert.ok(calls[5].ops.some(([op, col]) => op === 'gt' && col === 'expires_at'), 'only a waiting invite is cancelled')
   await s.releaseAgentInvite('i1')
   assert.ok(has(calls[6], 'update', { used_at: null, used_by_agent_id: null }))
   await s.setInviteAgent('i1', 'a1')

@@ -17,7 +17,7 @@ test('cleanScopes tidies folders the way the relay does', () => {
 })
 
 test('cleanScopes refuses paths outside the project, odd input and too many folders', () => {
-  for (const bad of [['/etc'], ['../x'], ['a/../../b'], ['a\\b'], ['x'.repeat(201)], [42], 'src', null, undefined]) {
+  for (const bad of [['/etc'], ['../x'], ['a/../../b'], ['a\\b'], ['x'.repeat(201)], [42], 'src', null, undefined, ['.'], ['a//b'], ['a/./b'], ['C:/x']]) {
     assert.throws(() => cleanScopes(bad), (err) => err.status === 400, JSON.stringify(bad))
   }
   assert.throws(() => cleanScopes(Array.from({ length: 21 }, (_, i) => `d${i}`)), (err) => err.status === 400 && /20 folders/.test(err.message))

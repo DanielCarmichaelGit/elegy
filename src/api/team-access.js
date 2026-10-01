@@ -20,7 +20,9 @@ export function cleanScopes (input) {
     if (typeof raw !== 'string') throw new HttpError(400, BAD_FOLDER)
     const s = stripInvisible(raw).join('').trim().replace(/^(\.\/)+/, '').replace(/\/+$/, '')
     if (!s) continue
-    if (s.startsWith('/') || s.includes('\\') || s.length > MAX_SCOPE_LENGTH || s.split('/').includes('..')) throw new HttpError(400, BAD_FOLDER)
+    if (s.startsWith('/') || s.includes('\\') || s.length > MAX_SCOPE_LENGTH || /^[A-Za-z]:/.test(s)) throw new HttpError(400, BAD_FOLDER)
+    // Every segment must be a real folder name: no "", ".", or ".." anywhere in the path.
+    if (s.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) throw new HttpError(400, BAD_FOLDER)
     if (!out.includes(s)) out.push(s)
   }
   if (out.length > MAX_SCOPES) throw new HttpError(400, 'An agent can be limited to at most 20 folders.')

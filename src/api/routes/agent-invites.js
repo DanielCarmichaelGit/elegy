@@ -11,7 +11,7 @@ const MAX_TEAMS = 50
 
 export const inviteStatus = (i, at) => (i.cancelledAt ? 'cancelled' : i.usedAt ? 'used' : i.expiresAt <= at ? 'expired' : 'waiting')
 
-export function agentInviteRoutes ({ store, user, now, apiUrl }) {
+export function agentInviteRoutes ({ store, user, now, apiUrl, limitSend }) {
   const orgFor = async (req, slug) => { const u = await user(req); return { u, ...(await orgAccess(store, u.userId, slug)) } }
   const teamNames = async (orgId) => new Map((await store.listTeams(orgId)).map((x) => [x.id, x.name]))
 
@@ -62,6 +62,7 @@ export function agentInviteRoutes ({ store, user, now, apiUrl }) {
   return [
     ['POST', /^\/v1\/agent-invites$/, async (req) => {
       const u = await user(req)
+      limitSend(u.userId)
       const { invite, link } = await make(u.userId, { ownerUserId: u.userId })
       return { invite: await view(invite), link }
     }],
@@ -81,6 +82,7 @@ export function agentInviteRoutes ({ store, user, now, apiUrl }) {
     ['POST', /^\/v1\/orgs\/([^/]+)\/agent-invites$/, async (req, body, [slug]) => {
       const a = await orgFor(req, slug)
       a.need('agents', 'c')
+      limitSend(a.u.userId)
       const { role, teams } = await orgChoices(a, body)
       const { invite, link } = await make(a.u.userId, { orgId: a.org.id, roleId: role ? role.id : null, teams })
       return { invite: await view(invite, await teamNames(a.org.id), role ? role.name : null), link }

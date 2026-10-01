@@ -109,6 +109,7 @@ test('agent invites: a person or an org, found by token, used once while open, c
   assert.equal(await s.claimAgentInvite(theirs.id), false, 'a cancelled invite is never used')
   const old = await s.createAgentInvite({ tokenHash: 'h4', ownerUserId: 'u1', expiresAt: Date.now() - 1 })
   assert.equal(await s.claimAgentInvite(old.id), false, 'an expired invite is never used')
+  assert.equal(await s.cancelAgentInvite(old.id), false, 'an expired invite is never cancelled')
 })
 
 test("deleting a role clears it from agent invites; deleting the inviter's org or account removes theirs", async () => {

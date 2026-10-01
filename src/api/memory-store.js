@@ -134,7 +134,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // Check-and-set: only a waiting invite is cancelled.
     async cancelAgentInvite (id) {
       const i = agentInvites.get(id)
-      if (!i || i.usedAt || i.cancelledAt) return false
+      if (!i || i.usedAt || i.cancelledAt || i.expiresAt <= now()) return false
       i.cancelledAt = now(); return true
     },
 

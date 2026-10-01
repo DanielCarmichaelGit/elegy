@@ -110,7 +110,7 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async setInviteAgent (id, agentId) { await one(db.from('agent_invites').update({ used_by_agent_id: agentId }).eq('id', id)) },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelAgentInvite (id) {
-      const rows = await one(db.from('agent_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).select('id'))
+      const rows = await one(db.from('agent_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).select('id'))
       return rows.length > 0
     },
 

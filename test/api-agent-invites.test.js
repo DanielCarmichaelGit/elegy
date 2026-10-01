@@ -39,6 +39,11 @@ test('an invite past its hour shows as expired', async () => {
   assert.equal(listed.status, 'expired')
 })
 
+test('an expired invite cannot be cancelled', async () => {
+  const old = await t.store.createAgentInvite({ tokenHash: hashToken(newToken('qj_')), ownerUserId: 'out', createdBy: 'out', expiresAt: Date.now() - 1 })
+  assert.equal((await t.call('DELETE', `/v1/agent-invites/${old.id}`, null, 'out')).status, 409)
+})
+
 test('an org invite needs Agents: Create, and carries a role and teams; access defaults to viewer', async () => {
   const o = await makeOrg(t, 'Invite Bots Co')
   const core = await t.store.createTeam({ orgId: o.org.id, name: 'Core' })
@@ -86,6 +91,16 @@ test('org invite teams are real teams of this org, once each, editor or viewer, 
   assert.equal((await go([{ teamId: core.id, scopes: Array.from({ length: 21 }, (_, i) => `d${i}`) }])).status, 400)
   assert.equal((await go('Core')).status, 400)
   assert.equal((await go([{ teamId: core.id, scopes: ['src'] }])).status, 200)
+})
+
+test('making agent invites is rate-limited per caller, personal and org share the budget', async () => {
+  const c = await startTestApi({ inviteSendLimit: 2 })
+  try {
+    const o = await makeOrg(c, 'Agent Rate Co')
+    assert.equal((await c.call('POST', '/v1/agent-invites', {}, 'admin')).status, 200)
+    assert.equal((await c.call('POST', `/v1/orgs/${o.slug}/agent-invites`, {}, 'admin')).status, 200)
+    assert.equal((await c.call('POST', '/v1/agent-invites', {}, 'admin')).status, 429)
+  } finally { await c.close() }
 })
 
 test('org invites are cancelled with Agents: Create, and only in their own org', async () => {
