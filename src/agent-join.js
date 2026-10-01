@@ -12,6 +12,9 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/
 const NOT_A_LINK = "That doesn't look like an agent invite link. Copy the whole link from Quilt."
 // Refresh a little early so the access key doesn't lapse mid-request.
 const EARLY_MS = 60 * 1000
+// A refresh lock left behind by a process that died is ignored after this long.
+const LOCK_STALE_MS = 30 * 1000
+const LOCK_RETRY_MS = 50
 
 export function agentFile (name, dir = quiltHome()) {
   if (!NAME.test(String(name || ''))) throw new Error('--name must be 1 to 40 letters, numbers, dots, dashes or underscores')
@@ -102,11 +105,44 @@ export function readAgent ({ name, dir }) {
   return load(agentFile(name, dir), name)
 }
 
+/**
+ * Runs `fn` holding `<file>.lock`, so only one process at a time refreshes an agent's
+ * keys: a refresh key used twice gets the agent revoked for good.
+ */
+async function withLock (file, fn) {
+  const lock = `${file}.lock`
+  // Wait long enough for a lock left by a dead process to go stale.
+  const until = Date.now() + LOCK_STALE_MS + 5000
+  for (;;) {
+    let fd = null
+    try {
+      fd = fs.openSync(lock, 'wx', 0o600)
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err
+    }
+    if (fd !== null) {
+      fs.closeSync(fd)
+      try { return await fn() } finally { fs.rmSync(lock, { force: true }) }
+    }
+    try {
+      if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue }
+    } catch {}
+    if (Date.now() > until) throw new Error(`Another Quilt process is stuck refreshing the agent's keys. Remove ${lock} and try again.`)
+    await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS))
+  }
+}
+
 /** The saved agent with a working access key, refreshed first when it has (nearly) run out. */
 export async function agentAccess ({ name, dir, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
   const file = agentFile(name, dir)
+  const fresh = (saved) => saved.accessExpiresAt - EARLY_MS > now()
   const saved = load(file, name)
-  return saved.accessExpiresAt - EARLY_MS <= now() ? refresh(saved, file, fetchImpl) : saved
+  if (fresh(saved)) return saved
+  return withLock(file, () => {
+    // Another process may have refreshed while we waited: use its keys.
+    const latest = load(file, name)
+    return fresh(latest) ? latest : refresh(latest, file, fetchImpl)
+  })
 }
 
 /** Who the agent is, refreshing its keys first when the access key has (nearly) run out. */

@@ -11,7 +11,8 @@ import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 import { runSession } from '../src/runner.js'
 import { generateIdentity } from '../src/identity.js'
-import { PassSource, SignedOutError } from '../src/pass-source.js'
+import http from 'node:http'
+import { PassSource, SignedOutError, personPasses } from '../src/pass-source.js'
 import { PASS_KEYS, makePass, testPasses } from './pass-helpers.js'
 
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-sp-home-'))
@@ -23,12 +24,20 @@ async function waitFor (fn, ms = 8000) {
   throw new Error('timed out')
 }
 const read = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel), 'utf8') } catch { return null } }
-/** Passes that run out after `ms`, counting how many were fetched. */
-function shortPasses (identity, ms) {
-  const ps = new PassSource({ earlyMs: 0, fetchPass: async () => { ps.count++; const exp = Date.now() + ms; return { pass: makePass({ identity, exp }), expiresAt: exp } } })
+/**
+ * Passes that run out after `ms`, counting how many were fetched. With `claimMs`, each is
+ * said to last that long instead, so the client keeps using it after it has run out.
+ */
+function shortPasses (identity, ms, { claimMs = ms } = {}) {
+  const ps = new PassSource({ earlyMs: 0, fetchPass: async () => { ps.count++; const exp = Date.now() + ms; return { pass: makePass({ identity, exp }), expiresAt: Date.now() + claimMs } } })
   ps.count = 0
   return ps
 }
+/** Resolves with the connection's first `fatal`, or fails after `ms` instead of hanging. */
+const fatalOf = (conn, ms = 15000) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('no fatal')), ms)
+  conn.on('fatal', (err) => { clearTimeout(timer); resolve(err) })
+})
 
 let srv, server
 before(async () => {
@@ -67,33 +76,81 @@ test('a session without a pass is told to update and sign in', async (t) => {
 
 test('a connection refreshes its pass while connected, so it never runs out', async (t) => {
   const id = generateIdentity()
-  const passes = shortPasses(id, 700)
-  const conn = new Connection({ server, room: 'sp-3', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes, passRefreshMs: 250 })
+  // Each pass lasts 1 s and a fresh one goes out every 150 ms: 10 passes take well past the first one's end.
+  const passes = shortPasses(id, 1000)
+  const conn = new Connection({ server, room: 'sp-3', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes, passRefreshMs: 150 })
   t.after(() => conn.close())
   const statuses = []
   conn.on('status', (s) => statuses.push(s))
   await conn.waitForSync()
-  await wait(1500)
+  const since = Date.now()
+  await waitFor(() => passes.count >= 10 && Date.now() - since > 1200)
   assert.deepEqual(statuses, ['connected'], 'never dropped')
-  assert.ok(passes.count >= 4, `fetched ${passes.count} passes`)
 })
 
 test('a lapsed pass closes with 4419, and the connection comes back with a fresh one', async (t) => {
   const id = generateIdentity()
-  const passes = shortPasses(id, 400)
+  // The client is told each pass lasts 10 minutes, so only the 4419 makes it fetch a new one.
+  const passes = shortPasses(id, 400, { claimMs: 10 * 60_000 })
   const conn = new Connection({ server, room: 'sp-4', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes, passRefreshMs: 60_000 })
   t.after(() => conn.close())
   const statuses = []
+  const warnings = []
   conn.on('status', (s) => statuses.push(s))
+  conn.on('warn', (w) => warnings.push(w))
   await waitFor(() => statuses.filter((s) => s === 'connected').length >= 2)
   assert.deepEqual(statuses.slice(0, 3), ['connected', 'disconnected', 'connected'])
-  assert.ok(passes.count >= 2)
+  assert.equal(passes.count, 2)
+  assert.ok(warnings.includes('Your sign-in expired. Reconnecting.'), warnings.join('\n'))
+  assert.ok(!warnings.some((w) => /turned the session pass away/.test(w)), 'reconnected with a fresh pass, not the lapsed one')
+})
+
+test('passes that keep lapsing right after connecting stop with a clock warning', async (t) => {
+  const id = generateIdentity()
+  const passes = shortPasses(id, 150)
+  const conn = new Connection({ server, room: 'sp-4b', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes, passRefreshMs: 60_000 })
+  t.after(() => conn.close())
+  let connects = 0
+  conn.on('status', (s) => { if (s === 'connected') connects++ })
+  const err = await fatalOf(conn, 30000)
+  assert.equal(err.message, "Your computer's clock looks wrong, so Quilt can't stay signed in. Check the date and time.")
+  assert.equal(connects, 5)
+  assert.equal(conn.closed, true)
+})
+
+test('a pass the relay turns away is retried once with a fresh one', async (t) => {
+  const id = generateIdentity()
+  let n = 0
+  // The first pass is already out of date by the relay's clock, though the client thinks it's fine.
+  const passes = new PassSource({ fetchPass: async () => { n++; const exp = Date.now() + 600_000; return { pass: makePass({ identity: id, exp: n === 1 ? Date.now() - 1000 : exp }), expiresAt: exp } } })
+  const conn = new Connection({ server, room: 'sp-4c', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes })
+  t.after(() => conn.close())
+  await conn.waitForSync()
+  assert.equal(n, 2)
+})
+
+test('a pass the relay turns away twice is fatal', async (t) => {
+  const id = generateIdentity()
+  const passes = new PassSource({ fetchPass: async () => ({ pass: makePass({ identity: id, exp: Date.now() - 1000 }), expiresAt: Date.now() + 600_000 }) })
+  const conn = new Connection({ server, room: 'sp-4d', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes })
+  t.after(() => conn.close())
+  assert.match((await fatalOf(conn)).message, /Update Quilt and sign in to continue/)
+})
+
+test('a relay address that is not valid is fatal, and the error never shows the secret or the pass', async () => {
+  for (const passes of [null, testPasses(generateIdentity())]) {
+    const conn = new Connection({ server: 'ws://bad host', room: 'sp-x', secret: 'TOPSECRET', name: 'Dana', identity: generateIdentity(), doc: new Y.Doc(), passes })
+    const err = await fatalOf(conn)
+    assert.equal(err.message, "Couldn't connect to the relay: the address isn't valid.")
+    assert.ok(!/TOPSECRET|pass=/.test(String(err.stack)))
+    assert.equal(conn.closed, true)
+  }
 })
 
 test('once the API says this computer is signed out, the connection stops for good', async () => {
   const passes = new PassSource({ fetchPass: async () => { throw new SignedOutError('This computer was signed out. Sign in again.') } })
   const conn = new Connection({ server, room: 'sp-5', secret: 's', name: 'Dana', identity: generateIdentity(), doc: new Y.Doc(), passes })
-  const err = await new Promise((resolve) => conn.on('fatal', resolve))
+  const err = await fatalOf(conn)
   assert.equal(err.signedOut, true)
   assert.equal(err.message, 'This computer was signed out. Sign in again.')
   assert.equal(conn.closed, true)
@@ -114,18 +171,27 @@ test('runSession does not wait for a pass: a folder synced before starts offline
   const dir = tmp('offline')
   const first = await runSession({ dir, conn: { server, room: 'sp-7', secret: 's' }, name: 'Dana', identity: id, passes: testPasses(id), agentFeed: false })
   await first.stop()
-  // Quilt can't be reached until the gate opens.
-  let open
-  const gate = new Promise((resolve) => { open = resolve })
-  let fail = true
-  const passes = new PassSource({ fetchPass: async () => { await gate; if (fail) throw new Error('offline'); const exp = Date.now() + 600_000; return { pass: makePass({ identity: id, name: 'Dana Smith', exp }), expiresAt: exp } } })
+  // The accounts API isn't up yet: fetching a pass fails for real until it is.
+  const api = http.createServer((req, res) => {
+    const exp = Date.now() + 600_000
+    res.writeHead(req.method === 'POST' && req.url === '/v1/passes' ? 200 : 404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ pass: makePass({ identity: id, name: 'Dana Smith', exp }), expiresAt: exp }))
+  })
+  await new Promise((resolve) => api.listen(0, '127.0.0.1', resolve))
+  const port = api.address().port
+  await new Promise((resolve) => api.close(resolve))
+  const passes = personPasses({ token: 'qd_test', api: `http://127.0.0.1:${port}` })
   const run = await runSession({ dir, conn: { server, room: 'sp-7', secret: 's' }, name: 'Dana', identity: id, passes, agentFeed: false })
-  t.after(() => run.stop())
+  t.after(async () => { await run.stop(); api.close() })
+  const debug = []
+  run.session.on('debug', (m) => debug.push(m))
   assert.equal(run.session.name, 'Dana', 'started before any pass, with the saved name')
-  fail = false
-  open()
-  await waitFor(() => run.session.name === 'Dana Smith')
+  await waitFor(() => debug.some((m) => /couldn't get a session pass: Couldn't reach Quilt/.test(m)))
+  await new Promise((resolve) => api.listen(port, '127.0.0.1', resolve))
+  await waitFor(() => run.session.name === 'Dana Smith', 15000)
   await waitFor(() => JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'config.json'), 'utf8')).name === 'Dana Smith')
+  assert.equal(fs.statSync(path.join(dir, '.quilt', 'config.json')).mode & 0o777, 0o600)
+  assert.deepEqual(fs.readdirSync(path.join(dir, '.quilt')).filter((f) => f.includes('.tmp-')), [], 'no temp files left')
 })
 
 test('runSession stops when the API says this computer is signed out', async () => {

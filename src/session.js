@@ -10,6 +10,7 @@ import * as Y from 'yjs'
 import { watch } from 'chokidar'
 import { Connection } from './connection.js'
 import { loadIdentity } from './identity.js'
+import { writePrivateJson } from './private-file.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { formatBytes } from './status.js'
 import {
@@ -1347,7 +1348,7 @@ export class Session extends EventEmitter {
     try {
       const file = path.join(this.stateDir, 'config.json')
       const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
-      fs.writeFileSync(file, JSON.stringify({ ...cfg, ...patch }, null, 2), { mode: 0o600 })
+      writePrivateJson(file, { ...cfg, ...patch })
     } catch {}
   }
 

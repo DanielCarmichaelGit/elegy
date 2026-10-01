@@ -3,9 +3,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import http from 'node:http'
+import { spawn, spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 import { startTestApi, API_URL } from './api-helpers.js'
-import { agentJoin, agentWhoami, agentFile, describeAgent, parseJoinLink, DEFAULTS, savedAgents, pickAgent } from '../src/agent-join.js'
+import { agentJoin, agentWhoami, agentFile, describeAgent, parseJoinLink, DEFAULTS, savedAgents, pickAgent, agentAccess } from '../src/agent-join.js'
 
 let t
 before(async () => { t = await startTestApi() })
@@ -127,4 +129,68 @@ test('the saved agents on a computer, and which one a session uses', async () =>
   await agentJoin({ link: await newLink(), name: 'other', dir, log: () => {} })
   assert.throws(() => pickAgent({ dir }), /several Quilt agents \(other, solo\)/)
   assert.equal(pickAgent({ agent: 'other', dir }), 'other')
+})
+
+test('two processes refreshing one agent at once make a single refresh, and both get a working key', async (tc) => {
+  const dir = tmp()
+  const saved = await agentJoin({ link: await newLink(), name: 'shared', dir, log: () => {} })
+  // Count refreshes on their way to the API, and hold each one a while so the processes overlap.
+  let refreshes = 0
+  const proxy = http.createServer(async (req, res) => {
+    const chunks = []
+    for await (const c of req) chunks.push(c)
+    if (req.url === '/v1/agents/token') { refreshes++; await new Promise((resolve) => setTimeout(resolve, 300)) }
+    const r = await fetch(t.api.url + req.url, { method: req.method, headers: { 'content-type': 'application/json', ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}) }, body: chunks.length ? Buffer.concat(chunks) : undefined })
+    res.writeHead(r.status, { 'content-type': 'application/json' })
+    res.end(await r.text())
+  })
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  tc.after(() => { proxy.closeAllConnections(); proxy.close() })
+  fs.writeFileSync(agentFile('shared', dir), JSON.stringify({ ...saved, api: `http://127.0.0.1:${proxy.address().port}`, accessExpiresAt: Date.now() - 1 }))
+  // Each child says it's ready, waits for the go file, then asks for a working key.
+  const go = path.join(dir, 'go')
+  const mod = pathToFileURL(path.resolve('src/agent-join.js')).href
+  const script = `
+    import fs from 'node:fs'
+    import { agentAccess } from '${mod}'
+    console.log('ready')
+    while (!fs.existsSync(${JSON.stringify(go)})) await new Promise((resolve) => setTimeout(resolve, 5))
+    const s = await agentAccess({ name: 'shared', dir: ${JSON.stringify(dir)} })
+    console.log('key ' + s.accessKey)
+  `
+  const runChild = () => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    child.stderr.on('data', (d) => { err += d })
+    const ready = new Promise((resolve) => child.stdout.on('data', (d) => { out += d; if (out.includes('ready')) resolve() }))
+    const done = new Promise((resolve) => child.on('exit', (code) => resolve({ code, out, err })))
+    return { ready, done }
+  }
+  const a = runChild()
+  const b = runChild()
+  await Promise.all([a.ready, b.ready])
+  fs.writeFileSync(go, '')
+  const results = await Promise.all([a.done, b.done])
+  for (const r of results) assert.equal(r.code, 0, r.err)
+  const keys = results.map((r) => r.out.match(/key (\S+)/)[1])
+  assert.equal(refreshes, 1, 'exactly one refresh')
+  assert.equal(keys[0], keys[1])
+  assert.notEqual(keys[0], saved.accessKey)
+  const me = await fetch(`${t.api.url}/v1/agents/me`, { headers: { authorization: `Bearer ${keys[0]}` } })
+  assert.equal(me.status, 200, 'the key works')
+  assert.ok(!fs.existsSync(agentFile('shared', dir) + '.lock'), 'the lock is released')
+})
+
+test('a refresh lock left by a process that died is ignored once it is stale', async () => {
+  const dir = tmp()
+  const saved = await agentJoin({ link: await newLink(), name: 'stale', dir, log: () => {} })
+  const file = agentFile('stale', dir)
+  fs.writeFileSync(file, JSON.stringify({ ...saved, accessExpiresAt: Date.now() - 1 }))
+  fs.writeFileSync(file + '.lock', '')
+  const old = new Date(Date.now() - 31_000)
+  fs.utimesSync(file + '.lock', old, old)
+  const s = await agentAccess({ name: 'stale', dir })
+  assert.notEqual(s.accessKey, saved.accessKey)
+  assert.ok(!fs.existsSync(file + '.lock'))
 })

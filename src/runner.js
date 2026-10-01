@@ -11,6 +11,7 @@ import { startAgentReaders } from './agents/index.js'
 import { keyFor } from './settings.js'
 import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
+import { writePrivateJson } from './private-file.js'
 
 /**
  * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
@@ -95,11 +96,11 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
   fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
   const configFile = path.join(dir, '.quilt', 'config.json')
-  fs.writeFileSync(configFile,
-    JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize }, null, 2), { mode: 0o600 })
+  // It holds the room secret: written privately and atomically (see private-file.js).
+  writePrivateJson(configFile, { ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize })
   // Keeps the saved name in step with the pass's (the rest of the file may have changed since).
   const saveName = (name) => {
-    try { fs.writeFileSync(configFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }, null, 2), { mode: 0o600 }) } catch {}
+    try { writePrivateJson(configFile, { ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }) } catch {}
   }
   ensureGitExclude(dir)
 

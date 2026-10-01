@@ -17,6 +17,13 @@ import { PASS_REFRESH_MS } from './pass-source.js'
 const ROOM_FULL_MESSAGE = 'This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'
 
 const REQUEST_TIMEOUT_MS = 10000
+// Never quote the relay URL in errors: it carries the room secret and the session pass.
+const BAD_ADDRESS = "Couldn't connect to the relay: the address isn't valid."
+// A pass that lapses this soon after connecting wasn't really valid: after a few in a
+// row, the clock is the likely culprit, and reconnecting won't help.
+const QUICK_EXPIRY_MS = 60 * 1000
+const MAX_QUICK_EXPIRIES = 5
+const CLOCK_WRONG = "Your computer's clock looks wrong, so Quilt can't stay signed in. Check the date and time."
 
 export const REMOTE = Symbol('remote')
 
@@ -50,7 +57,10 @@ export class Connection extends EventEmitter {
     this.passes = passes
     this.passRefreshMs = passRefreshMs
     this.passTimer = null
-    this.passStale = false // after a 4419 close: get a new pass, not the cached one
+    this.passStale = false // after a 4419 close (or a refused pass): get a new pass, not the cached one
+    this.passRetried = false // a refused pass gets one retry with a fresh pass before it's fatal
+    this.connectedAt = 0
+    this.quickExpiries = 0 // 4419 closes in a row that came soon after connecting
     this.room = room
     this.identity = identity
     this.requests = new Map() // id -> { resolve, reject, timer }
@@ -98,7 +108,18 @@ export class Connection extends EventEmitter {
   }
 
   open (url) {
-    const ws = new WebSocket(url)
+    let ws
+    try {
+      ws = new WebSocket(url)
+    } catch {
+      // Later, so whoever made this connection is listening (and never with ws's error, which quotes the URL).
+      setImmediate(() => {
+        if (this.closed) return
+        this.emit('fatal', new Error(BAD_ADDRESS))
+        this.close()
+      })
+      return
+    }
     ws.binaryType = 'arraybuffer'
     this.ws = ws
 
@@ -114,7 +135,13 @@ export class Connection extends EventEmitter {
 
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
-      if (res.statusCode === 403 && /relay key/i.test(reason)) {
+      if (res.statusCode === 401 && this.passes && !this.passRetried) {
+        // The cached pass may have run out by the relay's clock: try once more with a fresh one.
+        this.passRetried = true
+        this.passStale = true
+        this.emit('warn', 'the relay turned the session pass away; trying a fresh one')
+        ws.terminate()
+      } else if (res.statusCode === 403 && /relay key/i.test(reason)) {
         this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `quilt relay set <url> --key <key>`.'))
         this.close()
       } else if (res.statusCode === 401 || res.statusCode === 400 || res.statusCode === 403) {
@@ -137,7 +164,15 @@ export class Connection extends EventEmitter {
 
     ws.on('close', (code, reason) => {
       clearInterval(this.passTimer)
-      if (code === CLOSE_PASS_EXPIRED) {
+      const upSince = this.connectedAt
+      this.connectedAt = 0
+      // Count 4419s that came soon after connecting; any other end to a connection that got going resets the count.
+      if (code === CLOSE_PASS_EXPIRED) this.quickExpiries = upSince && Date.now() - upSince < QUICK_EXPIRY_MS ? this.quickExpiries + 1 : 0
+      else if (upSince) this.quickExpiries = 0
+      if (code === CLOSE_PASS_EXPIRED && this.quickExpiries >= MAX_QUICK_EXPIRIES) {
+        this.emit('fatal', new Error(CLOCK_WRONG))
+        this.close()
+      } else if (code === CLOSE_PASS_EXPIRED) {
         // Not fatal: reconnect (below) with a fresh pass.
         this.passStale = true
         this.emit('warn', String(reason) || 'session pass expired; reconnecting')
@@ -183,7 +218,10 @@ export class Connection extends EventEmitter {
     // (If we have to wait for the owner, it ignores this and we start again once let in.)
     this.authed = true
     this.connected = true
-    this.backoff = 500
+    this.connectedAt = Date.now()
+    this.passRetried = false
+    // After a pass that lapsed right away, keep backing off rather than reconnecting at full speed.
+    if (!this.quickExpiries) this.backoff = 500
     this.emit('status', 'connected')
     this.startSync()
     this.startPassRefresh()
