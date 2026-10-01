@@ -107,9 +107,10 @@ All settings are environment variables on the relay.
 
 ## Checking on it
 
-- `https://your-relay/` shows a small status page.
-- `https://your-relay/healthz` returns JSON for monitoring (`ok`, uptime,
-  connections, loaded rooms).
+- The relay shows no page at its address: anything other than a session, an
+  invite link or a shared file answers "not found".
+- `https://your-relay/healthz` returns JSON for monitoring (`ok`, and whether
+  starting sessions needs a key). It doesn't reveal usage.
 - `quilt relay check wss://your-relay` tests it from any machine.
 - Logs show sessions connecting and leaving, but never their contents.
 

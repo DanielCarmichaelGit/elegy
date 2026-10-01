@@ -1,4 +1,4 @@
-import Header from '@/components/Header.js'
+import AppHeader from '@/components/AppHeader.js'
 import Notice from '@/components/Notice.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
@@ -44,7 +44,7 @@ export default async function Invite ({ params, searchParams }) {
   }
   return (
     <>
-      <Header signedIn />
+      <AppHeader user={user} />
       <main className='wrap page' style={{ maxWidth: 520 }}><div className='card stack'>{body}</div></main>
     </>
   )

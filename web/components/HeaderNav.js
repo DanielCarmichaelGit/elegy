@@ -1,18 +1,25 @@
 'use client'
 
-// The segmented pill nav (header option B), plus the sub-760px collapse into a menu
-// button that opens a small panel. usePathname highlights the current page's item.
+// The segmented pill nav, plus the sub-760px collapse into a menu button that opens a small
+// panel. usePathname highlights the current page's item: an exact match, or a page under it
+// unless the item says exact (an org's Overview, which every org page sits under).
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
-const ITEMS = [
+const MARKETING = [
   { href: '/#how', label: 'How it works' },
   { href: '/#agents', label: 'Agents' },
   { href: '/pricing', label: 'Pricing' }
 ]
 
-export default function HeaderNav () {
+function isOn (item, pathname) {
+  const path = item.href.split('#')[0]
+  if (!path || item.href.includes('#')) return false
+  return pathname === path || (!item.exact && pathname.startsWith(path + '/'))
+}
+
+export default function HeaderNav ({ items = MARKETING, label = 'Main' }) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
 
@@ -24,9 +31,9 @@ export default function HeaderNav () {
   }, [open])
 
   const link = (item, onClick) => {
-    const active = item.href === '/pricing' && pathname === '/pricing'
+    const on = isOn(item, pathname)
     return (
-      <Link key={item.href} className={`qh-link${active ? ' on' : ''}`} href={item.href} onClick={onClick}>
+      <Link key={item.href} className={`qh-link${on ? ' on' : ''}`} href={item.href} onClick={onClick} aria-current={on ? 'page' : undefined}>
         {item.label}
       </Link>
     )
@@ -34,7 +41,7 @@ export default function HeaderNav () {
 
   return (
     <>
-      <nav className='qh-mid' aria-label='Main'>{ITEMS.map((item) => link(item))}</nav>
+      <nav className='qh-mid' aria-label={label}>{items.map((item) => link(item))}</nav>
       <button
         type='button'
         className='qh-menu-btn'
@@ -49,7 +56,7 @@ export default function HeaderNav () {
       </button>
       {open && (
         <div id='qh-mobile-panel' className='qh-mobile-panel'>
-          {ITEMS.map((item) => link(item, () => setOpen(false)))}
+          {items.map((item) => link(item, () => setOpen(false)))}
         </div>
       )}
     </>

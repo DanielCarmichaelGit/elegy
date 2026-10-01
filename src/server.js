@@ -533,7 +533,6 @@ function send (ws, msg) {
 export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, ...opts } = {}) {
   const cfg = relayConfig(opts)
   if (dataDir) fs.mkdirSync(dataDir, { recursive: true })
-  const startedAt = Date.now()
   const rooms = new Map() // loaded rooms only
   const ipConns = new Map()
   // Sessions anyone can start (no relay key) are rate-limited per address.
@@ -613,11 +612,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
 
-  const stats = () => {
-    let connections = 0
-    for (const r of rooms.values()) connections += r.conns.size
-    return { ok: true, version: 1, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000), roomsLoaded: rooms.size, connections, requiresKey: !!cfg.relayKey }
-  }
+  // Public: the app's relay check reads this. It says nothing about who's using the relay.
+  const health = () => ({ ok: true, version: 1, requiresKey: !!cfg.relayKey })
 
   const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x')
@@ -625,7 +621,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
     if (url.pathname === '/healthz') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-      return res.end(JSON.stringify(stats()))
+      return res.end(JSON.stringify(health()))
     }
     if (url.pathname === '/logo.svg') {
       res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' })
@@ -635,10 +631,6 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (j) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
       return res.end(joinPage(j[1]))
-    }
-    if (url.pathname === '/' || url.pathname === '/status') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(statusPage(stats()))
     }
     if (url.pathname === '/agent/link' && req.method === 'POST') {
       return readJson(req, 4096, (err, body) => {
@@ -904,13 +896,4 @@ document.getElementById('copy').onclick = async (e) => {
   try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch { prompt('Copy this link:', link) }
 }
 </script></body></html>`
-}
-
-function statusPage (s) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>quilt relay</title><link rel="icon" href="/logo.svg">
-<style>${PAGE_STYLE}</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>quilt relay</h1>
-<div class="ok"><i></i>Running</div>
-<p>${s.connections} connection${s.connections === 1 ? '' : 's'} · ${s.roomsLoaded} active room${s.roomsLoaded === 1 ? '' : 's'}${s.requiresKey ? ' · starting sessions needs a relay key' : ''}</p>
-<p>Point Quilt at this relay with<br><code>quilt relay set wss://&lt;this address&gt;</code></p></div></body></html>`
 }

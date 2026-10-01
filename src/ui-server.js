@@ -101,7 +101,9 @@ const STATIC = {
   '/git.js': ['git.js', 'text/javascript; charset=utf-8']
 }
 
-export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {}) {
+// preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
+// link, so a dev preview pane can show the app. Any local page could then open it too.
+export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, preview = false } = {}) {
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
   const clients = new Set() // SSE responses
@@ -332,6 +334,10 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown } = {
     const host = (req.headers.host || '').replace(/:\d+$/, '')
     if (!['127.0.0.1', 'localhost', '[::1]'].includes(host)) return json(403, { error: 'forbidden host' })
 
+    if (preview && req.method === 'GET' && url.pathname === '/' && !url.searchParams.get('t')) {
+      res.writeHead(302, { location: `/?t=${token}`, 'cache-control': 'no-store' })
+      return res.end()
+    }
     if (req.method === 'GET' && STATIC[url.pathname]) {
       const [file, type] = STATIC[url.pathname]
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' })

@@ -30,16 +30,16 @@ function cleanups (t) {
 // Sessions without an identity create one in ~/.quilt; keep that out of the real home.
 process.env.HOME = tmp('home')
 
-test('health endpoint and status page', async (t) => {
+test('health endpoint, and nothing else for visitors', async (t) => {
   const defer = cleanups(t)
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, relayKey: 'k' })
   defer(() => srv.close())
   const h = await (await fetch(`http://127.0.0.1:${srv.port}/healthz`)).json()
   assert.equal(h.ok, true)
   assert.equal(h.requiresKey, true)
-  const page = await (await fetch(`http://127.0.0.1:${srv.port}/status`)).text()
-  assert.match(page, /quilt relay/)
-  assert.match(page, /Running/)
+  assert.deepEqual(Object.keys(h).sort(), ['ok', 'requiresKey', 'version'])
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/`)).status, 404)
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/status`)).status, 404)
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/nope`)).status, 404)
 })
 
