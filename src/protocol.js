@@ -26,6 +26,12 @@ export const CLOSE_ROOM_FULL = 4413
 
 export const CLOSE_ENDED = 4410 // the owner ended the session and it was deleted
 
+// Sent to apps too old for a session that now stores large files. It reuses
+// 4401 because every app that knows close codes stops on it and shows the
+// reason; the oldest ones reconnect instead, and the relay refuses that
+// reconnect with the same message.
+export const CLOSE_NEEDS_UPDATE = CLOSE_AUTH_FAILED
+
 // Largest file that can be sent in chat.
 export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
 

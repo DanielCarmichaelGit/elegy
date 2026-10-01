@@ -22,7 +22,7 @@ import { handleAgentMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_NEEDS_UPDATE,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -221,6 +221,23 @@ class Room {
       send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refused: refused.slice(0, 20), why }))
     })
     return false
+  }
+
+  /** Can this connection's app handle the session as it is now? */
+  supported (ws) {
+    return !this.meta.largeFiles || (ws.features || []).includes('large-files')
+  }
+
+  /**
+   * The session now keeps large files in storage. Older apps would get
+   * entries with no contents, so they're sent away to update.
+   */
+  startLargeFiles () {
+    if (this.meta.largeFiles) return
+    this.meta.largeFiles = true
+    for (const ws of [...this.conns.keys(), ...this.pending.keys()]) {
+      if (!this.supported(ws)) ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
+    }
   }
 
   accessMessage (a) {
@@ -433,6 +450,8 @@ class Room {
         return ws.close(CLOSE_AUTH_FAILED, 'Could not verify who you are')
       }
       if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
+      // The session may have started storing files while this app signed in.
+      if (!this.supported(ws)) return ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
       // Re-check: someone else may have taken the name while we waited.
       if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
       this.bindName(name, publicKey)
@@ -787,7 +806,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           const others = storedBytes(room) - (room.meta.blobs[id]?.size || 0)
           if (others + size + dirSize(path.join(filesDir, name)) > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
           room.meta.blobs[id] = { size, ts: Date.now() }
-          room.meta.largeFiles = true
+          room.startLargeFiles()
           room.saveMeta()
           json(200, await store.uploadTarget(name, id, size))
         } catch (e) {
@@ -840,7 +859,6 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const room = getRoom(name)
     if (!room) return reject(socket, 413, TOO_BIG)
     const features = String(url.searchParams.get('features') || '').split(',')
-    if (room.meta.largeFiles && !features.includes('large-files')) return reject(socket, 400, 'This session needs a newer version of Quilt. Update Quilt, then join again.')
     const creating = !room.exists
     if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret)
@@ -849,11 +867,17 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
     }
+    // Checked after the secret, so only members learn what the session needs.
+    if (room.meta.largeFiles && !features.includes('large-files')) {
+      if (!room.conns.size && room.onEmpty) room.onEmpty() // don't keep it in memory for nobody
+      return reject(socket, 400, NEEDS_UPDATE)
+    }
     if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.features = features
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1)
       ws.isAlive = true
       ws.on('pong', () => { ws.isAlive = true })
@@ -1026,6 +1050,7 @@ function receiveBlob (req, file, limit, done) {
 
 const TOO_BIG = 'Session over the size limit'
 const ENDED_MESSAGE = 'The owner ended this session'
+const NEEDS_UPDATE = 'This session needs a newer version of Quilt. Update Quilt, then join again.'
 
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)

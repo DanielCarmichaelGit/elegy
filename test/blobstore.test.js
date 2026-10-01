@@ -132,3 +132,36 @@ test('ending a room while a file is being uploaded to the relay\'s disk does not
   assert.equal(await reply, 500)
   assert.equal((await (await fetch(`${base}/healthz`)).json()).ok, true, 'the relay is still running')
 })
+
+test('apps without large-file support already in the room are sent away when it first stores a file', async (t) => {
+  const { base } = await relay(t)
+  const server = base.replace('http', 'ws')
+  const old = new Connection({ server, room: 'r6', secret: 's', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: '' })
+  t.after(() => old.close())
+  const current = new Connection({ server, room: 'r6', secret: 's', name: 'new', identity: generateIdentity(), doc: new Y.Doc() })
+  t.after(() => current.close())
+  await Promise.all([old.waitForSync(), current.waitForSync()])
+  const sentAway = new Promise((resolve) => old.on('fatal', resolve))
+  let currentLeft = false
+  current.on('status', (s) => { if (s === 'disconnected') currentLeft = true })
+  assert.equal((await ask(base, 'r6', ID, 'upload', 's', { size: 1 })).status, 200)
+  assert.match((await sentAway).message, /newer version of Quilt/)
+  await roundTrip(current)
+  assert.equal(currentLeft, false, 'apps that support large files stay')
+})
+
+test('an app without large-file support needs the right secret to learn the session stores files', async (t) => {
+  const { base } = await relay(t)
+  await ask(base, 'r7', ID, 'upload', 's', { size: 1 })
+  const server = base.replace('http', 'ws')
+  const refused = await new Promise((resolve) => {
+    const c = new Connection({ server, room: 'r7', secret: 'wrong', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: '' })
+    c.on('fatal', (err) => { c.close(); resolve(err.message) })
+  })
+  assert.match(refused, /Wrong room secret/)
+})
+
+/** Resolves once the relay has answered a request from `c`, so everything it sent before has arrived. */
+function roundTrip (c) {
+  return c.claimRequest({ op: 'release', pattern: '*' })
+}
