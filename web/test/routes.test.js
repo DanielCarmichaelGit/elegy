@@ -3,6 +3,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
 import net from 'node:net'
+import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 
 const env = {
@@ -29,7 +30,7 @@ after(() => server?.kill())
 const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
-  for (const path of ['/', '/pricing']) assert.equal((await get(path)).status, 200, path)
+  for (const path of ['/', '/pricing', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
 })
 
 test('private pages send signed-out people to sign in, and come back after', async () => {
@@ -69,4 +70,33 @@ test('the org sign-up page renders with a password field and an org name field',
 test('the forgot-password page renders with an email field', async () => {
   const html = await (await get('/forgot')).text()
   assert.match(html, /type="email"/)
+})
+
+// Like get(), but with a Host header, the way requests for join.heyquilt.com arrive.
+const getAs = (host, path) => new Promise((resolve, reject) => {
+  http.get({ hostname: '127.0.0.1', port: new URL(base).port, path, headers: { host } }, (res) => {
+    let body = ''
+    res.on('data', (c) => { body += c })
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }))
+  }).on('error', reject)
+})
+
+test('join.heyquilt.com/<room> shows the invite page, sending no referrer and kept out of search', async () => {
+  for (const [host, path] of [['join.heyquilt.com', '/room-abc'], ['join.heyquilt.com', '/room-abc/'], [new URL(base).host, '/join/room-abc']]) {
+    const res = await getAs(host, path)
+    assert.equal(res.status, 200, `${host}${path}`)
+    assert.match(res.body, /invited to a Quilt session/)
+    assert.match(res.body, /quilt-mac-arm64\.dmg|quilt-windows-x64\.exe/, 'download buttons')
+    assert.equal(res.headers['referrer-policy'], 'no-referrer', `${host}${path}`)
+    assert.equal(res.headers['x-robots-tag'], 'noindex', `${host}${path}`)
+  }
+})
+
+test('anything else on join.heyquilt.com goes to the home page; a bad room is not found', async () => {
+  for (const path of ['/', '/a/b']) {
+    const res = await getAs('join.heyquilt.com', path)
+    assert.ok([307, 308].includes(res.status), path)
+    assert.equal(res.headers.location, 'https://heyquilt.com/')
+  }
+  assert.equal((await get('/join/bad%20room')).status, 404)
 })

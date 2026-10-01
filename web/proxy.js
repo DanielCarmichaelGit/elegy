@@ -1,10 +1,29 @@
 // Refreshes the Supabase session on every page request and keeps private pages private.
+// join.heyquilt.com/<room> serves the public invite page (/join/<room>).
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
+import { JOIN_HOST, joinPath } from './lib/join.js'
 
 const PRIVATE = ['/dashboard', '/settings', '/link', '/reset', '/org', '/orgs', '/invite']
 
+// Invite links carry a secret in the fragment: never pass the page on as a referrer, and keep it out of search.
+function invitePage (response) {
+  response.headers.set('Referrer-Policy', 'no-referrer')
+  response.headers.set('X-Robots-Tag', 'noindex')
+  return response
+}
+
 export async function proxy (request) {
+  const host = (request.headers.get('host') || '').split(':')[0].toLowerCase()
+  if (host === JOIN_HOST) {
+    const to = joinPath(request.nextUrl.pathname)
+    if (!to) return NextResponse.redirect('https://heyquilt.com/')
+    const url = request.nextUrl.clone()
+    url.pathname = to
+    return invitePage(NextResponse.rewrite(url))
+  }
+  if (request.nextUrl.pathname.startsWith('/join/')) return invitePage(NextResponse.next({ request }))
+
   let response = NextResponse.next({ request })
   const supabase = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
     cookies: {

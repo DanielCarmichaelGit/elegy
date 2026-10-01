@@ -1,6 +1,9 @@
 // The Quilt website: sign-in, accounts and downloads (the app itself is the desktop app).
 export default {
   poweredByHeader: false,
+  // join.heyquilt.com/<room> and .../<room>/ must both serve the invite page (no redirect):
+  // proxy.js (joinPath) handles the trailing slash itself.
+  skipTrailingSlashRedirect: true,
   // Orgs are only made by signing up as an org; the old "create an org" page moved.
   async redirects () {
     return [{ source: '/orgs/new', destination: '/signup/org', permanent: false }]
