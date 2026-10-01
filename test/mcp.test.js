@@ -11,10 +11,13 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { encodeInvite } from '../src/runner.js'
+import { startTestApi, API_URL } from './api-helpers.js'
+import { newPassKeys } from '../src/passes.js'
+import { agentJoin } from '../src/agent-join.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-mcp-${n}-`))
-let relay, human, client, humanDir, agentCwd
+let relay, human, client, humanDir, agentCwd, accounts
 const text = (r) => r.content.map((c) => c.text).join('\n')
 const call = async (name, args = {}) => client.callTool({ name, arguments: args })
 async function waitFor (fn, ms = 8000) {
@@ -32,6 +35,10 @@ before(async () => {
   await human.start({ waitTimeoutMs: 5000 })
   agentCwd = tmp('agent')
   const home = tmp('home')
+  // The agent joined Quilt first (as `quilt agent join` does); sessions then use its keys.
+  accounts = await startTestApi({ passKey: newPassKeys().privateKey })
+  const link = (await accounts.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.replace(API_URL, accounts.api.url)
+  await agentJoin({ link, name: 'helper', dir: path.join(home, '.quilt'), log: () => {} })
   client = new Client({ name: 'claude-code', version: '1.0.0' })
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentCwd, env: { ...process.env, HOME: home }, stderr: 'ignore' }))
 })
@@ -40,6 +47,7 @@ after(async () => {
   await client?.close().catch(() => {})
   await human?.stop()
   await relay?.close()
+  await accounts?.close()
 })
 
 test('exposes the join and workspace tools', async () => {
@@ -63,7 +71,7 @@ test('an agent joins by invite and shows up as an agent', async () => {
   // The empty current folder became the project folder, and files arrived.
   assert.equal(fs.readFileSync(path.join(agentCwd, 'src', 'app.js'), 'utf8'), 'console.log("hi")\n')
   const peer = await waitFor(() => human.status().peers.find((p) => p.kind === 'agent'))
-  assert.match(peer.name, /^Claude Code agent \(.+\)$/)
+  assert.equal(peer.name, 'helper', 'named after the saved agent')
   assert.equal(peer.tool, 'Claude Code')
   // Joining twice is refused.
   assert.equal((await call('quilt_join_session', { invite })).isError, true)

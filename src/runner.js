@@ -70,13 +70,20 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {} }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {}, passes = null, identity = null }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder`)
   if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another quilt process.')
 
+  // With passes, the relay knows you by your account (or agent): its name and agent
+  // badge come from the pass. The session starts with the name saved on this computer
+  // (or one already fetched) and takes the pass's once it arrives, without waiting for
+  // one here, so being offline doesn't stop a session from starting.
+  const p = passes && passes.payload
+  if (p && p.name) name = p.name
+  if (p && p.kind === 'agent') kind = 'agent'
   name = (name || os.userInfo().username).trim()
   tool = tool || 'unknown'
   const invite = encodeInvite({ ...conn, server: inviteServer || conn.server })
@@ -87,11 +94,16 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
   const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
   fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
-  fs.writeFileSync(path.join(dir, '.quilt', 'config.json'),
+  const configFile = path.join(dir, '.quilt', 'config.json')
+  fs.writeFileSync(configFile,
     JSON.stringify({ ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize }, null, 2), { mode: 0o600 })
+  // Keeps the saved name in step with the pass's (the rest of the file may have changed since).
+  const saveName = (name) => {
+    try { fs.writeFileSync(configFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }, null, 2), { mode: 0o600 }) } catch {}
+  }
   ensureGitExclude(dir)
 
-  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent })
+  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent, identity, passes })
   const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
   if (summarize) session.summarizer = summarizer()
   if (onLog) session.on('log', onLog)
@@ -108,8 +120,11 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
     await session.stop().catch(() => {})
     throw err
   }
+  // The pass may have named us differently from the name we started with.
+  if (session.name !== name) saveName(session.name)
+  session.on('identity', ({ name }) => saveName(name))
   const control = await startControl(session, { invite, viewInvite, joined })
-  remember({ dir, room: conn.room, server: conn.server, name, tool })
+  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.
   const readers = agentFeed

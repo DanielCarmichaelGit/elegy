@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { startTestApi, API_URL } from './api-helpers.js'
-import { agentJoin, agentWhoami, agentFile, describeAgent, parseJoinLink, DEFAULTS } from '../src/agent-join.js'
+import { agentJoin, agentWhoami, agentFile, describeAgent, parseJoinLink, DEFAULTS, savedAgents, pickAgent } from '../src/agent-join.js'
 
 let t
 before(async () => { t = await startTestApi() })
@@ -115,4 +115,16 @@ test('quilt agent needs a subcommand, a link to join, and a name', () => {
     assert.equal(r.status, 1, args.join(' '))
     assert.match(r.stderr, /quilt agent join <link> --name <name>/)
   }
+})
+
+test('the saved agents on a computer, and which one a session uses', async () => {
+  const dir = tmp()
+  assert.deepEqual(savedAgents(dir), [])
+  assert.throws(() => pickAgent({ dir }), /no Quilt agent yet/)
+  await agentJoin({ link: await newLink(), name: 'solo', dir, log: () => {} })
+  assert.deepEqual(savedAgents(dir), ['solo'])
+  assert.equal(pickAgent({ dir }), 'solo', 'the only one')
+  await agentJoin({ link: await newLink(), name: 'other', dir, log: () => {} })
+  assert.throws(() => pickAgent({ dir }), /several Quilt agents \(other, solo\)/)
+  assert.equal(pickAgent({ agent: 'other', dir }), 'other')
 })

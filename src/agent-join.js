@@ -90,21 +90,49 @@ export async function agentJoin ({ link, name, provider = DEFAULTS.provider, typ
 
 async function refresh (saved, file, fetchImpl) {
   const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/token', { refreshKey: saved.refreshKey })
-  if (!r.ok) throw new Error(r.body?.error || `Couldn't refresh the agent's keys (${r.status}).`)
+  if (!r.ok) throw Object.assign(new Error(r.body?.error || `Couldn't refresh the agent's keys (${r.status}).`), { status: r.status })
   const next = { ...saved, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt }
   // Save straight away: the old refresh key is spent, and using it again would revoke the agent.
   save(file, next)
   return next
 }
 
+/** A saved agent's file: { name, api, agentId, accessKey, refreshKey, …, identity }. */
+export function readAgent ({ name, dir }) {
+  return load(agentFile(name, dir), name)
+}
+
+/** The saved agent with a working access key, refreshed first when it has (nearly) run out. */
+export async function agentAccess ({ name, dir, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
+  const file = agentFile(name, dir)
+  const saved = load(file, name)
+  return saved.accessExpiresAt - EARLY_MS <= now() ? refresh(saved, file, fetchImpl) : saved
+}
+
 /** Who the agent is, refreshing its keys first when the access key has (nearly) run out. */
 export async function agentWhoami ({ name, dir, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
-  const file = agentFile(name, dir)
-  let saved = load(file, name)
-  if (saved.accessExpiresAt - EARLY_MS <= now()) saved = await refresh(saved, file, fetchImpl)
+  const saved = await agentAccess({ name, dir, fetch: fetchImpl, now })
   const r = await send(fetchImpl, saved.api, 'GET', '/v1/agents/me', null, saved.accessKey)
   if (!r.ok) throw new Error(r.body?.error || `Couldn't reach Quilt (${r.status}).`)
   return r.body
+}
+
+/** The names of the agents saved on this computer. */
+export function savedAgents (dir = quiltHome()) {
+  try {
+    return fs.readdirSync(path.join(dir, 'agents')).filter((f) => f.endsWith('.json') && !f.startsWith('.')).map((f) => f.slice(0, -5)).sort()
+  } catch {
+    return []
+  }
+}
+
+/** Which saved agent a session joins as: the one named, or the only one there is. */
+export function pickAgent ({ agent, dir } = {}) {
+  if (agent) return agent
+  const all = savedAgents(dir)
+  if (all.length === 1) return all[0]
+  if (!all.length) throw new Error('This computer has no Quilt agent yet. The person you work with can invite one on heyquilt.com, then run: quilt agent join <link> --name <name>')
+  throw new Error(`This computer has several Quilt agents (${all.join(', ')}). Say which one to join as.`)
 }
 
 export function describeAgent (me) {

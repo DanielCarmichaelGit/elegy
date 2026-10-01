@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { adoptLegacyEnv } from '../src/legacy.js'
@@ -39,11 +38,10 @@ Usage:
   quilt mcp                                           Run the MCP server (used by AI tools)
 
 Join options:
-  --name <you>        Your display name (default: OS username)
+  --agent <name>      Join as a Quilt agent saved with \`quilt agent join\` (default: your account)
   --tool <tool>       What you're coding with, e.g. claude, cursor (shown to others)
   --dir <folder>      Project folder (default: current folder)
   --room <name> --secret <secret>   Join/create a specific room instead of using an invite
-  --agent            Join as an AI agent (shown with an agent badge)
   --prefer local      On first join, keep your local version of files that differ
                       (default: take the session's version and back yours up)
 `
@@ -175,11 +173,20 @@ async function join () {
     allowPositionals: true,
     options: {
       server: { type: 'string' }, room: { type: 'string' }, secret: { type: 'string' },
-      name: { type: 'string' }, tool: { type: 'string' }, dir: { type: 'string' },
-      prefer: { type: 'string' }, agent: { type: 'boolean' }
+      tool: { type: 'string' }, dir: { type: 'string' }, prefer: { type: 'string' }, agent: { type: 'string' }
     }
   })
   const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
+  const { sessionPasses } = await import('../src/pass-source.js')
+  const { clearAccount } = await import('../src/account.js')
+  // Every session signs in: as this computer's account, or as a saved agent.
+  let auth
+  try { auth = sessionPasses({ agent: values.agent || null }) } catch (err) { fail(err.message) }
+  const whyStopped = (err) => {
+    if (!err.signedOut || values.agent) return err.message
+    clearAccount()
+    return 'This computer was signed out. Run quilt login again.'
+  }
   const dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
@@ -201,26 +208,27 @@ async function join () {
   }
 
   const stamp = () => new Date().toLocaleTimeString()
-  const name = values.name || saved.name || os.userInfo().username
   console.log(`quilt: syncing ${dir}`)
-  console.log(`  room ${conn.room} on ${conn.server} as "${name}"`)
   let run
   try {
     run = await runSession({
       dir,
       conn,
-      name,
+      name: auth.name,
       tool: values.tool || saved.tool,
       prefer: values.prefer === 'local' ? 'local' : 'remote',
-      kind: values.agent ? 'agent' : 'human',
+      kind: auth.kind,
+      passes: auth.passes,
+      identity: auth.identity,
       inviteServer: saved.room === conn.room ? saved.inviteServer : undefined,
       onLog: (m) => console.log(`[${stamp()}] ${m}`),
       onDebug: process.env.QUILT_DEBUG ? (m) => console.log(`[${stamp()}] debug: ${m}`) : undefined,
-      onFatal: (err) => fail(err.message)
+      onFatal: (err) => fail(whyStopped(err))
     })
   } catch (err) {
-    fail(err.message)
+    fail(whyStopped(err))
   }
+  console.log(`  room ${conn.room} on ${conn.server} as "${run.session.name}"`)
 
   const { registerProcess } = await import('../src/procs.js')
   registerProcess('sync', { dir })

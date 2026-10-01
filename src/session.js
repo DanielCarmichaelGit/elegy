@@ -40,7 +40,7 @@ const RETRY_MS = 30 * 1000
 const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -50,6 +50,7 @@ export class Session extends EventEmitter {
     this.viewSecret = viewSecret
     this.name = name
     this.identity = identity
+    this.passes = passes // signs in to a relay that requires it (see pass-source.js)
     this.tool = tool
     this.color = color
     this.prefer = prefer
@@ -103,6 +104,25 @@ export class Session extends EventEmitter {
     this.access = null // from the relay: { state, role, scopes, owner, controlled }
     this.members = [] // everyone approved into a controlled session
     this.waiting = [] // people asking to join (only the owner hears about them)
+    if (passes) this.adoptPass(passes.payload)
+  }
+
+  /**
+   * With sign-in on, the relay knows you by your pass: use its name (and agent
+   * badge) here too, so what we write as ours matches what others see.
+   */
+  adoptPass (p) {
+    if (!p) return
+    const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : this.name
+    const kind = p.kind === 'agent' ? 'agent' : this.kind
+    if (name === this.name && kind === this.kind) return
+    this.name = name
+    this.kind = kind
+    if (this.conn && this.conn.awareness.getLocalState()) {
+      this.conn.awareness.setLocalStateField('name', name)
+      this.conn.awareness.setLocalStateField('kind', kind)
+    }
+    this.emit('identity', { name, kind })
   }
 
   log (msg) { this.emit('log', msg) }
@@ -121,6 +141,7 @@ export class Session extends EventEmitter {
       kind: this.kind,
       name: this.name,
       identity: this.identity || loadIdentity(),
+      passes: this.passes,
       doc: this.doc,
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
@@ -133,6 +154,7 @@ export class Session extends EventEmitter {
     this.retryTimer.unref()
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
+    this.conn.on('pass', (p) => this.adoptPass(p))
     this.conn.on('claims', (list) => this.setClaims(list))
     this.conn.on('access', (a) => this.setAccess(a))
     this.conn.on('members', (m) => this.setMembers(m))
@@ -724,10 +746,20 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** Headers for the relay's session routes: the room secret, and a pass when signed in. */
+  async relayHeaders (extra = {}) {
+    return {
+      'x-quilt-secret': this.secret,
+      ...(this.key ? { 'x-quilt-key': this.key } : {}),
+      ...(this.passes ? { 'x-quilt-pass': await this.passes.get() } : {}),
+      ...extra
+    }
+  }
+
   async blobRequest (id, action, body = {}) {
     const res = await fetch(`${this.httpBase()}/blobs/${encodeURIComponent(this.room)}/${id}/${action}`, {
       method: 'POST',
-      headers: { 'x-quilt-secret': this.secret, 'content-type': 'application/json', ...(this.key ? { 'x-quilt-key': this.key } : {}) },
+      headers: await this.relayHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify(body)
     })
     if (!res.ok) throw Object.assign(new Error(await res.text()), { status: res.status })
@@ -1073,7 +1105,7 @@ export class Session extends EventEmitter {
     if (st.size > MAX_SHARED_FILE_BYTES) throw new Error(`${filePath} is larger than ${MAX_SHARED_FILE_BYTES / 1024 / 1024} MB`)
     const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}`, {
       method: 'POST',
-      headers: { 'x-quilt-secret': this.secret, 'content-type': 'application/octet-stream', ...(this.key ? { 'x-quilt-key': this.key } : {}) },
+      headers: await this.relayHeaders({ 'content-type': 'application/octet-stream' }),
       body: fs.readFileSync(abs)
     })
     if (!res.ok) throw new Error(`upload failed: ${await res.text()}`)
@@ -1088,7 +1120,7 @@ export class Session extends EventEmitter {
     const target = dest ? path.resolve(dest) : this.inboxPath(msg)
     const finalPath = fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, safeName(msg.file.name)) : target
     const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${msg.file.id}`, {
-      headers: { 'x-quilt-secret': this.secret }
+      headers: await this.relayHeaders()
     })
     if (!res.ok) throw new Error(`download failed: ${await res.text()}`)
     fs.mkdirSync(path.dirname(finalPath), { recursive: true })
