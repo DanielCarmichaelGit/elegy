@@ -11,7 +11,7 @@ import {
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
-import { signChallenge } from './identity.js'
+import { signChallenge, RESERVED_ROOM } from './identity.js'
 
 const ROOM_FULL_MESSAGE = 'This session is over the relay\'s size limit, so new changes can\'t be saved there. Start a new session, or host your own relay with a higher limit.'
 
@@ -34,6 +34,7 @@ export class Connection extends EventEmitter {
    */
   constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files' }) {
     super()
+    if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
     // `key` (the relay key) is only needed to create a room on a relay that requires one.
     const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey, kind })
     if (key) q.set('relayKey', key)

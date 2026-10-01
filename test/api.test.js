@@ -1,9 +1,10 @@
 // test/api.test.js
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import { startApi } from '../src/api/server.js'
 import { createMemoryStore } from '../src/api/memory-store.js'
-import { generateIdentity, signChallenge } from '../src/identity.js'
+import { generateIdentity, signDeviceLink } from '../src/identity.js'
 
 let api, store
 const SITE = 'https://quilt.test'
@@ -18,7 +19,7 @@ const call = async (method, path, body, token) => {
   return { status: res.status, body: await res.json().catch(() => null), headers: res.headers }
 }
 // The app proves it holds the computer's key by signing the device code.
-const sign = (identity, deviceCode) => Buffer.from(signChallenge(identity, 'device-link', Buffer.from(deviceCode))).toString('base64url')
+const sign = (identity, deviceCode) => signDeviceLink(identity, deviceCode)
 const poll = (identity, deviceCode, via = call) => via('POST', '/v1/device/poll', { deviceCode, signature: sign(identity, deviceCode) })
 
 before(async () => {
@@ -189,6 +190,18 @@ test("only the computer holding the key can collect the token: a missing or wron
   const ok = await poll(id, s.body.deviceCode)
   assert.equal(ok.status, 200, 'the real computer still gets its token')
   assert.match(ok.body.token, /^qd_/)
+})
+
+test('a signature in the old relay-challenge format no longer collects a token', async () => {
+  const id = generateIdentity()
+  const s = await call('POST', '/v1/device/start', { publicKey: id.publicKey, deviceName: 'Mac', platform: 'darwin' })
+  await call('POST', '/v1/device/approve', { userCode: s.body.userCode, approve: true }, 'user:u1')
+  // Exactly what the app used to send: a relay challenge for the room "device-link".
+  const privateKey = crypto.createPrivateKey({ key: Buffer.from(id.privateKey, 'base64url'), format: 'der', type: 'pkcs8' })
+  const payload = Buffer.concat([Buffer.from('cowove-auth-v1\0device-link\0'), Buffer.from(s.body.deviceCode)])
+  const old = crypto.sign(null, payload, privateKey).toString('base64url')
+  assert.equal((await call('POST', '/v1/device/poll', { deviceCode: s.body.deviceCode, signature: old })).status, 401)
+  assert.equal((await poll(id, s.body.deviceCode)).status, 200, 'the new signature still works')
 })
 
 test("someone who knows a computer's public key can't take over its device: their approval makes their own row", async () => {

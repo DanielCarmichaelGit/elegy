@@ -3,7 +3,7 @@
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
-import { parsePublicKey, verifyChallenge } from '../identity.js'
+import { parsePublicKey, verifyDeviceLink } from '../identity.js'
 import { HttpError, Raw } from './http.js'
 import { orgRoutes } from './routes/orgs.js'
 import { memberRoutes } from './routes/members.js'
@@ -105,8 +105,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (waiting) return [202, { status: 'pending' }]
       // Proof of possession: anyone can start a link with a computer's public key
       // (it's shared with session members), but only the computer can sign for it.
-      const sig = typeof body.signature === 'string' ? Buffer.from(body.signature, 'base64url') : null
-      if (!sig || !verifyChallenge(parsePublicKey(link.publicKey), 'device-link', Buffer.from(String(body.deviceCode)), sig)) throw new HttpError(401, "this computer's signature doesn't match")
+      if (!verifyDeviceLink(parsePublicKey(link.publicKey), String(body.deviceCode), body.signature)) throw new HttpError(401, "this computer's signature doesn't match")
       // Approved: claim the link before minting, so two polls racing on the same
       // link can't both win a token — only the caller that flips it gets one.
       if (!await store.claimLink(link.id, 'approved', 'consumed')) throw new HttpError(410, 'expired')
