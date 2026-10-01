@@ -1,6 +1,7 @@
 # fly.api.toml — the Quilt accounts API (separate from the relay in fly.toml).
 #   fly apps create quilt-api
 #   fly secrets set --app quilt-api SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… QUILT_SITE_URL=… SMTP_URL=smtp://… SMTP_FROM="Quilt <invites@…>"
+#   node scripts/pass-keys.mjs | fly secrets import --app quilt-api --stage   # PASS_SIGNING_KEY, never printed
 #   fly deploy --config fly.api.toml --remote-only --ha=false
 app = "quilt-api"
 primary_region = "iad"
