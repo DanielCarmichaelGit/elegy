@@ -4,14 +4,25 @@ import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remem
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
+import { renderSignIn } from './signin.js'
 
 // ---------------------------------------------------------------- boot --
+const SIGNED_OUT = 'This computer was signed out. Sign in again.'
+
+// Once per page, not per boot: signing in again calls boot() and mustn't add listeners twice.
+startDropdowns()
+
 async function boot () {
-  startDropdowns()
   if (!TOKEN) return renderLocked()
   // Shown only if loading takes a moment: the Q pieces itself together while we wait.
   const waiting = setTimeout(() => { if (!state.loaded) $('#app').innerHTML = `<div class="booting">${quiltMark({ word: false, loop: true })}</div>` }, 250)
   try {
+    const acc = await api('GET', '/api/account')
+    if (!acc.signedIn) {
+      clearTimeout(waiting)
+      return renderSignIn(acc.reason === 'revoked' ? SIGNED_OUT : '', boot)
+    }
+    state.account = acc.account
     const s = await api('GET', '/api/state')
     state.recent = s.recent
     state.defaults = s.defaults
@@ -23,13 +34,28 @@ async function boot () {
     const last = recall('view')
     state.view = state.sessions.has(last) || last === 'settings' ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
     if (isSession(state.view)) await loadMessages(state.view)
-    connectEvents()
+    if (!state.events) connectEvents()
     render()
-    window.quiltDesktop?.onInvite(openInviteLink)
+    // Invite links that opened the desktop app wait until you're signed in.
+    if (!boot.invites) { boot.invites = true; window.quiltDesktop?.onInvite(openInviteLink) }
   } catch (err) {
-    renderLocked(err.message)
+    clearTimeout(waiting)
+    if (!err.signedOut) renderLocked(err.message)
   }
 }
+
+/** Back to the sign-in screen: after Sign out, or when the API turned this computer away. */
+export function signedOutNow (message = '') {
+  state.events?.close()
+  state.events = null
+  state.loaded = false
+  state.account = null
+  for (const m of [state.sessions, state.messages, state.feeds, state.trees, state.files]) m.clear()
+  document.querySelectorAll('.modal-back').forEach((m) => m.remove())
+  renderSignIn(message, boot)
+}
+
+window.addEventListener('quilt-signed-out', () => signedOutNow(SIGNED_OUT))
 
 function connectEvents () {
   const es = state.events = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
@@ -75,6 +101,10 @@ function connectEvents () {
     state.trees.delete(id)
     if (state.view === id) { state.view = 'home'; refreshRecent() }
     render()
+  })
+  es.addEventListener('signed-out', (e) => {
+    const { reason } = JSON.parse(e.data)
+    signedOutNow(reason === 'revoked' ? SIGNED_OUT : '')
   })
 }
 

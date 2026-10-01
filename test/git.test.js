@@ -224,17 +224,27 @@ test('gh: status, repos (with orgs) and branches', async () => {
 })
 
 // ------------------------------------------------------------------- API --
-let ui, base, relay
+let ui, base, relay, accounts
 before(async () => {
+  // A signed-in computer: an accounts API that signs passes, a relay that needs them, and account.json.
   const { startServer } = await import('../src/server.js')
-  relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {} })
+  const { startTestApi, linkDevice } = await import('./api-helpers.js')
+  const { newPassKeys } = await import('../src/passes.js')
+  const { loadIdentity } = await import('../src/identity.js')
+  const { saveAccount } = await import('../src/account.js')
+  const keys = newPassKeys()
+  accounts = await startTestApi({ passKey: keys.privateKey })
+  relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, passPublicKey: keys.publicKey })
+  process.env.QUILT_API_URL = accounts.api.url
   // The app always uses one relay; QUILT_SERVER points it at this local one.
   process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
+  const { token } = await linkDevice(accounts, 'mem', loadIdentity())
+  saveAccount({ token, account: { id: 'mem', name: 'Mo', email: 'mo@acme.com' }, signedInAt: Date.now() })
   const { startUi } = await import('../src/ui-server.js')
   ui = await startUi({ port: 0 })
   base = `http://127.0.0.1:${ui.port}`
 })
-after(async () => { await ui.close(); await relay.close(); fs.rmSync(root, { recursive: true, force: true }) })
+after(async () => { await ui.close(); await relay.close(); await accounts.close(); fs.rmSync(root, { recursive: true, force: true }) })
 const api = (method, p, body) => fetch(base + p, {
   method,
   headers: { 'x-quilt-token': ui.token, 'content-type': 'application/json' },

@@ -1,7 +1,7 @@
 // Home and Settings: a sidebar with your profile and open sessions, next to
 // either the start/join page or your settings. Sessions themselves live in session.js.
-import { I, state, $, esc, basename, ago, toast, api, decodeInvite, avatar, PALETTE } from './common.js'
-import { go, pickFolder } from './app.js'
+import { I, state, $, esc, basename, ago, toast, api, ask, decodeInvite, avatar, PALETTE } from './common.js'
+import { go, pickFolder, signedOutNow } from './app.js'
 import { quiltMark } from './mark.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
@@ -448,11 +448,20 @@ function toggle (name, checked, label, hint) {
 
 function settingsHtml () {
   const p = state.profile
+  const a = state.account || { name: p.name, email: '' }
   return `
   <header class="page-head">
     <h1>Settings</h1>
     <p>Saved on this computer and used for every new session.</p>
   </header>
+
+  <section class="card settings-sec" id="account-sec">
+    <div class="sec-intro"><h2>Account</h2><p>This computer is signed in to your heyquilt.com account.</p></div>
+    <div class="sec-body">
+      <div class="kv"><span>Signed in as</span><b>${esc(a.name)}</b><span class="hint">${esc(a.email)}</span></div>
+      <div class="sec-actions"><span class="hint">Signing out stops your sessions on this computer. Your files stay put.</span><button class="btn" type="button" id="sign-out">Sign out</button></div>
+    </div>
+  </section>
 
   <form class="card settings-sec" id="profile-sec" autocomplete="off">
     <div class="sec-intro"><h2>Profile</h2><p>How you show up to the people you code with.</p></div>
@@ -460,7 +469,8 @@ function settingsHtml () {
       <div class="profile-preview" id="pv">${avatar(p.name, p.color)}<div><b id="pv-name">${esc(p.name)}</b><span id="pv-tool">coding with ${esc(p.tool)}</span></div></div>
       <div class="field">
         <label for="s-name">Name</label>
-        <input class="input" id="s-name" name="name" value="${esc(p.name)}" maxlength="64" required>
+        <input class="input" id="s-name" value="${esc(p.name)}" readonly>
+        <span class="hint"><a href="https://heyquilt.com/settings" target="_blank" rel="noopener">Change it on heyquilt.com</a></span>
       </div>
       <div class="field">
         <span class="label">Color</span>
@@ -498,6 +508,7 @@ function settingsHtml () {
     <div class="sec-intro"><h2>This computer</h2><p>Where Quilt keeps things.</p></div>
     <div class="sec-body">
       <div class="kv"><span>Identity key</span><code>~/.quilt/identity.json</code><span class="hint">Proves your name is yours. Copy it to another computer to keep your name there.</span></div>
+      <div class="kv"><span>Sign-in</span><code>~/.quilt/account.json</code><span class="hint">This computer's sign-in. Only you can read it.</span></div>
       <div class="kv"><span>Settings</span><code>~/.quilt/settings.json</code></div>
       <div class="sec-actions"><span class="hint">Stops every session and this app. Your files stay put.</span><button class="btn" type="button" data-shutdown>${I.power}<span>Shut down Quilt</span></button></div>
     </div>
@@ -522,20 +533,28 @@ function bindSettings () {
     }
   }
 
-  // Profile: live preview while typing.
+  // Profile: live preview while picking. The name comes from the account.
   const prof = $('#profile-sec')
   const preview = () => {
     const f = new FormData(prof)
-    const name = f.get('name') || '?'
-    $('#pv').querySelector('.avatar').outerHTML = avatar(name, f.get('color') || null)
-    $('#pv-name').textContent = name
+    $('#pv').querySelector('.avatar').outerHTML = avatar(state.profile.name, f.get('color') || null)
     $('#pv-tool').textContent = `coding with ${f.get('tool')}`
   }
   prof.addEventListener('input', preview)
   prof.addEventListener('change', preview)
-  saveForm(prof, (f) => ({ name: f.get('name'), color: f.get('color'), tool: f.get('tool') }))
+  saveForm(prof, (f) => ({ color: f.get('color'), tool: f.get('tool') }))
 
   const sess = $('#sessions-sec')
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir'))
   saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
+
+  $('#sign-out').onclick = async () => {
+    if (!await ask({ title: 'Sign out of Quilt?', message: 'This stops your sessions on this computer. Your files stay where they are.', ok: 'Sign out', danger: true })) return
+    try {
+      await api('POST', '/api/account/signout')
+      signedOutNow()
+    } catch (err) {
+      toast(err.message)
+    }
+  }
 }

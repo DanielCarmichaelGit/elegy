@@ -46,6 +46,7 @@ export const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copi
 // ---------------------------------------------------------------- state --
 export const state = {
   loaded: false,
+  account: null, // { id, name, email }: who this computer is signed in as
   sessions: new Map(), // id -> summary
   messages: new Map(), // id -> [message]
   recent: [],
@@ -130,7 +131,15 @@ export async function api (method, path, body, headers = {}) {
     body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`)
+    // This computer isn't signed in (any more): the app goes back to the sign-in screen.
+    if (res.status === 401 && data.signedOut) {
+      err.signedOut = true
+      window.dispatchEvent(new Event('quilt-signed-out'))
+    }
+    throw err
+  }
   return data
 }
 

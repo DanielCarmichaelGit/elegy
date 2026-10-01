@@ -14,16 +14,22 @@ import { getSettings, saveSettings, ranOnLocalRelay } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, accountFromProfile } from './account.js'
+import { personPasses } from './pass-source.js'
+import { loadIdentity } from './identity.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
 const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
+// Until this computer is signed in, only these answer.
+const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown'])
 
 /** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. */
 function profile () {
   const s = getSettings()
+  const account = readAccount()
   return {
-    name: s.name || os.userInfo().username,
+    name: account ? account.account.name : os.userInfo().username,
     tool: s.tool || detectTool(),
     color: s.color || null,
     joinDir: s.joinDir || '~/quilt',
@@ -36,12 +42,8 @@ function profile () {
 /** Checks and saves profile/preference changes. Returns the new profile. */
 function updateProfile (b) {
   const patch = {}
-  if ('name' in b) {
-    const name = String(b.name || '').trim()
-    if (!name) throw httpError(400, 'Your name can\'t be empty.')
-    if (name.length > 64) throw httpError(400, 'Keep your name under 64 characters.')
-    patch.name = name
-  }
+  // Your name is your account's: it's changed on the website.
+  if ('name' in b) throw httpError(400, 'Change your name on heyquilt.com.')
   if ('tool' in b) {
     if (!TOOL_NAMES.includes(b.tool)) throw httpError(400, 'Pick an AI tool from the list.')
     patch.tool = b.tool
@@ -79,6 +81,7 @@ const STATIC = {
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
+  '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/git.js': ['git.js', 'text/javascript; charset=utf-8']
 }
 
@@ -88,6 +91,70 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
   const clients = new Set() // SSE responses
+  let passes = null // this computer's passes, shared by all its sessions
+  let link = null // signing in: what startLink returned, plus { state, error }
+  let signedOutReason = null // 'revoked' once the API turned this computer's token away
+  let checkedToken = false // asked the API about the saved token since the app started
+
+  const accountPasses = () => {
+    if (passes) return passes
+    const account = readAccount()
+    if (!account) throw Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
+    passes = personPasses({ token: account.token })
+    return passes
+  }
+
+  /** Forgets this computer's sign-in and stops its sessions. 'revoked': the API turned the token away. */
+  async function signedOut (reason) {
+    passes = null
+    for (const id of [...runs.keys()]) await stop(id)
+    clearAccount()
+    signedOutReason = reason
+    broadcast('signed-out', { reason })
+  }
+
+  async function accountState () {
+    let account = readAccount()
+    if (account && !checkedToken) {
+      checkedToken = true
+      try {
+        // Picks up a name changed on heyquilt.com, and notices a computer signed out from there.
+        const fresh = { ...account, account: accountFromProfile(await fetchMe({ token: account.token })) }
+        saveAccount(fresh)
+        account = fresh
+      } catch (err) {
+        if (err.status === 401) { await signedOut('revoked'); account = null }
+        // Anything else (offline): keep the saved sign-in.
+      }
+    }
+    return {
+      signedIn: !!account,
+      account: account ? account.account : null,
+      reason: account ? null : signedOutReason,
+      link: link ? { state: link.state, userCode: link.userCode, verificationUrl: link.verificationUrl, error: link.error } : null
+    }
+  }
+
+  /** Starts linking this computer; the website approves it, and we collect the token in the background. */
+  async function beginLink () {
+    const identity = loadIdentity()
+    const mine = { ...await startLink({ identity }), state: 'waiting', error: null }
+    link = mine
+    waitForLink({ identity, link: mine, stopped: () => link !== mine }).then((r) => {
+      if (link !== mine) return
+      saveAccount({ token: r.token, account: accountFromProfile(r.profile), signedInAt: Date.now() })
+      link = null
+      passes = null
+      signedOutReason = null
+      checkedToken = true
+      broadcast('signed-in', {})
+    }, (err) => {
+      if (link !== mine) return
+      mine.state = err.expired ? 'expired' : err.denied ? 'denied' : 'failed'
+      mine.error = err.message
+    })
+    return accountState()
+  }
 
   const idFor = (dir) => crypto.createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 10)
   // Recent sessions not open now. Ones that ran on a local relay are marked: they can't reopen.
@@ -107,8 +174,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
   // clients) fall back to "didn't join it from an invite".
   const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
-  async function start ({ mode, dir, name, tool, invite, prefer, repo, branch, newBranch, base }) {
+  async function start ({ mode, dir, tool, invite, prefer, repo, branch, newBranch, base }) {
     const me = profile()
+    // Every session signs in to the relay as this computer's account.
+    const sessionPasses = accountPasses()
     if (mode === 'github') {
       // Clone first, then start a normal session on the clone.
       const repoName = String(repo || '').split('/').pop()
@@ -117,7 +186,6 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       await gitops.cloneRepo({ repo, dir, branch, newBranch, base })
       mode = 'create'
     }
-    name = name || me.name
     tool = tool || me.tool
     prefer = prefer || (me.preferLocal ? 'local' : 'remote')
     if (mode === 'join' && !dir) {
@@ -139,7 +207,6 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       if (ranOnLocalRelay(saved.server)) throw httpError(400, LOCAL_RELAY_GONE)
       conn = { server: saved.server, room: saved.room, secret: saved.secret, ...(saved.viewSecret ? { viewSecret: saved.viewSecret } : {}) }
       inviteServer = saved.inviteServer
-      name = name || saved.name
       tool = tool || saved.tool
     } else {
       conn = newConn()
@@ -151,23 +218,34 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       if (entry.logs.length > 200) entry.logs.shift()
       broadcast('log', { id, ts: Date.now(), line })
     }
-    entry.run = await runSession({
-      dir,
-      conn,
-      name,
-      tool,
-      color: me.color,
-      shareByDefault: me.shareAgent,
-      summarizeByDefault: me.summarize,
-      joined: mode === 'join',
-      prefer: prefer === 'local' ? 'local' : 'remote',
-      inviteServer,
-      onLog: log,
-      onFatal: async (err) => {
-        log(`stopped: ${err.message}`)
-        await stop(id)
+    try {
+      entry.run = await runSession({
+        dir,
+        conn,
+        // The account's name until the first pass names us (the same name, from the API).
+        name: me.name,
+        tool,
+        color: me.color,
+        shareByDefault: me.shareAgent,
+        summarizeByDefault: me.summarize,
+        joined: mode === 'join',
+        prefer: prefer === 'local' ? 'local' : 'remote',
+        inviteServer,
+        passes: sessionPasses,
+        onLog: log,
+        onFatal: async (err) => {
+          log(`stopped: ${err.message}`)
+          await stop(id)
+          if (err.signedOut) await signedOut('revoked')
+        }
+      })
+    } catch (err) {
+      if (err.signedOut) {
+        await signedOut('revoked')
+        throw Object.assign(httpError(401, err.message), { signedOut: true })
       }
-    })
+      throw err
+    }
     runs.set(id, entry)
     const s = entry.run.session
     s.on('status-changed', () => pushStatus(id))
@@ -214,6 +292,18 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
   }
 
   const api = {
+    'GET /api/account': () => accountState(),
+    'POST /api/account/start': () => beginLink(),
+    'POST /api/account/cancel': () => { link = null; return accountState() },
+    'POST /api/account/signout': async () => {
+      const account = readAccount()
+      passes = null
+      link = null
+      for (const id of [...runs.keys()]) await stop(id)
+      await signOut({ token: account?.token })
+      signedOutReason = null
+      return { ok: true }
+    },
     'GET /api/state': () => ({
       sessions: [...runs.keys()].map(summary),
       recent: recentList(),
@@ -308,6 +398,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     if (supplied !== token) return json(401, { error: 'Open quilt from the link printed by `quilt ui`.' })
 
     try {
+      if (!OPEN_ROUTES.has(`${req.method} ${url.pathname}`) && !readAccount()) return json(401, { error: 'Sign in to Quilt first.', signedOut: true })
       if (req.method === 'GET' && url.pathname === '/api/events') return events(req, res)
 
       let m = url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)\/send$/)
@@ -323,7 +414,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       for await (const chunk of req) raw += chunk
       return json(200, await handler(raw ? JSON.parse(raw) : {}, sid, url))
     } catch (err) {
-      return json(err.status || 400, { error: err.message })
+      return json(err.status || 400, { error: err.message, ...(err.signedOut ? { signedOut: true } : {}) })
     }
   })
 
@@ -382,6 +473,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     port: actualPort,
     token,
     close: async () => {
+      link = null
       for (const id of [...runs.keys()]) await stop(id)
       for (const res of clients) res.end()
       await new Promise((r) => server.close(r))
