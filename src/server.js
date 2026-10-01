@@ -746,11 +746,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         const n = url.searchParams.get('n')
         if (url.searchParams.get('m') !== method || !store.verify(name, id, method, url.searchParams.get('exp'), url.searchParams.get('sig'), method === 'PUT' ? Number(n) : undefined)) return text(403, 'this link has expired')
         const file = store.file(name, id)
-        if (method === 'GET') {
-          if (!fs.existsSync(file)) return text(404, 'no such file')
-          res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(file).size })
-          return fs.createReadStream(file).pipe(res)
-        }
+        if (method === 'GET') return streamFile(res, file, text)
         return receiveBlob(req, file, Number(n), (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
       }
       if (req.method !== 'POST') return text(405, 'method not allowed')
@@ -811,12 +807,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (used + incoming > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
       return receiveFile(req, dir, cfg.maxRoomFileBytes - used, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))
     }
-    if (req.method === 'GET' && id) {
-      const file = path.join(dir, id)
-      if (!fs.existsSync(file)) return text(404, 'no such file')
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(file).size })
-      return fs.createReadStream(file).pipe(res)
-    }
+    if (req.method === 'GET' && id) return streamFile(res, path.join(dir, id), text)
     text(405, 'method not allowed')
   })
   // One message can't be bigger than a whole room may be.
@@ -967,26 +958,58 @@ function receiveFile (req, dir, room, done) {
   out.on('error', (err) => fail(500, err.message))
 }
 
+/**
+ * Sends a stored file. The file can vanish at any moment (the room ended, or
+ * the sweep ran), so every step copes with that instead of throwing.
+ */
+function streamFile (res, file, text) {
+  const rs = fs.createReadStream(file)
+  rs.on('error', (err) => {
+    if (!res.headersSent) text(err.code === 'ENOENT' || err.code === 'EISDIR' ? 404 : 500, 'no such file')
+    else res.destroy()
+  })
+  rs.on('open', (fd) => {
+    let size
+    try { size = fs.fstatSync(fd).size } catch { rs.destroy(); return text(404, 'no such file') }
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': size })
+    rs.pipe(res)
+  })
+}
+
 /** Streams a request body to `file`, refusing anything over `limit` bytes. */
 function receiveBlob (req, file, limit, done) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.${crypto.randomBytes(4).toString('hex')}.tmp`
-  const out = fs.createWriteStream(tmp)
   let size = 0
   let failed = false
+  let drained = 0
+  let out = null
+  let tmp = null
   const fail = (code, message) => {
     if (failed) return
     failed = true
-    req.unpipe(out)
+    if (out) { req.unpipe(out); out.destroy() }
+    if (tmp) fs.rm(tmp, { force: true }, () => {})
+    // Read what's left so the reply gets through, but not forever.
     req.resume()
-    out.destroy()
-    fs.rmSync(tmp, { force: true })
     done(Object.assign(new Error(message), { code }))
   }
-  req.on('data', (chunk) => { size += chunk.length; if (size > limit) fail(413, 'file too large') })
+  req.on('data', (chunk) => {
+    if (failed) { drained += chunk.length; if (drained > MB) req.destroy(); return }
+    size += chunk.length
+    if (size > limit) fail(413, 'file too large')
+  })
   req.on('error', () => fail(400, 'upload interrupted'))
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    tmp = `${file}.${crypto.randomBytes(4).toString('hex')}.tmp`
+    out = fs.createWriteStream(tmp)
+  } catch { return fail(500, 'could not save the file') }
   out.on('error', () => fail(500, 'could not save the file'))
-  out.on('finish', () => { if (!failed) { fs.renameSync(tmp, file); done(null) } })
+  out.on('finish', () => {
+    if (failed) return
+    // The room's folder may be gone by now (the room ended, or the sweep ran).
+    try { fs.renameSync(tmp, file) } catch { return fail(500, 'could not save the file') }
+    done(null)
+  })
   req.pipe(out)
 }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import http from 'node:http'
 import { DiskStore, SupabaseStore, makeStore } from '../src/blobstore.js'
 import { relayConfig, startServer } from '../src/server.js'
 import { Connection } from '../src/connection.js'
@@ -101,4 +102,33 @@ test('once a room stores files, apps without large-file support are turned away'
   const c = new Connection({ server, room: 'r4', secret: 's', name: 'new', identity: generateIdentity(), doc: new Y.Doc() })
   t.after(() => c.close())
   await c.waitForSync()
+})
+
+test('ending a room while a file is being uploaded to the relay\'s disk does not crash the relay', { timeout: 5000 }, async (t) => {
+  const { srv, base } = await relay(t)
+  const server = base.replace('http', 'ws')
+  const owner = new Connection({ server, room: 'r5', secret: 's', viewSecret: 'v', name: 'olive', identity: generateIdentity(), doc: new Y.Doc() })
+  t.after(() => owner.close())
+  await owner.waitForSync()
+  while (!owner.access || !owner.access.owner) await new Promise((resolve) => owner.once('access', resolve))
+  const target = await (await ask(base, 'r5', ID, 'upload', 's', { size: 10 })).json()
+  const dir = path.dirname(srv.store.file('r5', ID))
+  fs.mkdirSync(dir, { recursive: true })
+  const reply = new Promise((resolve, reject) => {
+    const req = http.request(new URL(target.url, base), { method: 'PUT', headers: { 'content-length': 10 } }, (res) => { res.resume(); resolve(res.statusCode) })
+    req.on('error', reject)
+    req.write('hello')
+    // Ended once the relay has started writing the file, then the rest is sent.
+    const started = fs.watch(dir, () => {
+      started.close()
+      const ended = new Promise((resolve) => owner.once('fatal', resolve))
+      owner.adminRequest({ op: 'end' }).catch(() => {})
+      ended.then(async () => {
+        for (;;) { if (!fs.existsSync(dir)) break; await new Promise((resolve) => setImmediate(resolve)) }
+        req.end('world')
+      })
+    })
+  })
+  assert.equal(await reply, 500)
+  assert.equal((await (await fetch(`${base}/healthz`)).json()).ok, true, 'the relay is still running')
 })
