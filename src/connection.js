@@ -32,12 +32,13 @@ export class Connection extends EventEmitter {
    * @param {import('yjs').Doc} opts.doc
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files' }) {
     super()
     // `key` (the relay key) is only needed to create a room on a relay that requires one.
     const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey, kind })
     if (key) q.set('relayKey', key)
     if (viewSecret) q.set('viewSecret', viewSecret)
+    if (features) q.set('features', features)
     this.access = null // what the relay says we may do: { state, role, scopes, owner, controlled }
     this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
     this.room = room

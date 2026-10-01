@@ -4,7 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DiskStore, SupabaseStore, makeStore } from '../src/blobstore.js'
-import { relayConfig } from '../src/server.js'
+import { relayConfig, startServer } from '../src/server.js'
+import { Connection } from '../src/connection.js'
+import { generateIdentity } from '../src/identity.js'
+import * as Y from 'yjs'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-blob-${n}-`))
 const ID = 'a'.repeat(32)
@@ -41,4 +44,57 @@ test('the relay uses Supabase only when it has both a URL and a key', () => {
   assert.equal(cfg.storageBucket, 'session-files')
   assert.equal(relayConfig({}).maxStoredFileBytes, 100 * 1024 * 1024)
   assert.equal(relayConfig({ maxStoredFileBytes: 10 }).maxStoredFileBytes, 10)
+})
+
+async function relay (t, opts = {}) {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, ...opts })
+  t.after(() => srv.close())
+  return { srv, base: `http://127.0.0.1:${srv.port}` }
+}
+const ask = (base, room, id, action, secret, body = {}) => fetch(`${base}/blobs/${room}/${id}/${action}`, {
+  method: 'POST', headers: { 'x-quilt-secret': secret, 'content-type': 'application/json' }, body: JSON.stringify(body)
+})
+
+test('editors get an upload link, and anyone in the room can download', async (t) => {
+  const { srv, base } = await relay(t)
+  const up = await ask(base, 'r1', ID, 'upload', 's', { size: 5 })
+  assert.equal(up.status, 200)
+  const target = await up.json()
+  const put = await fetch(new URL(target.url, base), { method: 'PUT', body: 'hello' })
+  assert.equal(put.status, 201)
+  assert.equal(fs.readFileSync(srv.store.file('r1', ID), 'utf8'), 'hello')
+  assert.equal(srv.rooms.get('r1').meta.largeFiles, true)
+
+  const down = await ask(base, 'r1', ID, 'download', 's')
+  const { url } = await down.json()
+  assert.equal(await (await fetch(new URL(url, base))).text(), 'hello')
+
+  assert.equal((await ask(base, 'r1', ID, 'download', 'wrong')).status, 401)
+  assert.equal((await ask(base, 'r1', 'c'.repeat(32), 'download', 's')).status, 404)
+  assert.equal((await fetch(`${base}/blobs/r1/${ID}/data?m=GET&exp=1&sig=00`)).status, 403)
+})
+
+test('uploads are refused over the size cap or the room quota', async (t) => {
+  const { base } = await relay(t, { maxStoredFileBytes: 10, maxRoomFileBytes: 15 })
+  assert.equal((await ask(base, 'r2', ID, 'upload', 's', { size: 11 })).status, 413)
+  assert.equal((await ask(base, 'r2', ID, 'upload', 's', { size: 10 })).status, 200)
+  assert.equal((await ask(base, 'r2', 'b'.repeat(32), 'upload', 's', { size: 10 })).status, 413)
+  // A PUT larger than it said is cut off.
+  const { base: b2 } = await relay(t, { maxStoredFileBytes: 10 })
+  const target = await (await ask(b2, 'r3', ID, 'upload', 's', { size: 4 })).json()
+  assert.equal((await fetch(new URL(target.url, b2), { method: 'PUT', body: 'x'.repeat(50) })).status, 413)
+})
+
+test('once a room stores files, apps without large-file support are turned away', async (t) => {
+  const { base } = await relay(t)
+  await ask(base, 'r4', ID, 'upload', 's', { size: 1 })
+  const server = base.replace('http', 'ws')
+  const refused = await new Promise((resolve) => {
+    const c = new Connection({ server, room: 'r4', secret: 's', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: '' })
+    c.on('fatal', (err) => { c.close(); resolve(err.message) })
+  })
+  assert.match(refused, /newer version of Quilt/)
+  const c = new Connection({ server, room: 'r4', secret: 's', name: 'new', identity: generateIdentity(), doc: new Y.Doc() })
+  t.after(() => c.close())
+  await c.waitForSync()
 })

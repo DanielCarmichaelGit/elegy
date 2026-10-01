@@ -29,6 +29,7 @@ import {
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { patternsOverlap, globMatcher } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
+import { makeStore, DiskStore } from './blobstore.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -616,6 +617,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
+  // Large files, already encrypted by the apps. See blobstore.js.
+  const store = makeStore(cfg, path.join(path.dirname(filesDir), 'blobs'))
+  const storedBytes = (room) => Object.values(room.meta.blobs || {}).reduce((n, b) => n + (b.size || 0), 0)
 
   // Public: the app's relay check reads this. It says nothing about who's using the relay.
   const health = () => ({ ok: true, version: 1, requiresKey: !!cfg.relayKey })
@@ -623,6 +627,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x')
     const text = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8' }); res.end(msg) }
+    const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
 
     if (url.pathname === '/healthz') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
@@ -672,6 +677,58 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
       return
     }
+    const bm = url.pathname.match(/^\/blobs\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})\/(upload|download|data)$/)
+    if (bm) {
+      const [, name, id, action] = bm
+      if (action === 'data') {
+        // The disk store's signed links: no secret needed, the signature is the permission.
+        if (!(store instanceof DiskStore)) return text(404, 'not found')
+        const method = req.method === 'PUT' ? 'PUT' : 'GET'
+        if (url.searchParams.get('m') !== method || !store.verify(name, id, method, url.searchParams.get('exp'), url.searchParams.get('sig'))) return text(403, 'this link has expired')
+        const file = store.file(name, id)
+        if (method === 'GET') {
+          if (!fs.existsSync(file)) return text(404, 'no such file')
+          res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(file).size })
+          return fs.createReadStream(file).pipe(res)
+        }
+        return receiveBlob(req, file, cfg.maxStoredFileBytes, (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
+      }
+      if (req.method !== 'POST') return text(405, 'method not allowed')
+      const room = getRoom(name)
+      if (!room) return text(413, TOO_BIG)
+      const creating = !room.exists
+      if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
+      const auth = room.authorize(req.headers['x-quilt-secret'] || '', req.headers['x-quilt-key'] || '')
+      if (auth === 'need-key' || auth === 'bad-secret') {
+        dropIfUnused(room)
+        return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
+      }
+      if (creating) noteCreated(clientIp(req))
+      const done = () => { if (!room.conns.size && room.onEmpty) room.onEmpty() }
+      return readJson(req, 1024, async (err, body) => {
+        try {
+          if (err) return text(400, err.message)
+          room.meta.blobs = room.meta.blobs || {}
+          if (action === 'download') {
+            if (!room.meta.blobs[id]) return text(404, 'no such file')
+            return json(200, await store.downloadTarget(name, id))
+          }
+          if (auth !== 'editor') return text(403, 'you can only view this session')
+          const size = Number(body && body.size)
+          if (!(size >= 0)) return text(400, 'size required')
+          if (size > cfg.maxStoredFileBytes) return text(413, `files over ${Math.round(cfg.maxStoredFileBytes / MB)} MB can't be shared`)
+          const others = storedBytes(room) - (room.meta.blobs[id]?.size || 0)
+          if (others + size + dirSize(path.join(filesDir, name)) > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
+          room.meta.blobs[id] = { size, ts: Date.now() }
+          room.meta.largeFiles = true
+          room.saveMeta()
+          json(200, await store.uploadTarget(name, id))
+        } catch (e) {
+          log(`[${name}] storage error: ${e.message}`)
+          if (!res.headersSent) text(502, 'file storage is unavailable right now')
+        } finally { done() }
+      })
+    }
     const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
     if (!m) return text(404, 'not found')
 
@@ -718,6 +775,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
     if (!room) return reject(socket, 413, TOO_BIG)
+    const features = String(url.searchParams.get('features') || '').split(',')
+    if (room.meta.largeFiles && !features.includes('large-files')) return reject(socket, 400, 'This session needs a newer version of Quilt. Update Quilt, then join again.')
     const creating = !room.exists
     if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret)
@@ -787,6 +846,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         port: actualPort,
         config: cfg,
         rooms, // exposed for tests
+        store, // exposed for tests
         sweep,
         close: () => new Promise((resolve) => {
           clearInterval(heartbeat)
@@ -844,6 +904,29 @@ function receiveFile (req, dir, room, done) {
   req.pipe(out)
   out.on('finish', () => { if (!failed) done(null, id) })
   out.on('error', (err) => fail(500, err.message))
+}
+
+/** Streams a request body to `file`, refusing anything over `limit` bytes. */
+function receiveBlob (req, file, limit, done) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = `${file}.${crypto.randomBytes(4).toString('hex')}.tmp`
+  const out = fs.createWriteStream(tmp)
+  let size = 0
+  let failed = false
+  const fail = (code, message) => {
+    if (failed) return
+    failed = true
+    req.unpipe(out)
+    req.resume()
+    out.destroy()
+    fs.rmSync(tmp, { force: true })
+    done(Object.assign(new Error(message), { code }))
+  }
+  req.on('data', (chunk) => { size += chunk.length; if (size > limit) fail(413, 'file too large') })
+  req.on('error', () => fail(400, 'upload interrupted'))
+  out.on('error', () => fail(500, 'could not save the file'))
+  out.on('finish', () => { if (!failed) { fs.renameSync(tmp, file); done(null) } })
+  req.pipe(out)
 }
 
 const TOO_BIG = 'Session over the size limit'
