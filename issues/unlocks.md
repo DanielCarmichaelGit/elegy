@@ -80,8 +80,9 @@ someone in with one click from a notification, or set a session to let
 people in automatically, for example anyone signed in with the same email
 domain (everyone at `@acme.com`). Teams can share one invite link and just
 start working together.
-**Rough shape:** Since sign-in is required, every join request carries a
-verified account email. Add a per-session "Let in automatically" setting:
+**Rough shape:** Sign-in is required, so every join comes from an account
+with a verified email. Add the email (or just its domain) to the session
+pass, then add a per-session "Let in automatically" setting:
 off (today), same email domain as the owner, or anyone with the link. The
 relay checks the pass's email against the rule and skips the approval step
 when it matches. Skip public domains like gmail.com for the domain rule.
