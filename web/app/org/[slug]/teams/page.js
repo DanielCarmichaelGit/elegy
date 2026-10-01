@@ -65,7 +65,10 @@ export default async function Teams ({ params, searchParams }) {
                   <div>
                     {t.members.map((m) => (
                       <div key={m.memberId} className='list-row'>
-                        <b>{m.name}</b>
+                        <span>
+                          <b>{m.name}</b> {m.kind === 'agent' && <span className='pill'>Agent</span>}
+                          {m.scopes?.length > 0 && <span className='muted'> · folders {m.scopes.join(', ')}</span>}
+                        </span>
                         <span className='row'>
                           {c('team_members', 'u')
                             ? (
@@ -85,7 +88,7 @@ export default async function Teams ({ params, searchParams }) {
               <form action={addToTeam} className='row'>
                 <Hidden slug={slug} id={t.id} />
                 <select className='input' name='memberId' aria-label='Person to add'>
-                  {addable.map((p) => <option key={p.memberId} value={p.memberId}>{p.name}</option>)}
+                  {addable.map((p) => <option key={p.memberId} value={p.memberId}>{p.kind === 'agent' ? `${p.name} (agent)` : p.name}</option>)}
                 </select>
                 <AccessSelect value='viewer' />
                 <button className='btn'>Add to team</button>

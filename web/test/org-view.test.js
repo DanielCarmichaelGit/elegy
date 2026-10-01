@@ -18,6 +18,11 @@ test('orgTabs shows only what the viewer can read', () => {
   assert.deepEqual(orgTabs('acme', owner).map((t) => t.href), ['/org/acme', '/org/acme/people', '/org/acme/teams', '/org/acme/roles', '/org/acme/invites', '/org/acme/settings'])
 })
 
+test('orgTabs shows People to those who may read agents, even without Members: Read', () => {
+  const watcher = { isOwner: false, grants: { agents: { r: true } } }
+  assert.deepEqual(orgTabs('acme', watcher).map((t) => t.label), ['Overview', 'People', 'Teams'])
+})
+
 test('safeMessage shows our own messages and nothing odd', () => {
   assert.equal(safeMessage(undefined), null)
   assert.equal(safeMessage("your role doesn't allow that"), "your role doesn't allow that")

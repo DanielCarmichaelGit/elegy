@@ -11,7 +11,7 @@ export function orgTabs (slug, me) {
   const base = `/org/${slug}`
   return [
     { href: base, label: 'Overview' },
-    allowed(me, 'members', 'r') && { href: `${base}/people`, label: 'People' },
+    (allowed(me, 'members', 'r') || allowed(me, 'agents', 'r')) && { href: `${base}/people`, label: 'People' },
     { href: `${base}/teams`, label: 'Teams' },
     allowed(me, 'roles', 'r') && { href: `${base}/roles`, label: 'Roles' },
     allowed(me, 'invites', 'r') && { href: `${base}/invites`, label: 'Invites' },

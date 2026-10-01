@@ -1,10 +1,39 @@
 'use server'
+import { revalidatePath } from 'next/cache'
+import { requireUser } from '@/lib/session.js'
+import { apiCall } from '@/lib/api.js'
+import { isSlug } from '@/lib/space.js'
 import { orgAction, enc } from '@/lib/org-actions.js'
+import { inviteFromForm, splitFolders } from '@/lib/agent-form.js'
 
 export async function setRole (formData) {
   await orgAction(formData, 'people', 'PUT', `/members/${enc(formData.get('id'))}`, { roleId: String(formData.get('roleId') || '') })
 }
 
+// Removing an agent member revokes the agent.
 export async function removeMember (formData) {
   await orgAction(formData, 'people', 'DELETE', `/members/${enc(formData.get('id'))}`)
+}
+
+// An agent's access and folders in one team.
+export async function setAgentTeam (formData) {
+  await orgAction(formData, 'people', 'PUT', `/teams/${enc(formData.get('id'))}/members/${enc(formData.get('memberId'))}`, {
+    access: String(formData.get('access') || ''),
+    scopes: splitFolders(formData.get('folders'))
+  })
+}
+
+// The invite link is shown once, so it comes back to the form rather than through a redirect.
+export async function createOrgAgentInvite (prev, formData) {
+  const slug = String(formData.get('slug') || '')
+  if (!isSlug(slug)) return { error: 'Something went wrong. Try again.' }
+  const user = await requireUser(`/org/${slug}/people`)
+  const r = await apiCall(user, 'POST', `/v1/orgs/${slug}/agent-invites`, inviteFromForm(formData))
+  if (!r.ok) return { error: r.data?.error || 'Couldn’t make an invite link. Try again.' }
+  revalidatePath(`/org/${slug}/people`)
+  return { link: r.data.link }
+}
+
+export async function cancelOrgAgentInvite (formData) {
+  await orgAction(formData, 'people', 'DELETE', `/agent-invites/${enc(formData.get('id'))}`)
 }
