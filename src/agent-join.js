@@ -17,9 +17,13 @@ const EARLY_MS = 60 * 1000
 // it is this old (a live holder never needs this long: its refresh times out first).
 const LOCK_MAX_AGE_MS = 5 * 60 * 1000
 const LOCK_RETRY_MS = 50
-// How long to wait for another process's refresh before giving up.
-const LOCK_WAIT_MS = 30 * 1000
-const REFRESH_TIMEOUT_MS = 15 * 1000
+// A refresh the API has already done can't be undone: cutting it off loses the new keys,
+// and the spent refresh key later revokes the agent. So it gets a long time to answer.
+const REFRESH_TIMEOUT_MS = 120 * 1000
+// How long to wait for another process's refresh before giving up: longer than a refresh can take.
+const LOCK_WAIT_MS = 150 * 1000
+/** For tests: how the refresh and lock timeouts nest. */
+export const REFRESH_TIMING = Object.freeze({ refreshTimeoutMs: REFRESH_TIMEOUT_MS, lockWaitMs: LOCK_WAIT_MS, lockMaxAgeMs: LOCK_MAX_AGE_MS })
 
 export function agentFile (name, dir = quiltHome()) {
   if (!NAME.test(String(name || ''))) throw new Error('--name must be 1 to 40 letters, numbers, dots, dashes or underscores')

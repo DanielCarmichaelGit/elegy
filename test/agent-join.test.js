@@ -7,7 +7,7 @@ import http from 'node:http'
 import { spawn, spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { startTestApi, API_URL } from './api-helpers.js'
-import { agentJoin, agentWhoami, agentFile, describeAgent, parseJoinLink, DEFAULTS, savedAgents, pickAgent, agentAccess, withLock, takeOverStale } from '../src/agent-join.js'
+import { agentJoin, agentWhoami, agentFile, describeAgent, parseJoinLink, DEFAULTS, savedAgents, pickAgent, agentAccess, withLock, takeOverStale, REFRESH_TIMING } from '../src/agent-join.js'
 
 let t
 before(async () => { t = await startTestApi() })
@@ -236,4 +236,12 @@ test('a stale lock that changed between our two reads is left alone', async () =
   // Another process took it over and locked between our two reads.
   assert.equal(takeOverStale(lock, () => fs.writeFileSync(lock, `${process.pid}.theirs`)), false)
   assert.equal(fs.readFileSync(lock, 'utf8'), `${process.pid}.theirs`)
+})
+
+test('a slow refresh is waited for, not cut off: the timeouts nest', () => {
+  const { refreshTimeoutMs, lockWaitMs, lockMaxAgeMs } = REFRESH_TIMING
+  // Cutting off a refresh the API already did loses the new keys, and the agent is later revoked.
+  assert.equal(refreshTimeoutMs, 120 * 1000)
+  assert.ok(lockWaitMs > refreshTimeoutMs, 'another process waits out a whole refresh')
+  assert.ok(lockMaxAgeMs > lockWaitMs, 'a live holder is never taken for stale')
 })
