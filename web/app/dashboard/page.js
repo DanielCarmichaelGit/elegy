@@ -1,21 +1,18 @@
-import { headers, cookies } from 'next/headers'
+import { cookies } from 'next/headers'
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import AppHeader from '@/components/AppHeader.js'
 import FirstOrg from '@/components/FirstOrg.js'
-import AgentInvite from '@/components/AgentInvite.js'
-import AgentInviteList from '@/components/AgentInviteList.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
 import { myOrgs } from '@/lib/org.js'
 import { SPACE_COOKIE, spaceHome } from '@/lib/space.js'
-import { safeMessage, when } from '@/lib/org-view.js'
-import { agentStatus, AGENT_JOIN_COMMAND } from '@/lib/agent-view.js'
-import { downloadFor, DOWNLOADS } from '@/lib/platform.js'
-import { unlinkComputer, revokeAgent, askToJoin, createAgentInvite, cancelAgentInvite, agentInviteWaiting } from './actions.js'
+import { safeMessage } from '@/lib/org-view.js'
+import { countLabel } from '@/lib/dashboard-view.js'
+import { askToJoin } from './actions.js'
 
 export const metadata = { title: 'Dashboard' }
-const PLATFORMS = { darwin: 'Mac', win32: 'Windows', linux: 'Linux' }
 
 export default async function Dashboard ({ searchParams }) {
   const q = await searchParams
@@ -25,23 +22,19 @@ export default async function Dashboard ({ searchParams }) {
   const home = spaceHome((await cookies()).get(SPACE_COOKIE)?.value, orgs)
   if (home !== '/dashboard') redirect(home)
   const supabase = await createClient()
-  // Name the columns: secret columns (token_hash) aren't granted to signed-in people.
+  // The overview: counts that link to the Computers and Agents pages, plus anything to act on.
   // Independent calls, so they run together rather than one after another.
-  const [{ data: computers }, agentsRes, invitesRes, discover, { data: profile }] = await Promise.all([
-    supabase.from('devices').select('id, name, platform, last_seen_at, revoked_at').is('revoked_at', null).order('last_seen_at', { ascending: false }),
+  const [{ count: computers }, agentsRes, discover, { data: profile }] = await Promise.all([
+    supabase.from('devices').select('id', { count: 'exact', head: true }).is('revoked_at', null),
     apiCall(user, 'GET', '/v1/agents'),
-    apiCall(user, 'GET', '/v1/agent-invites'),
     // Orgs on the person's own (confirmed, non-public) email domain that take join requests.
     apiCall(user, 'GET', '/v1/orgs/discover'),
     // Only an org account ever gets a FirstOrg card, even if a personal account somehow has stray org_name metadata.
     supabase.from('profiles').select('kind').eq('id', user.id).maybeSingle()
   ])
   // The API lists only agents that aren't revoked.
-  const agents = agentsRes.data?.agents || []
-  const invites = (invitesRes.data?.invites || []).slice(0, 10)
+  const agents = agentsRes.ok ? (agentsRes.data?.agents || []).length : null
   const joinable = discover.data?.orgs || []
-  const ua = (await headers()).get('user-agent') || ''
-  const download = downloadFor(ua) || DOWNLOADS.macArm
   return (
     <>
       <AppHeader user={user} space='personal' />
@@ -64,48 +57,18 @@ export default async function Dashboard ({ searchParams }) {
                   : <form action={askToJoin}><input type='hidden' name='slug' value={o.slug} /><button className='btn'>Ask to join</button></form>}
               </div>))}
           </section>)}
-        <section className='card stack' id='computers'>
-          <div className='row' style={{ justifyContent: 'space-between' }}>
-            <h2>Your computers</h2>
-            <a className='btn ghost' href={download.href}>{download.label}</a>
-          </div>
-          {computers?.length
-            ? computers.map((c) => (
-              <div key={c.id} className='row' style={{ justifyContent: 'space-between' }}>
-                <span><b>{c.name}</b> {PLATFORMS[c.platform] && <span className='pill'>{PLATFORMS[c.platform]}</span>} <span className='muted'>· last seen {when(c.last_seen_at)}</span></span>
-                <form action={unlinkComputer}><input type='hidden' name='id' value={c.id} /><button className='btn ghost danger'>Unlink</button></form>
-              </div>))
-            : <p className='muted'>No computers yet. Open the Quilt app and choose <b>Sign in</b>.</p>}
-        </section>
-        <section className='card stack' id='agents'>
-          <h2>Your agents</h2>
-          {!agentsRes.ok && <p className='notice bad'>Could not load your agents right now.</p>}
-          {agentsRes.ok && !agents.length && <p className='muted'>No agents yet.</p>}
-          {agents.length > 0 && (
-            <div>
-              {agents.map((a) => {
-                const s = agentStatus(a.status)
-                return (
-                  <div key={a.id} className='list-row'>
-                    <span>
-                      <b>{a.name}</b> <span className='pill'>Agent</span> {s && <span className='pill'>{s.label}</span>}
-                      <br />
-                      <span className='muted'>{a.provider} · {a.type}{a.description ? ` · ${a.description}` : ''}</span>
-                      <br />
-                      <span className='muted'>{s ? s.why : `Added ${when(a.createdAt)} · last used ${when(a.lastUsedAt)}`}</span>
-                    </span>
-                    <form action={revokeAgent}><input type='hidden' name='id' value={a.id} /><button className='btn ghost danger'>Revoke</button></form>
-                  </div>)
-              })}
-            </div>)}
-          <div className='stack'>
-            <h3>Invite an agent</h3>
-            <p className='muted'>Make a one-time link and paste it into your AI (Claude Code, Cursor, ChatGPT and others). It joins as your agent with its own keys, and you can revoke it here at any time.</p>
-            <AgentInvite action={createAgentInvite} waiting={agentInviteWaiting} />
-            <AgentInviteList invites={invites} cancel={cancelAgentInvite} />
-            <p className='muted'>From a terminal: <code>{AGENT_JOIN_COMMAND}</code></p>
-          </div>
-        </section>
+        <div className='overview-grid'>
+          <section className='card stack'>
+            <h2>Computers</h2>
+            <p className='muted'>{countLabel(computers, 'computer linked', 'computers linked', 'No computers linked yet.')}</p>
+            <div><Link className='btn' href='/dashboard/computers'>Manage computers</Link></div>
+          </section>
+          <section className='card stack'>
+            <h2>Agents</h2>
+            <p className='muted'>{countLabel(agents, 'agent', 'agents', 'No agents yet.')}</p>
+            <div><Link className='btn' href='/dashboard/agents'>Manage agents</Link></div>
+          </section>
+        </div>
       </main>
     </>
   )

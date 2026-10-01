@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { pickDownloads } from '@/lib/platform.js'
+import { pickDownloads, detectDownloads } from '@/lib/platform.js'
 
 // Apple and Windows glyphs, inline so they inherit the button's text colour.
 function AppleLogo () {
@@ -39,18 +39,20 @@ function FinePrint ({ primary, others }) {
   )
 }
 
-// Renders the server's best guess from the user-agent immediately, then refines it on mount
-// with navigator.userAgentData when the browser supports it. Falls back to showing both
-// buttons whenever detection isn't possible (Safari, Firefox, Linux, mobile, or an error).
-export default function DownloadButtons ({ initial, className = '' }) {
+// Before hydration (and on static pages, which can't see the visitor) this shows `initial`, or
+// both Mac and Windows when there's no initial guess. On mount it picks the visitor's system in
+// the browser, so a page with these buttons can still be prerendered. Anything it can't tell
+// (Linux, mobile, an error) keeps both buttons.
+const BOTH = pickDownloads({})
+
+export default function DownloadButtons ({ initial = BOTH, className = '' }) {
   const [pick, setPick] = useState(initial)
 
   useEffect(() => {
-    const uad = typeof navigator !== 'undefined' ? navigator.userAgentData : null
-    if (!uad || typeof uad.getHighEntropyValues !== 'function') return
-    uad.getHighEntropyValues(['architecture', 'platform'])
-      .then(({ architecture, platform }) => setPick(pickDownloads({ architecture, platform })))
-      .catch(() => {}) // can't tell: keep the server's guess, which already shows both if unsure
+    let live = true
+    detectDownloads(typeof navigator !== 'undefined' ? navigator : undefined)
+      .then((p) => { if (live) setPick(p) })
+    return () => { live = false }
   }, [])
 
   const { primary, others } = pick

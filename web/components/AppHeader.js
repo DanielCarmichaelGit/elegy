@@ -9,12 +9,7 @@ import { myOrgs, orgMe } from '@/lib/org.js'
 import { orgTabs } from '@/lib/org-view.js'
 import { SPACE_COOKIE, PERSONAL, spaceHome } from '@/lib/space.js'
 import { createClient } from '@/lib/supabase/server.js'
-
-const PERSONAL_NAV = [
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/dashboard#computers', label: 'Computers' },
-  { href: '/dashboard#agents', label: 'Agents' }
-]
+import { PERSONAL_NAV } from '@/lib/nav.js'
 
 /** Initials for the avatar: from the profile name, else the email. */
 export function initials (name, email) {
@@ -70,7 +65,7 @@ export function AppHeaderSkeleton () {
         <span className='skeleton qh-skel' style={{ width: 150 }} />
         <span className='skeleton qh-skel' style={{ width: 260 }} />
         <span className='qh-grow' />
-        <span className='skeleton' style={{ width: 36, height: 36, borderRadius: '50%' }} />
+        <span className='skeleton' style={{ width: 58, height: 36, borderRadius: 999 }} />
       </header>
     </StickyHeader>
   )

@@ -5,6 +5,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import net from 'node:net'
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 const env = {
   ...process.env,
@@ -33,8 +34,37 @@ test('public pages render', async () => {
   for (const path of ['/', '/pricing', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
 })
 
+// A dynamic homepage runs a Netlify function on every visit (and a cold start can take a second);
+// a prerendered one is served straight from the CDN.
+test('the homepage and pricing are prerendered at build time', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../.next/prerender-manifest.json', import.meta.url)))
+  for (const path of ['/', '/pricing']) assert.ok(manifest.routes[path], `${path} is static`)
+})
+
+test('the homepage serves sized WebP screenshots, lazily below the fold, and both downloads before hydration', async () => {
+  const html = await (await get('/')).text()
+  assert.doesNotMatch(html, /\/shots\/[a-z]+\.png/)
+  assert.match(html, /srcSet="\/shots\/session-640\.webp 640w, \/shots\/session-1280\.webp 1280w, \/shots\/session-1920\.webp 1920w"/)
+  assert.equal((html.match(/loading="lazy"/g) || []).length, 4, 'three step shots and the feed shot are lazy')
+  assert.match(html, /quilt-mac-arm64\.dmg/)
+  assert.match(html, /quilt-windows-x64\.exe/)
+})
+
+// The proxy redirects signed-out people before routing, so check the pages really exist too.
+test('Computers and Agents have their own pages under the dashboard', () => {
+  const pages = Object.keys(JSON.parse(readFileSync(new URL('../.next/server/app-paths-manifest.json', import.meta.url))))
+  for (const page of ['/dashboard/page', '/dashboard/computers/page', '/dashboard/agents/page']) assert.ok(pages.includes(page), page)
+})
+
+// Static images skip the proxy: it would run getClaims() and could add Set-Cookie, which stops CDN caching.
+test('screenshots are served without running the proxy (no Set-Cookie)', async () => {
+  const res = await get('/shots/session-1280.webp')
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('set-cookie'), null)
+})
+
 test('private pages send signed-out people to sign in, and come back after', async () => {
-  for (const path of ['/dashboard', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
+  for (const path of ['/dashboard', '/dashboard/computers', '/dashboard/agents', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
     const res = await get(path)
     assert.equal(res.status, 307, path)
     const to = new URL(res.headers.get('location'), base)

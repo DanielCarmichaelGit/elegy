@@ -21,8 +21,10 @@ export function downloadFor (userAgent = '') {
 export function pickDownloads ({ platform = '', architecture = '', ua = '' } = {}) {
   const p = String(platform).toLowerCase()
   const arch = String(architecture).toLowerCase()
-  const isMac = p.includes('mac') || (!p && /Macintosh|Mac OS X/.test(ua))
-  const isWin = p.includes('win') || (!p && /Windows/.test(ua))
+  // Phones say "like Mac OS X" (iPhone) or "Linux" (Android): there's no app for them, so both.
+  const phone = /iPhone|iPad|iPod|Android/.test(ua)
+  const isMac = !phone && (p.includes('mac') || (!p && /Macintosh|Mac OS X/.test(ua)))
+  const isWin = !phone && (p.includes('win') || (!p && /Windows/.test(ua)))
 
   if (isMac) {
     // Browsers report "Intel" even on Apple silicon; only trust an explicit "x86" architecture.
@@ -34,4 +36,20 @@ export function pickDownloads ({ platform = '', architecture = '', ua = '' } = {
   if (isWin) return { primary: [DOWNLOADS.windows], others: [DOWNLOADS.macArm] }
   // Can't tell (Safari, Firefox, Linux, mobile, or detection failed): offer both.
   return { primary: [DOWNLOADS.macArm, DOWNLOADS.windows], others: [DOWNLOADS.macIntel] }
+}
+
+// The pick for this browser, worked out client-side so pages that show download buttons can
+// stay static. Uses navigator.userAgentData's high-entropy values where the browser has them
+// (Chromium: tells Apple silicon from Intel), else the user-agent string, else both buttons.
+export async function detectDownloads (nav) {
+  if (!nav) return pickDownloads({})
+  const ua = String(nav.userAgent || '')
+  const uad = nav.userAgentData
+  if (uad && typeof uad.getHighEntropyValues === 'function') {
+    try {
+      const { architecture, platform } = await uad.getHighEntropyValues(['architecture', 'platform'])
+      return pickDownloads({ architecture, platform, ua })
+    } catch {} // fall through to the user-agent string
+  }
+  return pickDownloads({ ua })
 }
