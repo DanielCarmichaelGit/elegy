@@ -91,6 +91,9 @@ export class Connection extends EventEmitter {
       } else if (res.statusCode === 413) {
         this.emit('fatal', new Error(ROOM_FULL_MESSAGE))
         this.close()
+      } else if (res.statusCode === 410) {
+        this.emit('fatal', Object.assign(new Error(reason), { ended: true }))
+        this.close()
       } else if (res.statusCode === 429) {
         this.emit('warn', 'relay says there are too many connections from this network; retrying')
       } else {

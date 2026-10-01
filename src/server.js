@@ -400,6 +400,7 @@ class Room {
    * it into the room. Nothing else is accepted until then.
    */
   admit (ws, name, publicKey, key, { kind = 'human', invitedAs = 'editor' } = {}, onJoin) {
+    if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
     clearTimeout(this.unloadTimer)
     const nonce = crypto.randomBytes(32)
     let joined = false
@@ -420,6 +421,7 @@ class Room {
         this.log(`[${this.name}] refused ${name}: ${err.message}`)
         return ws.close(CLOSE_AUTH_FAILED, 'Could not verify who you are')
       }
+      if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
       // Re-check: someone else may have taken the name while we waited.
       if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
       this.bindName(name, publicKey)
@@ -596,12 +598,18 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         }, cfg.idleUnloadMs)
       }
       room.onEnd = () => {
+        if (room.ended) return
         room.ended = true
         for (const ws of [...room.conns.keys(), ...room.pending.keys()]) ws.close(CLOSE_ENDED, 'The owner ended this session')
         clearTimeout(room.unloadTimer)
         room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
-        rooms.delete(name)
+        if (rooms.get(name) === room) rooms.delete(name)
         removeRoomData(name)
+        // A tombstone keeps the room refused for good, instead of letting a new one start under the same name.
+        if (dataDir) {
+          const now = Date.now()
+          fs.writeFileSync(path.join(dataDir, `${name}.json`), JSON.stringify({ ended: true, endedAt: now, lastActive: now }))
+        }
         log(`[${name}] ended by its owner`)
       }
     }
@@ -664,6 +672,11 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     room.saveMeta()
     store.remove(room.name, unused).catch((err) => log(`[${room.name}] could not delete stored files: ${err.message}`))
   }
+  /** Refuses an ended room's tombstone without loading it into memory. */
+  const roomEnded = (name) => {
+    if (!dataDir) return false
+    try { return !!JSON.parse(fs.readFileSync(path.join(dataDir, `${name}.json`), 'utf8')).ended } catch { return false }
+  }
 
   // Public: the app's relay check reads this. It says nothing about who's using the relay.
   const health = () => ({ ok: true, version: 1, requiresKey: !!cfg.relayKey })
@@ -691,6 +704,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (err) return text(400, err.message)
         const { token, room: roomName, secret, name, tool } = body || {}
         if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
+        if (roomEnded(roomName)) return text(410, ENDED_MESSAGE)
         const room = getRoom(roomName)
         if (!room) return text(413, TOO_BIG)
         if (!room.exists || room.authorize(String(secret || ''), '') !== 'editor') { dropIfUnused(room); return text(403, 'wrong room secret') }
@@ -724,6 +738,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const bm = url.pathname.match(/^\/blobs\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})\/(upload|download|data)$/)
     if (bm) {
       const [, name, id, action] = bm
+      if (roomEnded(name)) return text(410, ENDED_MESSAGE)
       if (action === 'data') {
         // The disk store's signed links: no secret needed, the signature is the permission.
         if (!(store instanceof DiskStore)) return text(404, 'not found')
@@ -778,6 +793,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!m) return text(404, 'not found')
 
     const [, name, id] = m
+    if (roomEnded(name)) return text(410, ENDED_MESSAGE)
     const room = getRoom(name)
     if (!room) return text(413, TOO_BIG)
     const creating = !room.exists
@@ -816,6 +832,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const viewSecret = url.searchParams.get('viewSecret') || ''
     const kind = url.searchParams.get('kind') === 'agent' ? 'agent' : 'human'
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
+    if (roomEnded(name)) return reject(socket, 410, ENDED_MESSAGE)
     const ip = clientIp(req)
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
@@ -865,8 +882,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const cutoff = Date.now() - cfg.roomTtlDays * DAY
     let removed = 0
     for (const f of fs.readdirSync(dataDir)) {
-      if (!f.endsWith('.json')) continue
+      if (!f.endsWith('.json') || f === 'agent-links.json') continue
       const name = f.slice(0, -5)
+      if (!ROOM_RE.test(name)) continue
       if (rooms.has(name)) continue
       try {
         const meta = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))
@@ -973,6 +991,7 @@ function receiveBlob (req, file, limit, done) {
 }
 
 const TOO_BIG = 'Session over the size limit'
+const ENDED_MESSAGE = 'The owner ended this session'
 
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)

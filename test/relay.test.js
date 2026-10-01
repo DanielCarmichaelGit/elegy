@@ -177,12 +177,14 @@ test('rooms unused for longer than the TTL are deleted', async (t) => {
   fs.writeFileSync(path.join(dataDir, 'old.ydoc'), Buffer.from([0, 0]))
   fs.mkdirSync(path.join(dataDir, 'files', 'old'), { recursive: true })
   fs.writeFileSync(path.join(dataDir, 'fresh.json'), JSON.stringify({ secretHash: 'ab', lastActive: Date.now() }))
+  fs.writeFileSync(path.join(dataDir, 'agent-links.json'), JSON.stringify({ abc: { room: 'old', name: 'a', tabSeenAt: Date.now() - 40 * 86400e3 } }))
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, roomTtlDays: 30 })
   defer(() => srv.close())
   assert.equal(fs.existsSync(path.join(dataDir, 'old.json')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'old.ydoc')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'files', 'old')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'fresh.json')), true)
+  assert.equal(fs.existsSync(path.join(dataDir, 'agent-links.json')), true, 'the relay\'s own link file is not mistaken for a room')
 })
 
 test('new sessions are rate-limited per address; joining existing ones is not', async () => {
@@ -201,7 +203,7 @@ test('new sessions are rate-limited per address; joining existing ones is not', 
   await srv.close()
 })
 
-test('the owner can end a session: everyone is sent away and its data is deleted', async (t) => {
+test('the owner can end a session: everyone is sent away, its data is deleted, and a tombstone is left', async (t) => {
   const defer = cleanups(t)
   const dataDir = tmp('end')
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
@@ -223,8 +225,43 @@ test('the owner can end a session: everyone is sent away and its data is deleted
   assert.equal(err.ended, true)
   await waitFor(() => !srv.rooms.has('ending'))
   assert.equal(fs.existsSync(path.join(dataDir, 'ending.ydoc')), false)
-  assert.equal(fs.existsSync(path.join(dataDir, 'ending.json')), false)
   await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'ending')))
+  const tombstone = JSON.parse(fs.readFileSync(path.join(dataDir, 'ending.json'), 'utf8'))
+  assert.equal(tombstone.ended, true)
+
+  // Reconnecting to the same room, even with the right secret, is refused for good.
+  const laterDoc = new Y.Doc()
+  const later = new Connection({ server, room: 'ending', secret: 's', name: 'olive', identity: generateIdentity(), doc: laterDoc })
+  defer(() => later.close())
+  const laterErr = await new Promise((resolve) => later.on('fatal', resolve))
+  assert.equal(laterErr.ended, true)
+})
+
+test('ending a session sends everyone away, not just the owner, even if they were only part-way admitted', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  defer(() => srv.close())
+  const server = `ws://127.0.0.1:${srv.port}`
+  const ownerDoc = new Y.Doc()
+  const owner = new Connection({ server, room: 'end-everyone', secret: 's', viewSecret: 'v', name: 'olive', identity: generateIdentity(), doc: ownerDoc })
+  defer(() => owner.close())
+  await owner.waitForSync()
+  await waitFor(() => owner.access && owner.access.owner)
+
+  const guestIdentity = generateIdentity()
+  const guestDoc = new Y.Doc()
+  const guest = new Connection({ server, room: 'end-everyone', secret: 's', name: 'gus', identity: guestIdentity, doc: guestDoc })
+  defer(() => guest.close())
+  await waitFor(() => guest.access && guest.access.state === 'pending')
+  await owner.adminRequest({ op: 'approve', key: guestIdentity.publicKey })
+  await waitFor(() => guest.access && guest.access.state === 'approved')
+
+  const ownerEnded = new Promise((resolve) => owner.on('fatal', resolve))
+  const guestEnded = new Promise((resolve) => guest.on('fatal', resolve))
+  await owner.adminRequest({ op: 'end' })
+  const [ownerErr, guestErr] = await Promise.all([ownerEnded, guestEnded])
+  assert.equal(ownerErr.ended, true)
+  assert.equal(guestErr.ended, true)
 })
 
 test('only the owner can end a session', async (t) => {
