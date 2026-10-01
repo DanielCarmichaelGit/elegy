@@ -114,7 +114,7 @@ async function apiCmd () {
     const { createConsoleMailer } = await import('../src/api/mailer.js')
     mailer = createConsoleMailer(console.log)
   } else {
-    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM']) if (!env[k]) fail(`${k} is not set`)
+    for (const k of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'QUILT_SITE_URL', 'SMTP_URL', 'SMTP_FROM', 'PASS_SIGNING_KEY']) if (!env[k]) fail(`${k} is not set`)
     const { createSupabaseStore } = await import('../src/api/supabase-store.js')
     const { createUserVerifier } = await import('../src/api/auth.js')
     store = createSupabaseStore({ url: env.SUPABASE_URL, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY })
@@ -122,11 +122,18 @@ async function apiCmd () {
     const { createSmtpMailer } = await import('../src/api/mailer.js')
     mailer = createSmtpMailer({ url: env.SMTP_URL, from: env.SMTP_FROM })
   }
+  let passKey = env.PASS_SIGNING_KEY || ''
+  if (values.memory && !passKey) {
+    const { newPassKeys } = await import('../src/passes.js')
+    const keys = newPassKeys()
+    passKey = keys.privateKey
+    console.log(`pass signing key made for this run; start a local relay with QUILT_PASS_PUBLIC_KEY=${keys.publicKey}`)
+  }
   // In memory anyone may use "Bearer local", so only listen on this machine unless asked.
   const host = values.host || (values.memory ? '127.0.0.1' : '0.0.0.0')
   const port = Number(values.port || env.PORT || 8787)
   const api = await startApi({
-    port, host, store, verifyUser, mailer,
+    port, host, store, verifyUser, mailer, passKey,
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',

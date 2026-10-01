@@ -32,7 +32,7 @@ test('quilt api --memory --host still lets you choose the address', async () => 
   assert.match(out, /listening on http:\/\/0\.0\.0\.0:\d+/)
 })
 
-const prodEnv = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', QUILT_SITE_URL: 'https://quilt.test', SMTP_URL: 'smtp://u:p@127.0.0.1:2525', SMTP_FROM: 'Quilt <invites@quilt.test>' }
+const prodEnv = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', QUILT_SITE_URL: 'https://quilt.test', SMTP_URL: 'smtp://u:p@127.0.0.1:2525', SMTP_FROM: 'Quilt <invites@quilt.test>', PASS_SIGNING_KEY: 'MC4CAQAwBQYDK2VwBCIEIGbPaRjDSS1hZHoyOjotVXoczXIIBtFMCGfNWWMCOmba' }
 
 test('quilt api starts without AGENT_KEY_SECRET: agents hold their own keys now', async () => {
   const { out } = await run(['--port', '0', '--host', '127.0.0.1'], prodEnv)

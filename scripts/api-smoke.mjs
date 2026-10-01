@@ -16,6 +16,8 @@ if (!JWT) { console.log('set QUILT_TEST_JWT to check approve, profile and agents
 ok((await call('POST', '/v1/device/approve', { userCode: st.b.userCode, approve: true }, JWT)).s === 200, 'approve')
 const tok = (await poll(st.b.deviceCode)).b?.token; ok(tok?.startsWith('qd_'), 'token')
 ok((await call('GET', '/v1/me', null, tok)).b?.profile?.id, 'me')
+ok((await call('POST', '/v1/passes', null, tok)).b?.pass, 'pass for this computer')
+ok((await call('GET', '/v1/passes/key')).b?.publicKey, 'pass public key published')
 ok(Array.isArray((await call('GET', '/v1/agents', null, JWT)).b?.agents), 'agents listed')
 ok((await call('POST', '/v1/me/signout', {}, tok)).s === 200, 'signout')
 const inv = await call('POST', '/v1/agent-invites', {}, JWT); ok(inv.b?.link?.includes('/v1/join/qj_'), 'agent invite made')
