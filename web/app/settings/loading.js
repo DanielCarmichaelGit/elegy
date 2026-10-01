@@ -5,7 +5,7 @@ export default function Loading () {
   return (
     <>
       <AppHeaderSkeleton />
-      <main className='wrap page stack' style={{ maxWidth: 640 }}>
+      <main className='wrap page stack'>
         <div className='skeleton skeleton-title' />
         <div className='card skeleton-card' />
         <div className='card skeleton-card' />
