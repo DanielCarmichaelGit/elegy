@@ -11,6 +11,9 @@ const HELP = `quilt: real-time pair vibe coding with any AI tool
 
 Usage:
   quilt ui                                            Open the app in your browser (start, join, chat)
+  quilt login [--no-browser]                          Sign in to your heyquilt.com account
+  quilt logout                                        Sign this computer out
+  quilt whoami                                        Show which account this computer is signed in to
   quilt serve [--port 4321] [--data ./quilt-data]   Run a relay server (see docs/hosting.md)
   quilt api [--port 8787] [--memory]                   Run the accounts API (needs SUPABASE_URL etc.; --memory for local testing)
   quilt agent join <link> --name <name>               Join Quilt as an agent with an invite link from the website
@@ -54,6 +57,9 @@ async function main () {
     case 'api': return apiCmd()
     case 'agent': return agentCmd()
     case 'ui': return ui()
+    case 'login': return login()
+    case 'logout': return logout()
+    case 'whoami': return whoami()
     case 'relay': return relayCmd()
     case 'join': return join()
     case 'setup': return doSetup()
@@ -288,6 +294,43 @@ async function ui () {
   const stop = async () => { console.log('\nstopping…'); await app.close(); process.exit(0) }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
+}
+
+async function login () {
+  const { values } = parseArgs({ args: argv, options: { 'no-browser': { type: 'boolean' } } })
+  const { readAccount, saveAccount, startLink, waitForLink, accountFromProfile } = await import('../src/account.js')
+  const { loadIdentity } = await import('../src/identity.js')
+  const current = readAccount()
+  if (current) return console.log(`Already signed in as ${current.account.name} (${current.account.email}). Run quilt logout first to switch accounts.`)
+  const identity = loadIdentity()
+  let link
+  try { link = await startLink({ identity }) } catch (err) { fail(err.message) }
+  console.log(`To sign in, open this page and approve this computer:\n\n  ${link.verificationUrl}\n\nCheck it shows the code ${link.userCode}. Waiting…`)
+  if (!values['no-browser']) openBrowser(link.verificationUrl)
+  let r
+  try { r = await waitForLink({ identity, link }) } catch (err) { fail(err.expired ? 'The code expired. Run quilt login again.' : err.message) }
+  const account = accountFromProfile(r.profile)
+  saveAccount({ token: r.token, account, signedInAt: Date.now() })
+  console.log(`Signed in as ${account.name} (${account.email}).`)
+}
+
+async function logout () {
+  const { readAccount, signOut } = await import('../src/account.js')
+  const current = readAccount()
+  if (!current) return console.log('Not signed in')
+  await signOut({ token: current.token })
+  console.log(`Signed out of ${current.account.email}.`)
+}
+
+async function whoami () {
+  const { readAccount } = await import('../src/account.js')
+  const current = readAccount()
+  if (!current) {
+    console.log('Not signed in')
+    process.exitCode = 1
+    return
+  }
+  console.log(`${current.account.name} (${current.account.email})`)
 }
 
 async function openBrowser (url) {

@@ -84,6 +84,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   }
   const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
 
+  /** A person's profile and sign-in email, which the app keeps in account.json. */
+  async function profileWithEmail (userId) {
+    const p = await store.profile(userId)
+    return p && { ...p, email: (await store.userEmail(userId))?.email || '' }
+  }
+
   const COLOR = /^#[0-9a-fA-F]{6}$/
   function cleanProfile (b) {
     const out = {}
@@ -129,7 +135,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (!await store.claimLink(link.id, 'approved', 'consumed')) throw new HttpError(410, 'expired')
       const token = newToken('qd_')
       await store.setDeviceToken(link.deviceId, hashToken(token))
-      return { status: 'approved', token, profile: await store.profile(link.userId) }
+      return { status: 'approved', token, profile: await profileWithEmail(link.userId) }
     }],
 
     ['GET', /^\/v1\/device\/link\/([^/]+)$/, async (req, body, [code]) => {
@@ -158,7 +164,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
     ['GET', /^\/v1\/me$/, async (req) => {
       const d = await device(req)
-      return { profile: await store.profile(d.userId), device: { id: d.id, name: d.name } }
+      return { profile: await profileWithEmail(d.userId), device: { id: d.id, name: d.name } }
     }],
 
     ['PUT', /^\/v1\/me\/profile$/, async (req, body) => {

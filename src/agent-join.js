@@ -3,9 +3,9 @@
 // keep them in ~/.quilt/agents/<name>.json (readable only by you).
 import fs from 'node:fs'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { quiltHome } from './legacy.js'
 import { generateIdentity } from './identity.js'
+import { writePrivateJson } from './private-file.js'
 
 export const DEFAULTS = { provider: 'Quilt CLI', type: 'command-line agent' }
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/
@@ -53,33 +53,10 @@ function ensureAgentsDir (dir) {
   if ((st.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700)
 }
 
-/** Writes the agent's file atomically: a private temp file in the same
- * directory, fsynced, then renamed over the target. The rename replaces
- * whatever is at the destination (even a symlink) without following it, and
- * a half-written file can never be observed at the real path. */
+/** Saves the agent's file privately (see private-file.js), in a private agents folder. */
 function save (file, data) {
-  const dir = path.dirname(file)
-  ensureAgentsDir(dir)
-  let st
-  try { st = fs.lstatSync(file) } catch (err) { if (err.code !== 'ENOENT') throw err }
-  if (st && st.isSymbolicLink()) throw new Error(`Refusing to write ${file}: it's a symlink`)
-  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`)
-  const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600)
-  try {
-    fs.writeSync(fd, JSON.stringify(data, null, 2))
-    fs.fsyncSync(fd)
-  } catch (err) {
-    fs.closeSync(fd)
-    try { fs.unlinkSync(tmp) } catch {}
-    throw err
-  }
-  fs.closeSync(fd)
-  try {
-    fs.renameSync(tmp, file)
-  } catch (err) {
-    try { fs.unlinkSync(tmp) } catch {}
-    throw err
-  }
+  ensureAgentsDir(path.dirname(file))
+  writePrivateJson(file, data)
 }
 
 function load (file, name) {
