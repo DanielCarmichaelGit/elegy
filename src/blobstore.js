@@ -6,6 +6,7 @@ import crypto from 'node:crypto'
 import { createClient } from '@supabase/supabase-js'
 
 const LINK_MS = 10 * 60 * 1000
+const MAX_REMOVE_ROUNDS = 1000
 
 /** Files on the relay's own disk, reached through signed links to the relay. */
 export class DiskStore {
@@ -65,25 +66,34 @@ export class SupabaseStore {
     return { url: data.signedUrl }
   }
 
+  /** Deletes stored files; resolves to how many were deleted. */
   async remove (room, ids) {
-    if (!ids.length) return
-    const { error } = await this.bucket.remove(ids.map((id) => SupabaseStore.path(room, id)))
+    if (!ids.length) return 0
+    const { data, error } = await this.bucket.remove(ids.map((id) => SupabaseStore.path(room, id)))
     if (error) throw new Error(`storage: ${error.message}`)
+    return (data || []).length
   }
 
+  // Deleted 1000 at a time. A round that deletes nothing (say, something
+  // that isn't a file is in the way) stops it, rather than looping forever.
   async removeRoom (room) {
-    for (;;) {
+    for (let round = 0; round < MAX_REMOVE_ROUNDS; round++) {
       const { data, error } = await this.bucket.list(room, { limit: 1000 })
       if (error) throw new Error(`storage: ${error.message}`)
       if (!data.length) return
-      await this.remove(room, data.map((f) => f.name))
+      if (!await this.remove(room, data.map((f) => f.name))) throw new Error(`storage: could not delete the stored files of ${room}; ${data.length} remain`)
     }
+    throw new Error(`storage: gave up deleting the stored files of ${room} after ${MAX_REMOVE_ROUNDS} rounds`)
   }
 }
 
 const alreadyExists = (error) => String(error.statusCode) === '409' || /exists|duplicate/i.test(String(error.message))
 
 export function makeStore (cfg, dir) {
+  // Half set up is a mistake: falling back to the disk would quietly fill it.
+  if (!cfg.storageUrl !== !cfg.storageKey) {
+    throw new Error('Large-file storage is half set up: set both QUILT_STORAGE_URL and QUILT_STORAGE_KEY to use Supabase Storage, or neither to keep files on the relay\'s disk.')
+  }
   if (cfg.storageUrl && cfg.storageKey) return new SupabaseStore({ url: cfg.storageUrl, key: cfg.storageKey, bucket: cfg.storageBucket })
   return new DiskStore(dir)
 }

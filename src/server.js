@@ -691,11 +691,11 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
     store.removeRoom(name).catch((err) => log(`[${name}] could not delete stored files: ${err.message}`))
   }
-  /** Deletes stored files nothing points at any more (an hour's grace for uploads in flight). */
+  /** Deletes stored files nothing points at any more (a day's grace for uploads in flight, or apps still offline). */
   const collectStored = (room) => {
     const blobs = room.meta.blobs || {}
     const used = room.storedIds()
-    const cutoff = Date.now() - 60 * 60 * 1000
+    const cutoff = Date.now() - DAY
     const unused = Object.keys(blobs).filter((id) => !used.has(id) && (blobs[id].ts || 0) < cutoff)
     if (!unused.length) return
     for (const id of unused) delete blobs[id]
@@ -832,7 +832,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) {
-      const used = dirSize(dir)
+      // Chat files and stored large files share one quota.
+      const used = dirSize(dir) + storedBytes(room)
       const incoming = Number(req.headers['content-length'] || 0)
       if (used + incoming > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
       return receiveFile(req, dir, cfg.maxRoomFileBytes - used, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))

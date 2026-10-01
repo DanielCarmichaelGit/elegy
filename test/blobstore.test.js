@@ -51,6 +51,25 @@ test('the relay uses Supabase only when it has both a URL and a key', () => {
   assert.equal(relayConfig({ maxStoredFileBytes: 10 }).maxStoredFileBytes, 10)
 })
 
+test('a relay with only half of the Supabase settings refuses to start', () => {
+  for (const half of [{ storageUrl: 'https://x.supabase.co' }, { storageKey: 'sb_secret_x' }]) {
+    assert.throws(() => makeStore(relayConfig(half), tmp('h')), /QUILT_STORAGE_URL and QUILT_STORAGE_KEY/)
+    assert.throws(() => startServer({ port: 0, host: '127.0.0.1', log: () => {}, ...half }), /half set up/)
+  }
+})
+
+test('deleting a room\'s Supabase files stops instead of looping forever', async () => {
+  const store = new SupabaseStore({ url: 'https://x.supabase.co', key: 'sb_secret_x', bucket: 'b' })
+  // Something that can't be deleted (a folder) stays in the listing.
+  store.bucket = { list: async () => ({ data: [{ name: 'folder' }], error: null }), remove: async () => ({ data: [], error: null }) }
+  await assert.rejects(store.removeRoom('room'), /could not delete the stored files of room/)
+  // A listing that never runs out is given up on after a bounded number of rounds.
+  let rounds = 0
+  store.bucket = { list: async () => { rounds++; return { data: [{ name: 'x' }], error: null } }, remove: async (paths) => ({ data: paths, error: null }) }
+  await assert.rejects(store.removeRoom('room'), /gave up/)
+  assert.equal(rounds, 1000)
+})
+
 async function relay (t, opts = {}) {
   const srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, ...opts })
   t.after(() => srv.close())
@@ -191,4 +210,16 @@ test('Supabase upload links never replace a stored file', async () => {
   assert.deepEqual(await store.uploadTarget('room', 'b'.repeat(32), 1), { method: 'PUT', url: 'https://x.supabase.co/sign' })
   assert.deepEqual(await store.uploadTarget('room', ID, 1), { exists: true })
   assert.deepEqual(seen.map((o) => o.upsert), [false, false])
+})
+
+test('people who can only view get no upload link', async (t) => {
+  const { base } = await relay(t)
+  const owner = new Connection({ server: base.replace('http', 'ws'), room: 'r9', secret: 's', viewSecret: 'v', name: 'olive', identity: generateIdentity(), doc: new Y.Doc() })
+  t.after(() => owner.close())
+  await owner.waitForSync()
+  const r = await ask(base, 'r9', ID, 'upload', 'v', { size: 1 })
+  assert.equal(r.status, 403)
+  assert.match(await r.text(), /only view/)
+  assert.equal((await ask(base, 'r9', ID, 'upload', 's', { size: 1 })).status, 200)
+  assert.equal((await ask(base, 'r9', ID, 'download', 'v')).status, 200, 'but they can download')
 })

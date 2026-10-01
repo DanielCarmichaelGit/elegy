@@ -147,6 +147,11 @@ test('file storage quota per room', async (t) => {
   const r = await post('x'.repeat(600))
   assert.equal(r.status, 413)
   assert.match(await r.text(), /quota/)
+  // Stored large files count against the same quota.
+  const upload = await fetch(`http://127.0.0.1:${srv.port}/blobs/fq/${'a'.repeat(32)}/upload`, { method: 'POST', headers: { 'x-quilt-secret': 's' }, body: JSON.stringify({ size: 300 }) })
+  assert.equal(upload.status, 200)
+  assert.equal((await post('x'.repeat(200))).status, 413, 'chat files see the stored file')
+  assert.equal((await post('x'.repeat(50))).status, 201)
 })
 
 test('idle rooms leave memory and come back intact', async (t) => {
@@ -228,6 +233,14 @@ test('the owner can end a session: everyone is sent away, its data is deleted, a
   await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'ending')))
   const tombstone = JSON.parse(fs.readFileSync(path.join(dataDir, 'ending.json'), 'utf8'))
   assert.equal(tombstone.ended, true)
+  const base = `http://127.0.0.1:${srv.port}`
+  const id = 'a'.repeat(32)
+  const headers = { 'x-quilt-secret': 's' }
+  assert.equal((await fetch(`${base}/blobs/ending/${id}/upload`, { method: 'POST', headers, body: '{"size":1}' })).status, 410)
+  assert.equal((await fetch(`${base}/blobs/ending/${id}/download`, { method: 'POST', headers, body: '{}' })).status, 410)
+  assert.equal((await fetch(`${base}/blobs/ending/${id}/data?m=GET&exp=1&sig=00`)).status, 410)
+  assert.equal((await fetch(`${base}/files/ending`, { method: 'POST', headers, body: 'x' })).status, 410)
+  assert.equal((await fetch(`${base}/files/ending/${id}`, { headers })).status, 410)
 
   // Reconnecting to the same room, even with the right secret, is refused for good.
   const laterDoc = new Y.Doc()
@@ -292,8 +305,9 @@ test('stored files go with their room when it expires, and unreferenced ones whe
   const keep = 'a'.repeat(32)
   const drop = 'b'.repeat(32)
   const room = srv.rooms.get('gc')
-  const old = Date.now() - 2 * 60 * 60 * 1000
-  room.meta.blobs = { [keep]: { size: 1, ts: old }, [drop]: { size: 1, ts: old } }
+  const old = Date.now() - 25 * 60 * 60 * 1000
+  const recent = 'c'.repeat(32)
+  room.meta.blobs = { [keep]: { size: 1, ts: old }, [drop]: { size: 1, ts: old }, [recent]: { size: 1, ts: Date.now() - 2 * 60 * 60 * 1000 } }
   for (const id of [keep, drop]) { fs.mkdirSync(path.join(dataDir, 'blobs', 'gc'), { recursive: true }); fs.writeFileSync(path.join(dataDir, 'blobs', 'gc', id), 'x') }
   doc.getMap('blobs').set('img.png', { hash: 'h', size: 1, stored: { id: keep, key: 'k1' } })
   await waitFor(() => room.doc.getMap('blobs').has('img.png'))
@@ -301,4 +315,18 @@ test('stored files go with their room when it expires, and unreferenced ones whe
   await waitFor(() => !srv.rooms.has('gc'), 3000)
   await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'gc', drop)))
   assert.equal(fs.existsSync(path.join(dataDir, 'blobs', 'gc', keep)), true)
+  const meta = JSON.parse(fs.readFileSync(path.join(dataDir, 'gc.json'), 'utf8'))
+  assert.deepEqual(Object.keys(meta.blobs).sort(), [keep, recent], 'unreferenced uploads get a day\'s grace')
+})
+
+test('the sweep removes the tombstone of a session ended long ago', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('tomb')
+  const long = Date.now() - 40 * 86400e3
+  fs.writeFileSync(path.join(dataDir, 'gone.json'), JSON.stringify({ ended: true, endedAt: long, lastActive: long }))
+  fs.writeFileSync(path.join(dataDir, 'recent.json'), JSON.stringify({ ended: true, endedAt: Date.now(), lastActive: Date.now() }))
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, roomTtlDays: 30 })
+  defer(() => srv.close())
+  assert.equal(fs.existsSync(path.join(dataDir, 'gone.json')), false)
+  assert.equal(fs.existsSync(path.join(dataDir, 'recent.json')), true, 'a recently ended session stays refused')
 })
