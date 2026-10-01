@@ -13,10 +13,12 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/
 const NOT_A_LINK = "That doesn't look like an agent invite link. Copy the whole link from Quilt."
 // Refresh a little early so the access key doesn't lapse mid-request.
 const EARLY_MS = 60 * 1000
-// A refresh lock left behind by a process that died is ignored after this long.
-const LOCK_STALE_MS = 30 * 1000
+// A refresh lock is stale once the process holding it is gone; as a safety net, also once
+// it is this old (a live holder never needs this long: its refresh times out first).
+const LOCK_MAX_AGE_MS = 5 * 60 * 1000
 const LOCK_RETRY_MS = 50
-// Well under LOCK_STALE_MS, so a slow refresh never outlives its lock.
+// How long to wait for another process's refresh before giving up.
+const LOCK_WAIT_MS = 30 * 1000
 const REFRESH_TIMEOUT_MS = 15 * 1000
 
 export function agentFile (name, dir = quiltHome()) {
@@ -111,29 +113,39 @@ export function readAgent ({ name, dir }) {
 
 const readLock = (lock) => { try { return fs.readFileSync(lock, 'utf8') } catch { return null } }
 
-/**
- * Removes a lock left by a process that died. Renaming is atomic, so only one
- * process can take it over; and if the lock was replaced by a live one in the
- * meantime (its contents changed), that one is put back. (`beforeRename` lets
- * tests step in at the racy moment.)
- */
-export function takeOverStale (lock, beforeRename = () => {}) {
-  let seen
+/** Whether a lock holding `contents` ("<pid>.<token>") and last changed at `mtimeMs` is stale. */
+function lockIsStale (contents, mtimeMs) {
+  if (Date.now() - mtimeMs > LOCK_MAX_AGE_MS) return true
+  const pid = Number(String(contents).split('.')[0])
+  // No pid yet (its holder has only just made it): only age can make it stale.
+  if (!Number.isInteger(pid) || pid <= 0) return false
   try {
-    if (Date.now() - fs.statSync(lock).mtimeMs <= LOCK_STALE_MS) return false
-    seen = fs.readFileSync(lock, 'utf8')
-  } catch {
-    return true // gone already: try to take it
-  }
-  const aside = `${lock}.stale.${process.pid}.${crypto.randomBytes(6).toString('hex')}`
-  beforeRename()
-  try { fs.renameSync(lock, aside) } catch { return false }
-  if (readLock(aside) !== seen) {
-    try { fs.linkSync(aside, lock) } catch {}
-    fs.rmSync(aside, { force: true })
+    process.kill(pid, 0)
     return false
+  } catch (err) {
+    return err.code === 'ESRCH' // EPERM: running, as someone else
   }
-  fs.rmSync(aside, { force: true })
+}
+
+/**
+ * Removes the lock when its holder is gone, unless it changed while we looked.
+ * Returns true when the lock is gone (so try to take it again). Two processes
+ * removing one crashed holder's lock at the very same instant can both get in;
+ * that needs a crash and a tie, so it is accepted. (`between` lets tests step in
+ * between the two reads.)
+ */
+export function takeOverStale (lock, between = () => {}) {
+  let seen, st
+  try {
+    seen = fs.readFileSync(lock, 'utf8')
+    st = fs.statSync(lock)
+  } catch {
+    return true // gone already
+  }
+  if (!lockIsStale(seen, st.mtimeMs)) return false
+  between()
+  if (readLock(lock) !== seen) return false
+  fs.rmSync(lock, { force: true })
   return true
 }
 
@@ -144,8 +156,7 @@ export function takeOverStale (lock, beforeRename = () => {}) {
 export async function withLock (file, fn) {
   const lock = `${file}.lock`
   const token = `${process.pid}.${crypto.randomBytes(8).toString('hex')}`
-  // Wait long enough for a lock left by a dead process to go stale.
-  const until = Date.now() + LOCK_STALE_MS + 5000
+  const until = Date.now() + LOCK_WAIT_MS
   for (;;) {
     let fd = null
     try {
@@ -158,7 +169,7 @@ export async function withLock (file, fn) {
       try {
         return await fn()
       } finally {
-        // Only our own lock: another process may have taken over one it thought stale.
+        // Only our own lock, never one another process has since made.
         if (readLock(lock) === token) fs.rmSync(lock, { force: true })
       }
     }

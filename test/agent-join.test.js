@@ -182,56 +182,6 @@ test('two processes refreshing one agent at once make a single refresh, and both
   assert.ok(!fs.existsSync(agentFile('shared', dir) + '.lock'), 'the lock is released')
 })
 
-test('a refresh lock left by a process that died is ignored once it is stale', async () => {
-  const dir = tmp()
-  const saved = await agentJoin({ link: await newLink(), name: 'stale', dir, log: () => {} })
-  const file = agentFile('stale', dir)
-  fs.writeFileSync(file, JSON.stringify({ ...saved, accessExpiresAt: Date.now() - 1 }))
-  fs.writeFileSync(file + '.lock', '')
-  const old = new Date(Date.now() - 31_000)
-  fs.utimesSync(file + '.lock', old, old)
-  const s = await agentAccess({ name: 'stale', dir })
-  assert.notEqual(s.accessKey, saved.accessKey)
-  assert.ok(!fs.existsSync(file + '.lock'))
-})
-
-test('two processes finding a stale lock take it over one at a time', async () => {
-  const dir = tmp()
-  const file = path.join(dir, 'a.json')
-  const lock = file + '.lock'
-  fs.writeFileSync(lock, 'dead')
-  const old = new Date(Date.now() - 31_000)
-  fs.utimesSync(lock, old, old)
-  const log = path.join(dir, 'log')
-  const go = path.join(dir, 'go')
-  const mod = pathToFileURL(path.resolve('src/agent-join.js')).href
-  const script = `
-    import fs from 'node:fs'
-    import { withLock } from '${mod}'
-    console.log('ready')
-    while (!fs.existsSync(${JSON.stringify(go)})) await new Promise((resolve) => setTimeout(resolve, 2))
-    await withLock(${JSON.stringify(file)}, async () => {
-      fs.appendFileSync(${JSON.stringify(log)}, 'start\\n')
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      fs.appendFileSync(${JSON.stringify(log)}, 'end\\n')
-    })
-  `
-  const children = [0, 1].map(() => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] })
-    let err = ''
-    child.stderr.on('data', (d) => { err += d })
-    return {
-      ready: new Promise((resolve) => child.stdout.on('data', resolve)),
-      done: new Promise((resolve) => child.on('exit', (code) => resolve({ code, err })))
-    }
-  })
-  await Promise.all(children.map((c) => c.ready))
-  fs.writeFileSync(go, '')
-  for (const r of await Promise.all(children.map((c) => c.done))) assert.equal(r.code, 0, r.err)
-  assert.equal(fs.readFileSync(log, 'utf8'), 'start\nend\nstart\nend\n', 'never both inside')
-  assert.deepEqual(fs.readdirSync(dir).sort(), ['go', 'log'], 'no lock or stale leftovers')
-})
-
 test('releasing never removes a lock that is no longer ours', async () => {
   const dir = tmp()
   const file = path.join(dir, 'a.json')
@@ -242,19 +192,48 @@ test('releasing never removes a lock that is no longer ours', async () => {
   assert.equal(fs.readFileSync(file + '.lock', 'utf8'), 'someone-else')
 })
 
-test('a stale lock that another process has just replaced with a live one is left alone', () => {
+/** A pid that was running a moment ago and isn't now. */
+async function deadPid () {
+  const child = spawn(process.execPath, ['-e', ''])
+  await new Promise((resolve) => child.on('exit', resolve))
+  return child.pid
+}
+const aged = (file, ms) => { const d = new Date(Date.now() - ms); fs.utimesSync(file, d, d) }
+
+test('a lock held by a running process is never taken over, however old', async (tc) => {
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
+  tc.after(() => child.kill())
+  await new Promise((resolve) => child.on('spawn', resolve))
+  const lock = path.join(tmp(), 'a.json.lock')
+  fs.writeFileSync(lock, `${child.pid}.abc`)
+  aged(lock, 4 * 60_000)
+  assert.equal(takeOverStale(lock), false)
+  assert.equal(fs.readFileSync(lock, 'utf8'), `${child.pid}.abc`)
+})
+
+test("a lock whose process is gone is taken over, and the agent's keys get refreshed", async () => {
   const dir = tmp()
-  const lock = path.join(dir, 'a.json.lock')
-  fs.writeFileSync(lock, 'dead')
-  const old = new Date(Date.now() - 31_000)
-  fs.utimesSync(lock, old, old)
-  // Between our look at the stale lock and our takeover, another process takes it over and locks.
-  const took = takeOverStale(lock, () => {
-    fs.renameSync(lock, lock + '.theirs')
-    fs.rmSync(lock + '.theirs')
-    fs.writeFileSync(lock, 'live')
-  })
-  assert.equal(took, false)
-  assert.equal(fs.readFileSync(lock, 'utf8'), 'live', 'their lock is still there')
-  assert.deepEqual(fs.readdirSync(dir), ['a.json.lock'], 'nothing left aside')
+  const saved = await agentJoin({ link: await newLink(), name: 'orphan', dir, log: () => {} })
+  const file = agentFile('orphan', dir)
+  fs.writeFileSync(file, JSON.stringify({ ...saved, accessExpiresAt: Date.now() - 1 }))
+  fs.writeFileSync(file + '.lock', `${await deadPid()}.abc`)
+  const s = await agentAccess({ name: 'orphan', dir })
+  assert.notEqual(s.accessKey, saved.accessKey)
+  assert.ok(!fs.existsSync(file + '.lock'))
+})
+
+test('a lock older than 5 minutes is taken over even if its pid is running', () => {
+  const lock = path.join(tmp(), 'a.json.lock')
+  fs.writeFileSync(lock, `${process.pid}.abc`)
+  aged(lock, 5 * 60_000 + 1000)
+  assert.equal(takeOverStale(lock), true)
+  assert.ok(!fs.existsSync(lock))
+})
+
+test('a stale lock that changed between our two reads is left alone', async () => {
+  const lock = path.join(tmp(), 'a.json.lock')
+  fs.writeFileSync(lock, `${await deadPid()}.abc`)
+  // Another process took it over and locked between our two reads.
+  assert.equal(takeOverStale(lock, () => fs.writeFileSync(lock, `${process.pid}.theirs`)), false)
+  assert.equal(fs.readFileSync(lock, 'utf8'), `${process.pid}.theirs`)
 })
