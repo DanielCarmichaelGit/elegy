@@ -1,9 +1,16 @@
 # base is web because the repo root package.json belongs to the Electron app, not the website
+#
+# Deploy from web/, not the repo root:
+#   cd web && npm ci && NETLIFY_SITE_ID=b9131760-8605-44f7-b9e1-3b347fc212b0 netlify deploy --build --prod
+# The build writes the proxy's edge function to web/.netlify/edge-functions-dist, but
+# `netlify deploy` only uploads <cwd>/.netlify/edge-functions-dist, so a deploy run from the
+# repo root silently ships without proxy.js (no session refresh, no early sign-in redirects).
 [build]
   base = "web"
   command = "npm run build"
-  # Resolved from the repo root, not from base
-  publish = "web/.next"
+  # Relative to base when run from web/ (or offline). From the repo root the CLI resolves it
+  # against the root instead, finds no .next and fails the build, which stops that broken deploy.
+  publish = ".next"
 
 [build.environment]
   NODE_VERSION = "22"
