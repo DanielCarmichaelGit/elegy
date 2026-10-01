@@ -66,7 +66,7 @@ if (!app.requestSingleInstanceLock()) {
 
 async function start () {
   ui = await startUi({ port: 0, onShutdown: () => app.quit() })
-  registerProcess('app', { port: ui.port, desktop: true })
+  registerProcess('app', { port: ui.port, url: ui.url, desktop: true })
   process.on('SIGTERM', () => app.quit()) // `quilt stop`
   if (app.isPackaged) writeCliShim()
 

@@ -5,15 +5,10 @@
       "name": "Quilt app",
       "runtimeExecutable": "node",
       "runtimeArgs": [
-        "bin/quilt.js",
-        "ui",
-        "--port",
-        "7499",
-        "--no-open",
-        "--preview"
+        "scripts/preview-app.mjs",
+        "7499"
       ],
-      "port": 7499,
-      "url": "http://localhost:7499"
+      "port": 7499
     },
     {
       "name": "Quilt website",

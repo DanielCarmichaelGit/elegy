@@ -273,7 +273,7 @@ async function ui () {
       process.exit(0)
     }
   })
-  registerProcess('app', { port: app.port })
+  registerProcess('app', { port: app.port, url: app.url })
   console.log(`quilt is running at:\n\n  ${app.url}\n`)
   console.log('Keep this terminal open while you work. Ctrl+C to stop, or `quilt stop` to shut everything down.')
   if (!values['no-open']) openBrowser(app.url)

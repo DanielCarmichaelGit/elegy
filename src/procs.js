@@ -15,8 +15,10 @@ const alive = (pid) => {
 /** Records this process as a running quilt `kind` ('relay', 'app', 'sync'). */
 export function registerProcess (kind, info = {}) {
   const file = path.join(procsDir(), `${process.pid}.json`)
-  fs.mkdirSync(procsDir(), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, kind, ...info, startedAt: Date.now() }))
+  fs.mkdirSync(procsDir(), { recursive: true, mode: 0o700 })
+  // Private: an app's entry carries its link (with the per-launch token).
+  fs.writeFileSync(file, JSON.stringify({ pid: process.pid, kind, ...info, startedAt: Date.now() }), { mode: 0o600 })
+  fs.chmodSync(file, 0o600)
   process.on('exit', () => { try { fs.rmSync(file, { force: true }) } catch {} })
 }
 
@@ -50,6 +52,13 @@ export async function stopProcesses ({ exclude = process.pid, timeoutMs = 5000 }
     fs.rmSync(path.join(procsDir(), `${p.pid}.json`), { force: true })
   }
   return targets
+}
+
+/** The newest running app's private link, preferring the desktop app; null if none. */
+export function runningAppUrl () {
+  const apps = listProcesses().filter((p) => p.kind === 'app' && p.url)
+  const pick = apps.filter((p) => p.desktop).pop() || apps.pop()
+  return pick ? pick.url : null
 }
 
 /** One-line description of a registered process, for `quilt stop`. */

@@ -42,3 +42,19 @@ test('stale registry entries are ignored and removed', async () => {
   assert.deepEqual(listProcesses(), [])
   assert.equal(fs.existsSync(path.join(procs, '999999.json')), false)
 })
+
+test('registry entries are private, and runningAppUrl prefers the desktop app', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-home-'))
+  const procs = path.join(dir, '.quilt', 'procs')
+  fs.mkdirSync(procs, { recursive: true })
+  // Two live "apps": this test process stands in for both pids (alive), plus a dead one.
+  const me = process.pid
+  fs.writeFileSync(path.join(procs, `${me}.json`), JSON.stringify({ pid: me, kind: 'app', url: 'http://127.0.0.1:1/?t=cli', startedAt: 1 }))
+  const parent = process.ppid
+  fs.writeFileSync(path.join(procs, `${parent}.json`), JSON.stringify({ pid: parent, kind: 'app', url: 'http://127.0.0.1:2/?t=desk', desktop: true, startedAt: 2 }))
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', "import { runningAppUrl } from './src/procs.js'; console.log(runningAppUrl())"], { env: { ...process.env, HOME: dir }, encoding: 'utf8' })
+  assert.equal(out.trim(), 'http://127.0.0.1:2/?t=desk')
+
+  const reg = execFileSync(process.execPath, ['--input-type=module', '-e', "import fs from 'node:fs'; import path from 'node:path'; import os from 'node:os'; import { registerProcess } from './src/procs.js'; registerProcess('app', { url: 'x' }); console.log((fs.statSync(path.join(os.homedir(), '.quilt', 'procs', process.pid + '.json')).mode & 0o777).toString(8))"], { env: { ...process.env, HOME: dir }, encoding: 'utf8' })
+  assert.equal(reg.trim(), '600')
+})
