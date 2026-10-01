@@ -121,8 +121,11 @@ async function apiCmd () {
   }
   // In memory anyone may use "Bearer local", so only listen on this machine unless asked.
   const host = values.host || (values.memory ? '127.0.0.1' : '0.0.0.0')
+  const port = Number(values.port || env.PORT || 8787)
   const api = await startApi({
-    port: Number(values.port || env.PORT || 8787), host, store, verifyUser, mailer,
+    port, host, store, verifyUser, mailer,
+    // Where agents reach this API (invite links point here).
+    apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
   })

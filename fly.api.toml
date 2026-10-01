@@ -14,6 +14,7 @@ primary_region = "iad"
 [env]
   PORT = "8080"
   QUILT_TRUST_PROXY = "1"
+  QUILT_API_PUBLIC_URL = "https://api.heyquilt.com"
 
 [http_service]
   internal_port = 8080

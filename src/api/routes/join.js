@@ -1,0 +1,82 @@
+// An AI opening an agent invite link. A GET without a name only explains, so
+// link previews and scanners never use the invite up; a POST, or a GET with
+// name, provider and type, uses it once and hands back the agent's first keys.
+import { HttpError, Raw, cleanName, stripInvisible } from '../http.js'
+import { hashToken } from '../tokens.js'
+import { parsePublicKey } from '../../identity.js'
+import { joinInstructions, joinNext } from '../join-text.js'
+import { inviteStatus } from './agent-invites.js'
+
+const MAX_DESCRIPTION = 180
+const GONE = {
+  used: 'this invite was already used; ask for a new one',
+  expired: 'this invite has expired; ask for a new one',
+  cancelled: 'this invite was cancelled; ask for a new one'
+}
+
+export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth }) {
+  const inviteFor = async (token) => (String(token).startsWith('qj_') ? store.agentInviteByToken(hashToken(token)) : null)
+  const statusOf = (invite) => (invite ? inviteStatus(invite, now()) : 'unknown')
+
+  // The agent's profile, checked in full before the invite is touched.
+  function profile (src) {
+    const publicKey = src.publicKey == null || src.publicKey === '' ? null : String(src.publicKey)
+    if (publicKey && !parsePublicKey(publicKey)) throw new HttpError(400, 'publicKey must be an Ed25519 key (spki, base64url)')
+    return {
+      name: cleanName(src.name, 40, 'give your name (up to 40 characters)'),
+      provider: cleanName(src.provider, 40, 'give your provider, e.g. Anthropic, OpenAI or Cursor'),
+      type: cleanName(src.type, 40, 'give your type, e.g. coding agent'),
+      description: stripInvisible(src.description ?? '').slice(0, MAX_DESCRIPTION).join('').trim(),
+      publicKey
+    }
+  }
+
+  async function join (token, src) {
+    const invite = await inviteFor(token)
+    const status = statusOf(invite)
+    if (status === 'unknown') throw new HttpError(404, "this invite link isn't valid")
+    if (status !== 'waiting') throw new HttpError(410, GONE[status])
+    // Everything the agent sent is checked first, so a typo never burns the invite.
+    const p = profile(src)
+    if (p.publicKey && await store.agentByPublicKey(p.publicKey)) throw new HttpError(409, 'that publicKey already belongs to an agent')
+    // Claim first, so two joins racing on one link can't both make an agent.
+    if (!await store.claimAgentInvite(invite.id)) throw new HttpError(410, GONE.used)
+    let agent
+    try {
+      agent = await store.createAgent({ ...p, ownerUserId: invite.ownerUserId, orgId: invite.orgId, invitedBy: invite.createdBy })
+      if (invite.orgId) {
+        const m = await store.addAgentMember({ orgId: invite.orgId, agentId: agent.id, roleId: invite.roleId })
+        for (const x of invite.teams) {
+          // A team deleted since the invite was made is skipped.
+          if (await store.teamById(invite.orgId, x.teamId)) await store.addTeamMember({ teamId: x.teamId, memberId: m.id, access: x.access, scopes: x.scopes })
+        }
+      }
+      await store.setInviteAgent(invite.id, agent.id)
+      const keys = await agentAuth.mintKeys(agent.id)
+      return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl }) }
+    } catch (err) {
+      // Undo the half-made agent and reopen the link, so the AI can simply try again.
+      if (agent) await store.deleteAgent(agent.id).catch(() => {})
+      await store.releaseAgentInvite(invite.id).catch(() => {})
+      throw err
+    }
+  }
+
+  return [
+    ['POST', /^\/v1\/join\/([^/]+)$/, async (req, body, [token]) => {
+      limitJoin(req)
+      return join(token, body)
+    }],
+
+    ['GET', /^\/v1\/join\/([^/]+)$/, async (req, body, [token]) => {
+      limitJoin(req)
+      const q = new URL(req.url, 'http://x').searchParams
+      // Only a GET that names the agent uses the invite.
+      if (['name', 'provider', 'type'].some((k) => q.has(k))) return join(token, Object.fromEntries(q))
+      const invite = await inviteFor(token)
+      const status = statusOf(invite)
+      const text = joinInstructions({ link: `${apiUrl}/v1/join/${encodeURIComponent(token)}`, apiUrl, status, expiresAt: invite?.expiresAt })
+      return new Raw(status === 'waiting' ? 200 : status === 'unknown' ? 404 : 410, text)
+    }]
+  ]
+}

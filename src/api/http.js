@@ -27,3 +27,8 @@ export function cleanName (value, max, message) {
   if (!s) throw new HttpError(400, message)
   return s
 }
+
+/** A non-JSON reply, e.g. the plain-text join instructions an AI reads. */
+export class Raw {
+  constructor (status, body, type = 'text/markdown; charset=utf-8') { this.status = status; this.body = body; this.type = type }
+}
