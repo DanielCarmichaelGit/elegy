@@ -8,6 +8,7 @@ import { uniqueSlug } from '../src/api/slugs.js'
 import { newToken, hashToken } from '../src/api/tokens.js'
 
 export const SITE = 'https://quilt.test'
+export const API_URL = 'https://api.quilt.test'
 // A bearer "user:<id>" stands in for a website user's JWT.
 const verifyUser = async (t) => (t && t.startsWith('user:') ? { userId: t.slice(5), email: '' } : null)
 
@@ -24,7 +25,7 @@ export async function startTestApi (opts = {}) {
   for (const [id, name, email, confirmed = true, kind = 'personal'] of CAST) store.addUser(id, { name, email, confirmed, kind })
   const sent = []
   const mailer = { send: async (m) => { sent.push(m) } }
-  const api = await startApi({ store, verifyUser, siteUrl: SITE, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, tokenLimit: 1000, mailer, ...opts })
+  const api = await startApi({ store, verifyUser, siteUrl: SITE, apiUrl: API_URL, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, tokenLimit: 1000, mailer, ...opts })
   const call = async (method, path, body, userId, headers = {}) => {
     const res = await fetch(api.url + path, {
       method,
