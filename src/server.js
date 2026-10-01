@@ -857,6 +857,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
     if (mm) {
+      // An AI link carries no pass, so with sign-in on it would get into a session without one.
+      // Agents join as their own members now; links saved before that stop working here.
+      if (passKey) return text(401, SIGN_IN)
       const k = tokenKey(mm[1])
       const link = links.get(k) || null
       let room = null

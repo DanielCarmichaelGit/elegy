@@ -118,6 +118,20 @@ test('session HTTP routes need a pass in x-quilt-pass', async (t) => {
   assert.equal((await link({ 'x-quilt-pass': pass })).status, 200)
 })
 
+test('with sign-in on, AI links (/mcp/<token>) are refused, even ones made before', async (t) => {
+  const srv = await relay(t)
+  const identity = generateIdentity()
+  const r = room()
+  await connect(srv, r, { identity, pass: makePass({ identity }) })
+  const token = 'tok_' + 'b'.repeat(30)
+  const made = await http(srv, '/agent/link', { method: 'POST', headers: { 'content-type': 'application/json', 'x-quilt-pass': makePass({ identity }) }, body: JSON.stringify({ token, room: r, secret: 's', name: 'x' }) })
+  assert.equal(made.status, 200, 'a live link, like the ones saved in agent-links.json')
+  const mcp = await http(srv, `/mcp/${token}`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'x', version: '1' } } }) })
+  assert.equal(mcp.status, 401)
+  assert.equal(await mcp.text(), SIGN_IN)
+  assert.equal((await http(srv, `/mcp/${'c'.repeat(30)}`)).status, 401)
+})
+
 test('a pass that runs out closes the connection with 4419', async (t) => {
   const srv = await relay(t)
   const identity = generateIdentity()
