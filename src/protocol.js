@@ -15,6 +15,7 @@ export const MSG_CLAIMS = 12 // relay -> client: JSON { claims, reply?: { id, ok
 export const MSG_ACCESS = 13 // relay -> client: JSON { state: 'pending'|'approved', role, scopes, owner }
 export const MSG_ADMIN = 14 // client (owner) -> relay: JSON { id, op: 'approve'|'deny'|'set'|'remove', key, role, scopes }
 export const MSG_MEMBERS = 15 // relay -> client: JSON { members, pending?, reply?: { id, ok, error } }
+export const MSG_PASS = 16 // client -> relay: JSON { pass }: a fresh session pass, sent at least every 5 minutes
 
 // WebSocket close codes the relay uses to refuse a client for good.
 export const CLOSE_AUTH_FAILED = 4401
@@ -25,6 +26,9 @@ export const CLOSE_DENIED = 4406 // the owner said no, or removed you
 export const CLOSE_ROOM_FULL = 4413
 
 export const CLOSE_ENDED = 4410 // the owner ended the session and it was deleted
+
+// The connection's session pass ran out without a new one. Clients reconnect with a fresh pass.
+export const CLOSE_PASS_EXPIRED = 4419
 
 // Sent to apps too old for a session that now stores large files. It reuses
 // 4401 because every app that knows close codes stops on it and shows the
