@@ -18,6 +18,8 @@ const TEAM = 'id, org_id, name, created_at'
 const TEAM_MEMBER = 'team_id, member_id, access, scopes, added_at'
 const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, accepted_at, cancelled_at, created_at'
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
+const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
+const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
 
 // One mapper for every table: camelCases the columns and turns every `*At` field
 // (createdAt, updatedAt, lastSeenAt, lastUsedAt, revokedAt, expiresAt, joinedAt,
@@ -86,6 +88,49 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     // Only for undoing a half-finished join; cascades to its keys and membership.
     async deleteAgent (id) { await one(db.from('agents').delete().eq('id', id)) },
+    // Agent invites: only the token's hash is stored. A deleted role clears
+    // role_id by itself (on delete set null (role_id)).
+    async createAgentInvite (i) {
+      return rowFrom(await one(db.from('agent_invites').insert(toSnake({ ...i, expiresAt: ts(i.expiresAt) })).select(AGENT_INVITE).single()))
+    },
+    async agentInviteByToken (h) { return rowFrom(await one(db.from('agent_invites').select(AGENT_INVITE).eq('token_hash', h).maybeSingle())) },
+    async agentInviteById (id) { return rowFrom(await one(db.from('agent_invites').select(AGENT_INVITE).eq('id', id).maybeSingle())) },
+    async listAgentInvites ({ ownerUserId, orgId }) {
+      const q = db.from('agent_invites').select(AGENT_INVITE)
+      return (await one((orgId ? q.eq('org_id', orgId) : q.eq('owner_user_id', ownerUserId)).order('created_at', { ascending: false }).limit(50))).map(rowFrom)
+    },
+    // Check-and-set: an invite is used once, and only while it's open.
+    async claimAgentInvite (id) {
+      const at = new Date().toISOString()
+      const rows = await one(db.from('agent_invites').update({ used_at: at }).eq('id', id).is('used_at', null).is('cancelled_at', null).gt('expires_at', at).select('id'))
+      return rows.length > 0
+    },
+    // Undoes a claim when making the agent failed, so the link can be tried again.
+    async releaseAgentInvite (id) { await one(db.from('agent_invites').update({ used_at: null, used_by_agent_id: null }).eq('id', id)) },
+    async setInviteAgent (id, agentId) { await one(db.from('agent_invites').update({ used_by_agent_id: agentId }).eq('id', id)) },
+    // Check-and-set: only a waiting invite is cancelled.
+    async cancelAgentInvite (id) {
+      const rows = await one(db.from('agent_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).select('id'))
+      return rows.length > 0
+    },
+
+    // Agent keys: hashes only.
+    async createAgentKeys (k) {
+      return rowFrom(await one(db.from('agent_keys')
+        .insert(toSnake({ ...k, accessExpiresAt: ts(k.accessExpiresAt), refreshExpiresAt: ts(k.refreshExpiresAt) }))
+        .select(AGENT_KEY).single()))
+    },
+    async agentKeyByAccess (h) { return rowFrom(await one(db.from('agent_keys').select(AGENT_KEY).eq('access_hash', h).maybeSingle())) },
+    async agentKeyByRefresh (h) { return rowFrom(await one(db.from('agent_keys').select(AGENT_KEY).eq('refresh_hash', h).maybeSingle())) },
+    async listAgentKeys (agentId) { return (await one(db.from('agent_keys').select(AGENT_KEY).eq('agent_id', agentId).order('created_at'))).map(rowFrom) },
+    // Check-and-set: a refresh key is spent once, and never after it was revoked.
+    async claimRefresh (id) {
+      const rows = await one(db.from('agent_keys').update({ refreshed_at: new Date().toISOString() }).eq('id', id).is('refreshed_at', null).is('revoked_at', null).select('id'))
+      return rows.length > 0
+    },
+    async revokeFamily (familyId) {
+      await one(db.from('agent_keys').update({ revoked_at: new Date().toISOString() }).eq('family_id', familyId).is('revoked_at', null))
+    },
     // Deleting the auth user cascades through profiles, devices, links and agents.
     async deleteUser (userId) {
       const { error } = await db.auth.admin.deleteUser(userId)
@@ -183,20 +228,22 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return rows.map(({ org_members: m, ...r }) => ({ ...rowFrom(r), name: m?.profiles?.name || m?.agents?.name || '', kind: m?.agent_id ? 'agent' : 'person' }))
     },
     async teamsOfMember (memberId) {
-      return (await one(db.from('team_members').select('team_id, access').eq('member_id', memberId))).map((r) => ({ teamId: r.team_id, access: r.access }))
+      return (await one(db.from('team_members').select('team_id, access, scopes').eq('member_id', memberId))).map((r) => ({ teamId: r.team_id, access: r.access, scopes: r.scopes || [] }))
     },
     // team_members.org_id is not null (composite FKs to teams(id, org_id) and
     // org_members(id, org_id)), so look the team's org up first and stamp it
     // on the upsert; a missing team fails the same way the real FK would.
-    async addTeamMember ({ teamId, memberId, access }) {
+    async addTeamMember ({ teamId, memberId, access, scopes = [] }) {
       const team = await one(db.from('teams').select('org_id').eq('id', teamId).maybeSingle())
       if (!team) throw fkViolation('team')
       return rowFrom(await one(db.from('team_members')
-        .upsert({ team_id: teamId, member_id: memberId, access, org_id: team.org_id }, { onConflict: 'team_id,member_id' })
+        .upsert({ team_id: teamId, member_id: memberId, access, scopes, org_id: team.org_id }, { onConflict: 'team_id,member_id' })
         .select(TEAM_MEMBER).single()))
     },
-    async setTeamAccess (teamId, memberId, access) {
-      return rowFrom(await one(db.from('team_members').update({ access }).eq('team_id', teamId).eq('member_id', memberId).select(TEAM_MEMBER).maybeSingle()))
+    // Folders only change when given, so an access-only change keeps them.
+    async setTeamAccess (teamId, memberId, access, scopes) {
+      return rowFrom(await one(db.from('team_members').update(scopes === undefined ? { access } : { access, scopes })
+        .eq('team_id', teamId).eq('member_id', memberId).select(TEAM_MEMBER).maybeSingle()))
     },
     async removeTeamMember (teamId, memberId) {
       return (await one(db.from('team_members').delete().eq('team_id', teamId).eq('member_id', memberId).select('team_id'))).length > 0

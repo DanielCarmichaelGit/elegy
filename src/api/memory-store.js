@@ -11,6 +11,9 @@ const duplicate = (what) => Object.assign(new Error(`${what} already exists`), {
 // composite-FK checks at insert time (a row that doesn't point at a valid
 // parent) — `verb` lets each call site read correctly for which case it is.
 const fkViolation = (what, verb = 'is still referenced') => Object.assign(new Error(`${what} ${verb}`), { code: '23503' })
+// Postgres's check-violation code, mirrored for the checks the schema makes.
+const checkViolation = (what) => Object.assign(new Error(what), { code: '23514' })
+const tooManyFolders = (scopes) => { if (scopes.length > 20) throw checkViolation('at most 20 folders') }
 
 export function createMemoryStore ({ now = Date.now } = {}) {
   const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map()
@@ -105,6 +108,54 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     // Only for undoing a half-finished join.
     async deleteAgent (id) { dropAgent(id) },
+    // Agent invites: only the token's hash is kept. Mirrors the one-home and
+    // no-role-without-an-org checks and the composite (role_id, org_id) key.
+    async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt }) {
+      if ((ownerUserId == null) === (orgId == null) || (roleId && !orgId)) throw checkViolation('an invite is for one person or one org')
+      if (!roleInOrg(roleId, orgId)) throw fkViolation('role', 'is not in this org')
+      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
+      agentInvites.set(row.id, row); return copy(row)
+    },
+    async agentInviteByToken (h) { return copy(all(agentInvites, (i) => i.tokenHash === h)[0]) },
+    async agentInviteById (id) { return copy(agentInvites.get(id)) },
+    async listAgentInvites ({ ownerUserId, orgId }) {
+      return all(agentInvites, (i) => (orgId ? i.orgId === orgId : i.ownerUserId === ownerUserId))
+        .sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(copy)
+    },
+    // Check-and-set: an invite is used once, and only while it's open.
+    async claimAgentInvite (id) {
+      const i = agentInvites.get(id)
+      if (!i || i.usedAt || i.cancelledAt || i.expiresAt <= now()) return false
+      i.usedAt = now(); return true
+    },
+    // Undoes a claim when making the agent failed, so the link can be tried again.
+    async releaseAgentInvite (id) { const i = agentInvites.get(id); if (i) Object.assign(i, { usedAt: null, usedByAgentId: null }) },
+    async setInviteAgent (id, agentId) { agentInvites.get(id).usedByAgentId = agentId },
+    // Check-and-set: only a waiting invite is cancelled.
+    async cancelAgentInvite (id) {
+      const i = agentInvites.get(id)
+      if (!i || i.usedAt || i.cancelledAt) return false
+      i.cancelledAt = now(); return true
+    },
+
+    // Agent keys: hashes only.
+    async createAgentKeys (k) {
+      if (!agents.has(k.agentId)) throw fkViolation('agent', 'does not exist')
+      const row = { id: uuid(), refreshedAt: null, revokedAt: null, createdAt: now(), ...k }
+      keyRows.set(row.id, row); return copy(row)
+    },
+    async agentKeyByAccess (h) { return copy(all(keyRows, (k) => k.accessHash === h)[0]) },
+    async agentKeyByRefresh (h) { return copy(all(keyRows, (k) => k.refreshHash === h)[0]) },
+    async listAgentKeys (agentId) { return all(keyRows, (k) => k.agentId === agentId).map(copy) },
+    // Check-and-set: a refresh key is spent once, and never after it was revoked.
+    async claimRefresh (id) {
+      const k = keyRows.get(id)
+      if (!k || k.refreshedAt || k.revokedAt) return false
+      k.refreshedAt = now(); return true
+    },
+    async revokeFamily (familyId) {
+      for (const k of keyRows.values()) if (k.familyId === familyId && !k.revokedAt) k.revokedAt = now()
+    },
     async deleteUser (userId) {
       profiles.delete(userId); users.delete(userId)
       for (const [id, d] of devices) if (d.userId === userId) devices.delete(id)
@@ -204,6 +255,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
         if (i.roleId === id && !inviteOpen(i)) invites.delete(k)
       }
       if (all(invites, (i) => i.roleId === id).length) throw fkViolation('role')
+      // agent_invites' role key is "on delete set null (role_id)": the invite keeps going without a role.
+      for (const i of agentInvites.values()) if (i.roleId === id) i.roleId = null
       roles.delete(id)
     },
     // In use: someone holds it, or an open invite would hand it out.
@@ -270,23 +323,29 @@ export function createMemoryStore ({ now = Date.now } = {}) {
         })
     },
     async teamsOfMember (memberId) {
-      return all(teamMembers, (tm) => tm.memberId === memberId).map((tm) => ({ teamId: tm.teamId, access: tm.access }))
+      return all(teamMembers, (tm) => tm.memberId === memberId).map((tm) => ({ teamId: tm.teamId, access: tm.access, scopes: [...tm.scopes] }))
     },
     // Mirrors the composite (team_id, org_id) / (member_id, org_id) foreign
     // keys: a team and the member it holds must be in the same org.
-    async addTeamMember ({ teamId, memberId, access }) {
+    async addTeamMember ({ teamId, memberId, access, scopes = [] }) {
       const team = teams.get(teamId)
       const member = members.get(memberId)
       if (!team || !member || team.orgId !== member.orgId) throw fkViolation('team or member', 'is not in this org')
+      tooManyFolders(scopes)
       const key = `${teamId}:${memberId}`
-      const tm = teamMembers.get(key) || { teamId, memberId, scopes: [], addedAt: now() }
+      const tm = teamMembers.get(key) || { teamId, memberId, addedAt: now() }
       tm.access = access
+      tm.scopes = [...scopes]
       teamMembers.set(key, tm); return copy(tm)
     },
-    async setTeamAccess (teamId, memberId, access) {
+    // Folders only change when given, so an access-only change keeps them.
+    async setTeamAccess (teamId, memberId, access, scopes) {
       const tm = teamMembers.get(`${teamId}:${memberId}`)
       if (!tm) return null
-      tm.access = access; return copy(tm)
+      if (scopes !== undefined) tooManyFolders(scopes)
+      tm.access = access
+      if (scopes !== undefined) tm.scopes = [...scopes]
+      return copy(tm)
     },
     async removeTeamMember (teamId, memberId) { return teamMembers.delete(`${teamId}:${memberId}`) },
 

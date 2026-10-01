@@ -181,7 +181,7 @@ test('teams: unique names per org, membership with access, and cleanup', async (
   await s.addTeamMember({ teamId: web.id, memberId: dana.id, access: 'viewer' })
   await s.addTeamMember({ teamId: web.id, memberId: dana.id, access: 'editor' })
   assert.deepEqual((await s.listTeamMembers(web.id)).map((m) => [m.name, m.access, m.scopes]), [['Dana', 'editor', []]])
-  assert.deepEqual(await s.teamsOfMember(dana.id), [{ teamId: web.id, access: 'editor' }])
+  assert.deepEqual(await s.teamsOfMember(dana.id), [{ teamId: web.id, access: 'editor', scopes: [] }])
   assert.equal((await s.setTeamAccess(web.id, dana.id, 'viewer')).access, 'viewer')
   assert.equal(await s.setTeamAccess(api.id, dana.id, 'viewer'), null)
   assert.equal(await s.removeTeamMember(web.id, dana.id), true)

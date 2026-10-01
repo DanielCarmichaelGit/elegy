@@ -172,7 +172,7 @@ test('supabase listTeamMembers flattens the nested member name; addTeamMember lo
   assert.equal(calls[1].table, 'teams')
   assert.ok(has(calls[1], 'eq', 'id', 't1'))
   const upsert = calls[2].ops.find(([op]) => op === 'upsert')
-  assert.deepEqual(upsert[1], { team_id: 't1', member_id: 'm1', access: 'editor', org_id: 'o1' })
+  assert.deepEqual(upsert[1], { team_id: 't1', member_id: 'm1', access: 'editor', scopes: [], org_id: 'o1' })
   assert.deepEqual(upsert[2], { onConflict: 'team_id,member_id' })
 })
 
