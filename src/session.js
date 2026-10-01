@@ -34,6 +34,8 @@ const WATCH_RECHECK_MS = 80
 // event in that gap is never delivered. The folder is re-scanned this often
 // to catch anything the watcher missed.
 const RECONCILE_MS = 1000
+// Failed large-file uploads and downloads are tried again this often (and on reconnecting).
+const RETRY_MS = 30 * 1000
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null }) {
@@ -60,6 +62,9 @@ export class Session extends EventEmitter {
     this.uploading = new Map() // path -> hash being uploaded
     this.downloading = new Map() // path -> hash being downloaded
     this.largeFilesOff = false // the relay has no file storage (an older relay)
+    this.storedOnDisk = new Map() // path -> hash of the stored large file actually in the folder (saved in state.json)
+    this.retry = new Map() // path -> 'upload'|'download' that failed and is tried again later
+    this.stopped = false
     // pattern -> { by, pattern, note, ts }. The relay owns claims (it checks
     // who asks), so they live outside the shared doc; we keep the last list.
     this.claims = new Map()
@@ -112,7 +117,13 @@ export class Session extends EventEmitter {
       doc: this.doc,
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
-    this.conn.on('status', (s) => { this.log(s === 'connected' ? `connected to relay` : 'disconnected from relay, reconnecting…'); this.scheduleStatusWrite() })
+    this.conn.on('status', (s) => {
+      this.log(s === 'connected' ? `connected to relay` : 'disconnected from relay, reconnecting…')
+      this.scheduleStatusWrite()
+      if (s === 'connected') this.retryFailed()
+    })
+    this.retryTimer = setInterval(() => this.retryFailed(), RETRY_MS)
+    this.retryTimer.unref()
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
     this.conn.on('claims', (list) => this.setClaims(list))
@@ -214,7 +225,7 @@ export class Session extends EventEmitter {
     })
     this.blobs.observe((ev, tr) => {
       if (tr.origin === LOCAL) return
-      for (const k of ev.changes.keys.keys()) this.fromRemote(k)
+      for (const k of ev.changes.keys.keys()) { this.retry.delete(k); this.fromRemote(k) }
     })
     this.fileKeys.observe(() => {
       this.shareKeysWithViewers()
@@ -268,6 +279,7 @@ export class Session extends EventEmitter {
       const meta = JSON.parse(fs.readFileSync(path.join(this.stateDir, 'state.json'), 'utf8'))
       if (meta.room !== this.room || meta.server !== this.server) return false
       Y.applyUpdate(this.doc, fs.readFileSync(this.stateFile), LOCAL)
+      this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
       return true
     } catch {
       return false
@@ -285,7 +297,7 @@ export class Session extends EventEmitter {
     const tmp = this.stateFile + '.tmp'
     fs.writeFileSync(tmp, Y.encodeStateAsUpdate(this.doc))
     fs.renameSync(tmp, this.stateFile)
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server }))
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk) }))
   }
 
   // ------------------------------------------------------------ reconcile --
@@ -300,13 +312,29 @@ export class Session extends EventEmitter {
 
   reconcileOffline () {
     const onDisk = new Set(walk(this.root, this.ig))
+    const downloads = []
     for (const rel of this.sharedPaths()) {
       if (!this.syncable(rel)) continue
       const known = this.sharedKey(rel)
       if (known !== undefined) this.lastKnown.set(rel, known)
+      const b = this.blobs.get(rel)
+      const had = this.storedOnDisk.get(rel)
+      if (b && b.stored && had !== b.hash) {
+        // Its download hadn't finished when we stopped, so the folder doesn't
+        // have it yet: fetch it rather than share what's on disk. Anything
+        // other than the version we last wrote was edited offline; keep it.
+        const disk = this.readDisk(rel)
+        if (disk && disk.key !== undefined && !(disk.binary && disk.hash === had)) this.keepConflict(rel, disk)
+        if (disk && disk.key !== undefined) this.lastKnown.set(rel, disk.key)
+        else this.lastKnown.delete(rel)
+        onDisk.delete(rel)
+        downloads.push(rel)
+        continue
+      }
       if (!onDisk.has(rel)) this.ingest(rel) // deleted while offline
     }
     for (const rel of onDisk) this.ingest(rel)
+    for (const rel of downloads) this.downloadLarge(rel, this.blobs.get(rel))
   }
 
   reconcileFirstJoin () {
@@ -317,13 +345,20 @@ export class Session extends EventEmitter {
       if (!this.syncable(rel)) continue
       const disk = this.readDisk(rel)
       const shared = this.sharedKey(rel)
-      if (disk && disk.key === shared) { this.lastKnown.set(rel, shared); continue }
+      const b = this.blobs.get(rel)
+      if (disk && disk.key === shared) {
+        this.lastKnown.set(rel, shared)
+        if (b && b.stored) this.setOnDisk(rel, b.hash)
+        continue
+      }
       if (disk && this.prefer === 'local') continue // pushed below
       if (disk) {
         const dest = path.join(backupDir, ...rel.split('/'))
         fs.mkdirSync(path.dirname(dest), { recursive: true })
         fs.copyFileSync(path.join(this.root, ...rel.split('/')), dest)
         backedUp++
+        // Already backed up: the download needn't keep another copy.
+        if (b && b.stored && disk.key !== undefined) this.lastKnown.set(rel, disk.key)
       }
       this.writeOut(rel)
       onDisk.delete(rel)
@@ -393,6 +428,14 @@ export class Session extends EventEmitter {
       }
       return false
     }
+    const stored = this.blobs.get(rel)
+    if (stored && stored.stored && this.storedOnDisk.get(rel) !== stored.hash &&
+        (!disk || (disk.binary && disk.hash === this.storedOnDisk.get(rel)))) {
+      // The folder still has the version before (or nothing): a download is
+      // due, not a local change. Never share the stale copy.
+      this.downloadLarge(rel, stored)
+      return false
+    }
 
     const claim = this.claimFor(rel)
     if (claim && claim.by !== this.name && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
@@ -413,11 +456,16 @@ export class Session extends EventEmitter {
         this.recordActivity(rel, 'deleted', '')
       }, LOCAL)
       this.lastKnown.delete(rel)
+      this.setOnDisk(rel, null)
       this.noteMyEdit(rel)
       return true
     }
 
-    if (disk.key === this.sharedKey(rel)) { this.lastKnown.set(rel, disk.key); return false }
+    if (disk.key === this.sharedKey(rel)) {
+      this.lastKnown.set(rel, disk.key)
+      if (stored && stored.stored) this.setOnDisk(rel, stored.hash)
+      return false
+    }
     if (disk.binary && disk.buf.length >= LARGE_FILE_BYTES && !this.largeFilesOff) {
       this.uploadLarge(rel, disk)
       return false
@@ -442,6 +490,7 @@ export class Session extends EventEmitter {
       this.recordActivity(rel, existed ? 'edited' : 'created', detail)
     }, LOCAL)
     this.lastKnown.set(rel, disk.key)
+    this.setOnDisk(rel, null)
     this.noteMyEdit(rel)
     return true
   }
@@ -537,10 +586,7 @@ export class Session extends EventEmitter {
     if (this.ready && disk && disk.key !== known && disk.key !== shared) {
       // The file changed locally in the instant before this remote change
       // arrived. Keep a copy so nothing is lost.
-      const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
-      fs.mkdirSync(path.dirname(dest), { recursive: true })
-      fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
-      this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
+      this.keepConflict(rel, disk)
     }
 
     if (shared === undefined) {
@@ -549,16 +595,19 @@ export class Session extends EventEmitter {
         removeEmptyParents(this.root, path.dirname(abs))
       }
       this.lastKnown.delete(rel)
+      this.setOnDisk(rel, null)
     } else {
       const b = this.blobs.get(rel)
       if (b && b.stored) {
         // Written once it's downloaded; downloadLarge sets lastKnown and says who changed it.
         if (!disk || disk.key !== shared) { this.downloadLarge(rel, b); return }
+        this.setOnDisk(rel, b.hash)
       } else if (!disk || disk.key !== shared) {
         fs.mkdirSync(path.dirname(abs), { recursive: true })
         const t = this.files.get(rel)
         fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
       }
+      if (!b || !b.stored) this.setOnDisk(rel, null)
       this.lastKnown.set(rel, shared)
     }
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
@@ -573,6 +622,14 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** Keeps our version of rel aside before something replaces it. */
+  keepConflict (rel, disk) {
+    const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
+    this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
+  }
+
   lastEditorOf (rel) {
     for (let i = this.activity.length - 1; i >= 0; i--) {
       const a = this.activity.get(i)
@@ -582,6 +639,26 @@ export class Session extends EventEmitter {
   }
 
   // ------------------------------------------------------- large files --
+
+  /** Records which stored version of rel is in the folder (null: none, or it isn't a stored file). */
+  setOnDisk (rel, hash) {
+    if ((this.storedOnDisk.get(rel) || null) === (hash || null)) return
+    if (hash) this.storedOnDisk.set(rel, hash)
+    else this.storedOnDisk.delete(rel)
+    this.scheduleStateSave()
+  }
+
+  /** Tries failed uploads and downloads again. */
+  retryFailed () {
+    if (!this.ready || this.stopped) return
+    const failed = [...this.retry]
+    this.retry.clear()
+    for (const [rel, kind] of failed) {
+      if (kind === 'upload') { this.queue(rel); continue }
+      const b = this.blobs.get(rel)
+      if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
+    }
+  }
 
   wrapKeys () {
     const keys = [deriveWrapKey(this.secret, this.room)]
@@ -662,6 +739,8 @@ export class Session extends EventEmitter {
         this.recordActivity(rel, existed ? 'edited' : 'created', `${disk.buf.length} bytes`)
       }, LOCAL)
       this.lastKnown.set(rel, disk.key)
+      this.setOnDisk(rel, disk.hash)
+      this.retry.delete(rel)
       this.noteMyEdit(rel)
     } catch (err) {
       if (err.status === 404) {
@@ -670,6 +749,7 @@ export class Session extends EventEmitter {
         this.queue(rel)
       } else {
         this.log(`could not upload ${rel}: ${err.message}`)
+        this.retry.set(rel, 'upload')
       }
     } finally {
       if (this.uploading.get(rel) === disk.hash) this.uploading.delete(rel)
@@ -680,6 +760,7 @@ export class Session extends EventEmitter {
   async downloadLarge (rel, entry) {
     if (this.downloading.get(rel) === entry.hash) return
     this.downloading.set(rel, entry.hash)
+    const before = this.readDisk(rel)?.key
     try {
       const key = this.fileKeysICanOpen().get(entry.stored.key)
       if (!key) return // its key hasn't arrived yet; the fileKeys observer retries
@@ -690,15 +771,25 @@ export class Session extends EventEmitter {
       if (sha1(buf) !== entry.hash) throw new Error('the downloaded file did not match')
       const cur = this.blobs.get(rel)
       if (!cur || cur.hash !== entry.hash) return // replaced meanwhile; that version is on its way
+      if (this.stopped) return
       const abs = resolveInside(this.root, rel)
+      // Edited while it downloaded (ingest waits for downloads): keep that version.
+      const now = this.readDisk(rel)
+      if (now && now.key !== undefined && now.key !== this.lastKnown.get(rel) && now.key !== `bin:${entry.hash}`) this.keepConflict(rel, now)
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       fs.writeFileSync(abs, buf)
       this.lastKnown.set(rel, `bin:${entry.hash}`)
+      this.setOnDisk(rel, entry.hash)
+      this.retry.delete(rel)
       if (this.ready) this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })
     } catch (err) {
       this.log(`could not download ${rel}: ${err.message}`)
+      this.retry.set(rel, 'download')
     } finally {
       if (this.downloading.get(rel) === entry.hash) this.downloading.delete(rel)
+      // Look again at anything ingest skipped meanwhile. Only if the folder
+      // changed, so a download that can't happen yet doesn't loop.
+      if (!this.stopped && this.readDisk(rel)?.key !== before) this.queue(rel)
     }
   }
 
@@ -1262,6 +1353,8 @@ export class Session extends EventEmitter {
 
   async stop () {
     this.ready = false
+    this.stopped = true
+    clearInterval(this.retryTimer)
     if (this.watcher) await this.watcher.close()
     for (const t of this.rechecks.values()) clearTimeout(t)
     this.rechecks.clear()

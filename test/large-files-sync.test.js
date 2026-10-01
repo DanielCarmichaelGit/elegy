@@ -108,3 +108,113 @@ test('an owner can end the session for everyone', async () => {
   assert.equal((await fatal).ended, true)
   await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', room)))
 })
+
+const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest('hex')
+// Holds every download until released (only the receiving app downloads).
+function holdDownloads (t) {
+  const real = globalThis.fetch
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('/download') && (await gate) === 'fail') throw new Error('connection lost')
+    return real(url, opts)
+  }
+  const restore = () => { globalThis.fetch = real }
+  t.after(restore)
+  return { release: (how = 'go') => release(how), restore }
+}
+// Every update before it has reached `to` once `to` sees this marker.
+async function roundTrip (from, to) {
+  const name = `marker-${crypto.randomBytes(3).toString('hex')}.txt`
+  fs.writeFileSync(path.join(from.root, name), 'marker')
+  await waitFor(() => to.files.get(name))
+  return name
+}
+
+test('an older relay without file storage: large files travel inside the document', async (t) => {
+  const real = globalThis.fetch
+  globalThis.fetch = (url, opts) => String(url).includes('/blobs/') ? Promise.resolve(new Response('not found', { status: 404 })) : real(url, opts)
+  t.after(() => { globalThis.fetch = real })
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  const A = await open(dirA, 'alice', { room })
+  await open(dirB, 'bob', { room })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img))
+  const entry = A.blobs.get('photo.png')
+  assert.ok(entry.data, 'inline')
+  assert.equal(entry.stored, undefined)
+})
+
+test('restarting before a download finished fetches the file instead of deleting it', async () => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  const A = await open(dirA, 'alice', { room })
+  const B = await open(dirB, 'bob', { room })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img) && B.storedOnDisk.get('photo.png'))
+  await B.stop()
+  // As if the download never finished: no file, and no record of one.
+  fs.rmSync(path.join(dirB, 'photo.png'))
+  const stateJson = path.join(B.stateDir, 'state.json')
+  const meta = JSON.parse(fs.readFileSync(stateJson, 'utf8'))
+  delete meta.storedOnDisk
+  fs.writeFileSync(stateJson, JSON.stringify(meta))
+
+  const B2 = await open(dirB, 'bob', { room, identity: B.identity })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img))
+  await roundTrip(B2, A)
+  assert.ok(A.blobs.get('photo.png')?.stored, 'still shared')
+  assert.ok(bytes(dirA, 'photo.png')?.equals(img))
+})
+
+test('restarting with an older version still on disk downloads the newer one instead of sharing the old', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  const A = await open(dirA, 'alice', { room })
+  const B = await open(dirB, 'bob', { room })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img) && B.storedOnDisk.get('photo.png'))
+
+  const hold = holdDownloads(t)
+  const next = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), next)
+  await waitFor(() => B.blobs.get('photo.png')?.hash === sha1(next) && B.downloading.has('photo.png'))
+  await B.stop()
+  hold.release('fail')
+  hold.restore()
+
+  const B2 = await open(dirB, 'bob', { room, identity: B.identity })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(next))
+  await roundTrip(B2, A)
+  assert.equal(A.blobs.get('photo.png').hash, sha1(next), 'the old version was not shared again')
+  assert.ok(bytes(dirA, 'photo.png')?.equals(next))
+  assert.ok(!fs.existsSync(path.join(B2.stateDir, 'conflicts')), 'nothing was edited, so no conflict copy')
+})
+
+test('an edit made while a download is in flight is kept as a conflict copy', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  const A = await open(dirA, 'alice', { room })
+  const B = await open(dirB, 'bob', { room })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img) && B.storedOnDisk.get('photo.png'))
+
+  const hold = holdDownloads(t)
+  const next = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), next)
+  await waitFor(() => B.downloading.has('photo.png'))
+  const mine = big()
+  fs.writeFileSync(path.join(dirB, 'photo.png'), mine)
+  hold.release()
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(next))
+  const conflicts = path.join(B.stateDir, 'conflicts')
+  const [stamp] = fs.readdirSync(conflicts)
+  assert.ok(fs.readFileSync(path.join(conflicts, stamp, 'photo.png')).equals(mine))
+  await roundTrip(B, A)
+  assert.equal(A.blobs.get('photo.png').hash, sha1(next))
+})
