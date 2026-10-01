@@ -100,3 +100,33 @@ test('anything else on join.heyquilt.com goes to the home page; a bad room is no
   }
   assert.equal((await get('/join/bad%20room')).status, 404)
 })
+
+test('the join host has no relative nav links (R3): the site Header would try to open them as room invites', async () => {
+  const res = await getAs('join.heyquilt.com', '/room-abc')
+  assert.doesNotMatch(res.body, /href="\/pricing"/)
+  assert.doesNotMatch(res.body, /href="\/signin"/)
+})
+
+// skipTrailingSlashRedirect (next.config.mjs) is needed so the join host's own rewrite can
+// accept a trailing slash; proxy.js brings the redirect back for every other host.
+test('a trailing slash redirects to the canonical path, except on the join host', async () => {
+  const res = await get('/pricing/')
+  assert.equal(res.status, 308)
+  assert.equal(new URL(res.headers.get('location'), base).pathname, '/pricing')
+
+  const stillJoins = await getAs('join.heyquilt.com', '/room-abc/')
+  assert.equal(stillJoins.status, 200)
+})
+
+test('signed-out /dashboard/ ends up at /signin with no trailing slash anywhere in the chain', async () => {
+  const first = await get('/dashboard/')
+  assert.equal(first.status, 308)
+  const noSlash = new URL(first.headers.get('location'), base)
+  assert.equal(noSlash.pathname, '/dashboard')
+
+  const second = await fetch(noSlash, { redirect: 'manual' })
+  assert.equal(second.status, 307)
+  const signin = new URL(second.headers.get('location'), base)
+  assert.equal(signin.pathname, '/signin')
+  assert.equal(signin.searchParams.get('next'), '/dashboard')
+})

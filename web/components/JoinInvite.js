@@ -17,7 +17,7 @@ export default function JoinInvite ({ room, downloads }) {
       {view && !view.missing && <a className='btn primary join-open' href={view.open}>Open in Quilt</a>}
       <p className='muted'>Quilt will ask you to sign in first.</p>
       <div className='join-get'>
-        <p className='muted'>Don't have Quilt yet? Download it, then click Open in Quilt again.</p>
+        {view && !view.missing && <p className='muted'>Don't have Quilt yet? Download it, then click Open in Quilt again.</p>}
         <DownloadButtons initial={downloads} />
       </div>
     </>

@@ -15,14 +15,25 @@ function invitePage (response) {
 
 export async function proxy (request) {
   const host = (request.headers.get('host') || '').split(':')[0].toLowerCase()
+  const path = request.nextUrl.pathname
   if (host === JOIN_HOST) {
-    const to = joinPath(request.nextUrl.pathname)
+    const to = joinPath(path)
     if (!to) return NextResponse.redirect('https://heyquilt.com/')
     const url = request.nextUrl.clone()
     url.pathname = to
     return invitePage(NextResponse.rewrite(url))
   }
-  if (request.nextUrl.pathname.startsWith('/join/')) return invitePage(NextResponse.next({ request }))
+  if (path.startsWith('/join/')) return invitePage(NextResponse.next({ request }))
+
+  // skipTrailingSlashRedirect (next.config.mjs, needed so the join host's rewrite can accept a
+  // trailing slash itself) turns off Next's own trailing-slash redirect everywhere, so bring it
+  // back here for every other host. Build the target from request.url, not nextUrl.clone():
+  // nextUrl normalizes the pathname back to the trailing slash, which loops.
+  if (path !== '/' && path.endsWith('/')) {
+    const url = new URL(request.url)
+    url.pathname = path.replace(/\/+$/, '')
+    return NextResponse.redirect(url, 308)
+  }
 
   let response = NextResponse.next({ request })
   const supabase = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, {
@@ -37,7 +48,6 @@ export async function proxy (request) {
     }
   })
   const { data } = await supabase.auth.getClaims()
-  const path = request.nextUrl.pathname
   if (!data?.claims && PRIVATE.some((p) => path === p || path.startsWith(p + '/'))) {
     const to = request.nextUrl.clone()
     to.pathname = '/signin'
