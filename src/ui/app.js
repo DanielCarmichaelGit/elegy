@@ -1,6 +1,6 @@
 // Quilt app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
-import { TOKEN, I, state, $, esc, basename, toast, api, decodeInvite, remember, recall } from './common.js'
+import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall } from './common.js'
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
@@ -120,7 +120,7 @@ export async function go (view) {
 
 // --------------------------------------------------------------- render --
 export async function shutdown () {
-  if (!confirm('Shut down Quilt? This stops every session, the relay, and this app. Your files stay where they are.')) return
+  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session, the relay, and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
   try {
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop

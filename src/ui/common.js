@@ -91,6 +91,40 @@ export function toast (msg) {
   toast.timer = setTimeout(() => t.classList.remove('show'), 2400)
 }
 
+/**
+ * An in-app replacement for confirm()/prompt(): browser dialogs are blocked in
+ * some embedded views (a preview pane answers "no" without showing anything).
+ * Resolves true/false, or with `input` the trimmed text (null when cancelled).
+ */
+export function ask ({ title, message = '', ok = 'OK', danger = false, input = null }) {
+  return new Promise((resolve) => {
+    const back = document.createElement('div')
+    back.className = 'modal-back'
+    back.innerHTML = `<form class="card modal" role="dialog" aria-modal="true" aria-labelledby="ask-title" autocomplete="off">
+      <h3 id="ask-title">${esc(title)}</h3>
+      ${message ? `<p class="lead">${esc(message)}</p>` : ''}
+      ${input ? `<div class="field"><label for="ask-input">${esc(input.label || '')}</label><input class="input" id="ask-input" placeholder="${esc(input.placeholder || '')}"></div>` : ''}
+      <div class="actions"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(ok)}</button></div>
+    </form>`
+    document.body.appendChild(back)
+    const form = back.querySelector('form')
+    const field = back.querySelector('#ask-input')
+    const done = (v) => { back.remove(); resolve(v) }
+    const cancel = () => done(input ? null : false)
+    back.addEventListener('mousedown', (e) => { if (e.target === back) cancel() })
+    back.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancel() })
+    back.querySelector('[data-no]').onclick = cancel
+    form.onsubmit = (e) => {
+      e.preventDefault()
+      if (!input) return done(true)
+      const v = field.value.trim()
+      if (v) done(v)
+      else field.focus()
+    }
+    ;(field || back.querySelector('[type=submit]')).focus()
+  })
+}
+
 export async function api (method, path, body, headers = {}) {
   const res = await fetch(path, {
     method,

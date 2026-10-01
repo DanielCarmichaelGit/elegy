@@ -1,6 +1,6 @@
 // The session workspace: file tree on the left, a partner's live AI chat or a
 // shared file in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, remember, recall, toolsOf, decodeInvite, busyPeople } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, decodeInvite, busyPeople } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
@@ -262,7 +262,7 @@ function bindTop () {
     else toast($('#commit-chip').title)
   }
   $('#leave-btn').onclick = async () => {
-    if (!confirm('Stop syncing this folder? Your files stay where they are, and you can rejoin later.')) return
+    if (!await ask({ title: 'Leave this session?', message: 'Quilt stops syncing this folder. Your files stay where they are, and you can rejoin later.', ok: 'Leave', danger: true })) return
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
   }
   const moreBtn = $('#more-btn')
@@ -333,12 +333,12 @@ function bindTop () {
     const b = e.target.closest('[data-remove]')
     if (!b) return
     const f = b.closest('.pm-member')
-    if (!confirm(`Remove ${f.querySelector('.nm').textContent.trim()} from this session? They'll need a new invite and your approval to come back.`)) return
+    if (!await ask({ title: `Remove ${f.querySelector('.nm').textContent.trim()}?`, message: 'They\'ll need a new invite and your approval to come back.', ok: 'Remove', danger: true })) return
     try { await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast('Removed') } catch (err) { toast(err.message) }
   })
   menu.addEventListener('click', async (e) => {
     if (e.target.closest('[data-end-session]')) {
-      if (!confirm('End this session for everyone? Everyone is disconnected, and the session and its stored files are deleted from the relay. Your own folder is not touched.')) return
+      if (!await ask({ title: 'End this session for everyone?', message: 'Everyone is disconnected, and the session and its stored files are deleted from the relay. Your own folder is not touched.', ok: 'End session', danger: true })) return
       try { await api('POST', `/api/sessions/${current}/end`); toast('Session ended') } catch (err) { toast(err.message) }
       return
     }
@@ -412,8 +412,8 @@ function renderCommitChip () {
 }
 
 async function askForCommit () {
-  const message = prompt('What should the commit be for? The host commits once everyone\'s AI is idle.')
-  if (!message || !message.trim()) return
+  const message = await ask({ title: 'Ask for a commit', message: 'The host commits once everyone\'s AI is idle.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
+  if (!message) return
   try {
     await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim() })
     toast('Asked for a commit')
