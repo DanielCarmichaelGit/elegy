@@ -32,7 +32,8 @@ export default function AccountMenu ({ name, email, initials, where }) {
         aria-label='Account menu'
         onClick={() => setOpen((o) => !o)}
       >
-        {initials}
+        <span className='qh-avatar-face'>{initials}</span>
+        <span className='qh-avatar-car' aria-hidden='true'><svg viewBox='0 0 12 12' width='10' height='10' aria-hidden='true'><path d='M2.5 4.5h7L6 8.5z' fill='currentColor' /></svg></span>
       </button>
       {open && (
         <div id='qh-account-menu' className='qh-account-menu'>

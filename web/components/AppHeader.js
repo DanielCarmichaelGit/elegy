@@ -66,7 +66,7 @@ export function AppHeaderSkeleton () {
         <span className='skeleton qh-skel' style={{ width: 150 }} />
         <span className='skeleton qh-skel' style={{ width: 260 }} />
         <span className='qh-grow' />
-        <span className='skeleton' style={{ width: 36, height: 36, borderRadius: '50%' }} />
+        <span className='skeleton' style={{ width: 58, height: 36, borderRadius: 999 }} />
       </header>
     </StickyHeader>
   )

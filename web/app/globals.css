@@ -76,8 +76,11 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .qh-space-plain { display: flex; gap: 6px; align-items: center; }
 .qh-space-plain .input { height: 36px; padding: 0 8px; }
 .qh-account { position: relative; flex: none; }
-.qh-avatar { width: 36px; height: 36px; border-radius: 50%; border: 0; display: grid; place-items: center; font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--qm-c); cursor: pointer; }
+.qh-avatar { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 2px 8px 2px 2px; border: 1px solid var(--border); border-radius: 999px; background: none; font: inherit; color: var(--text); cursor: pointer; }
+.qh-avatar:hover, .qh-avatar[aria-expanded='true'] { background: var(--panel-2); border-color: var(--border-strong); }
 .qh-avatar:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qh-avatar-face { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 600; background: var(--qm-c); }
+.qh-avatar-car { display: flex; color: var(--muted); }
 .qh-account-menu { position: absolute; right: 0; top: calc(100% + 10px); width: 250px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 6px; box-shadow: 0 16px 36px -22px rgba(var(--shadow), .5); font-size: 14px; z-index: 20; }
 .qh-who { padding: 8px 10px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; display: flex; flex-direction: column; }
 .qh-who b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
