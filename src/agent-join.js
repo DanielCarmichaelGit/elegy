@@ -3,6 +3,7 @@
 // keep them in ~/.quilt/agents/<name>.json (readable only by you).
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { quiltHome } from './legacy.js'
 import { generateIdentity } from './identity.js'
 import { writePrivateJson } from './private-file.js'
@@ -15,6 +16,8 @@ const EARLY_MS = 60 * 1000
 // A refresh lock left behind by a process that died is ignored after this long.
 const LOCK_STALE_MS = 30 * 1000
 const LOCK_RETRY_MS = 50
+// Well under LOCK_STALE_MS, so a slow refresh never outlives its lock.
+const REFRESH_TIMEOUT_MS = 15 * 1000
 
 export function agentFile (name, dir = quiltHome()) {
   if (!NAME.test(String(name || ''))) throw new Error('--name must be 1 to 40 letters, numbers, dots, dashes or underscores')
@@ -34,8 +37,9 @@ export function parseJoinLink (link) {
   return { api: u.origin, token: m[1] }
 }
 
-async function send (fetchImpl, api, method, route, body, key) {
+async function send (fetchImpl, api, method, route, body, key, extra = {}) {
   const res = await fetchImpl(String(api).replace(/\/+$/, '') + route, {
+    ...extra,
     method,
     headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...(key ? { authorization: `Bearer ${key}` } : {}) },
     body: body ? JSON.stringify(body) : undefined
@@ -92,7 +96,7 @@ export async function agentJoin ({ link, name, provider = DEFAULTS.provider, typ
 }
 
 async function refresh (saved, file, fetchImpl) {
-  const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/token', { refreshKey: saved.refreshKey })
+  const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/token', { refreshKey: saved.refreshKey }, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
   if (!r.ok) throw Object.assign(new Error(r.body?.error || `Couldn't refresh the agent's keys (${r.status}).`), { status: r.status })
   const next = { ...saved, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt }
   // Save straight away: the old refresh key is spent, and using it again would revoke the agent.
@@ -105,12 +109,41 @@ export function readAgent ({ name, dir }) {
   return load(agentFile(name, dir), name)
 }
 
+const readLock = (lock) => { try { return fs.readFileSync(lock, 'utf8') } catch { return null } }
+
+/**
+ * Removes a lock left by a process that died. Renaming is atomic, so only one
+ * process can take it over; and if the lock was replaced by a live one in the
+ * meantime (its contents changed), that one is put back. (`beforeRename` lets
+ * tests step in at the racy moment.)
+ */
+export function takeOverStale (lock, beforeRename = () => {}) {
+  let seen
+  try {
+    if (Date.now() - fs.statSync(lock).mtimeMs <= LOCK_STALE_MS) return false
+    seen = fs.readFileSync(lock, 'utf8')
+  } catch {
+    return true // gone already: try to take it
+  }
+  const aside = `${lock}.stale.${process.pid}.${crypto.randomBytes(6).toString('hex')}`
+  beforeRename()
+  try { fs.renameSync(lock, aside) } catch { return false }
+  if (readLock(aside) !== seen) {
+    try { fs.linkSync(aside, lock) } catch {}
+    fs.rmSync(aside, { force: true })
+    return false
+  }
+  fs.rmSync(aside, { force: true })
+  return true
+}
+
 /**
  * Runs `fn` holding `<file>.lock`, so only one process at a time refreshes an agent's
  * keys: a refresh key used twice gets the agent revoked for good.
  */
-async function withLock (file, fn) {
+export async function withLock (file, fn) {
   const lock = `${file}.lock`
+  const token = `${process.pid}.${crypto.randomBytes(8).toString('hex')}`
   // Wait long enough for a lock left by a dead process to go stale.
   const until = Date.now() + LOCK_STALE_MS + 5000
   for (;;) {
@@ -121,12 +154,15 @@ async function withLock (file, fn) {
       if (err.code !== 'EEXIST') throw err
     }
     if (fd !== null) {
-      fs.closeSync(fd)
-      try { return await fn() } finally { fs.rmSync(lock, { force: true }) }
+      try { fs.writeSync(fd, token) } finally { fs.closeSync(fd) }
+      try {
+        return await fn()
+      } finally {
+        // Only our own lock: another process may have taken over one it thought stale.
+        if (readLock(lock) === token) fs.rmSync(lock, { force: true })
+      }
     }
-    try {
-      if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) { fs.rmSync(lock, { force: true }); continue }
-    } catch {}
+    if (takeOverStale(lock)) continue
     if (Date.now() > until) throw new Error(`Another Quilt process is stuck refreshing the agent's keys. Remove ${lock} and try again.`)
     await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS))
   }

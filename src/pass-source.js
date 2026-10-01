@@ -47,6 +47,11 @@ export class PassSource {
     return this.pending
   }
 
+  /** Forgets the cached pass (the relay turned it away), so the next get() fetches one. */
+  forget () {
+    this.current = null
+  }
+
   /** Who the passes are for ({ sub, kind, name, key, … }), once one has been fetched. */
   get payload () {
     return this.current ? this.current.payload : null

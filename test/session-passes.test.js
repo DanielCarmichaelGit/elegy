@@ -12,6 +12,7 @@ import { Connection } from '../src/connection.js'
 import { runSession } from '../src/runner.js'
 import { generateIdentity } from '../src/identity.js'
 import http from 'node:http'
+import { WebSocketServer } from 'ws'
 import { PassSource, SignedOutError, personPasses } from '../src/pass-source.js'
 import { PASS_KEYS, makePass, testPasses } from './pass-helpers.js'
 
@@ -127,6 +128,43 @@ test('a pass the relay turns away is retried once with a fresh one', async (t) =
   t.after(() => conn.close())
   await conn.waitForSync()
   assert.equal(n, 2)
+})
+
+test('after a refused pass, a failed fetch is retried for a fresh pass, never the refused one', async (t) => {
+  const id = generateIdentity()
+  let n = 0
+  const passes = new PassSource({
+    fetchPass: async () => {
+      n++
+      if (n === 2) throw new Error('offline for a moment')
+      const exp = Date.now() + 600_000
+      // The first pass is out of date by the relay's clock, though the client thinks it's fine.
+      return { pass: makePass({ identity: id, exp: n === 1 ? Date.now() - 1000 : exp }), expiresAt: exp }
+    }
+  })
+  const conn = new Connection({ server, room: 'sp-4e', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes })
+  t.after(() => conn.close())
+  const warnings = []
+  conn.on('warn', (w) => warnings.push(w))
+  let fatal = null
+  conn.on('fatal', (err) => { fatal = err })
+  await conn.waitForSync()
+  assert.equal(fatal, null)
+  assert.equal(n, 3)
+  assert.ok(!warnings.some((w) => /closed before the connection was established/.test(w)), warnings.join('\n'))
+})
+
+test('4419s that arrive before signing in finishes count toward the clock warning', async (t) => {
+  // A relay that says the pass has expired the moment anyone connects.
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+  await new Promise((resolve) => wss.on('listening', resolve))
+  wss.on('connection', (ws) => ws.close(4419, 'Your sign-in expired. Reconnecting.'))
+  t.after(() => new Promise((resolve) => wss.close(resolve)))
+  const id = generateIdentity()
+  const conn = new Connection({ server: `ws://127.0.0.1:${wss.address().port}`, room: 'sp-4f', secret: 's', name: 'Dana', identity: id, doc: new Y.Doc(), passes: testPasses(id) })
+  t.after(() => conn.close())
+  const err = await fatalOf(conn, 20000)
+  assert.equal(err.message, "Your computer's clock looks wrong, so Quilt can't stay signed in. Check the date and time.")
 })
 
 test('a pass the relay turns away twice is fatal', async (t) => {

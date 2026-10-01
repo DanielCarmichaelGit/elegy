@@ -88,9 +88,10 @@ export class Connection extends EventEmitter {
     if (this.closed) return
     if (!this.passes) return this.open(this.url)
     const getting = this.passStale ? this.passes.fresh() : this.passes.get()
-    this.passStale = false
     getting.then((pass) => {
       if (this.closed) return
+      // Only now: if fetching failed, the retry must still ask for a fresh pass.
+      this.passStale = false
       const q = new URLSearchParams(this.query)
       q.set('pass', pass)
       this.emit('pass', this.passes.payload)
@@ -139,7 +140,9 @@ export class Connection extends EventEmitter {
         // The cached pass may have run out by the relay's clock: try once more with a fresh one.
         this.passRetried = true
         this.passStale = true
+        this.passes.forget()
         this.emit('warn', 'the relay turned the session pass away; trying a fresh one')
+        ws.retrying = true // we closed it on purpose: no "closed before the connection was established" warning
         ws.terminate()
       } else if (res.statusCode === 403 && /relay key/i.test(reason)) {
         this.emit('fatal', new Error('This relay needs a relay key to start new sessions. Ask whoever runs it, then set it with `quilt relay set <url> --key <key>`.'))
@@ -160,14 +163,15 @@ export class Connection extends EventEmitter {
       }
     })
 
-    ws.on('error', (err) => this.emit('warn', `connection error: ${err.message}`))
+    ws.on('error', (err) => { if (!ws.retrying) this.emit('warn', `connection error: ${err.message}`) })
 
     ws.on('close', (code, reason) => {
       clearInterval(this.passTimer)
       const upSince = this.connectedAt
       this.connectedAt = 0
-      // Count 4419s that came soon after connecting; any other end to a connection that got going resets the count.
-      if (code === CLOSE_PASS_EXPIRED) this.quickExpiries = upSince && Date.now() - upSince < QUICK_EXPIRY_MS ? this.quickExpiries + 1 : 0
+      // Count 4419s that came soon after connecting (or before signing in finished); any other
+      // end to a connection that got going resets the count.
+      if (code === CLOSE_PASS_EXPIRED) this.quickExpiries = !upSince || Date.now() - upSince < QUICK_EXPIRY_MS ? this.quickExpiries + 1 : 0
       else if (upSince) this.quickExpiries = 0
       if (code === CLOSE_PASS_EXPIRED && this.quickExpiries >= MAX_QUICK_EXPIRIES) {
         this.emit('fatal', new Error(CLOCK_WRONG))

@@ -1325,12 +1325,7 @@ export class Session extends EventEmitter {
     }, LOCAL)
     this.agentSharing = on
     this.publishAgentState()
-    try {
-      const file = path.join(this.stateDir, 'config.json')
-      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'))
-      cfg.shareAgent = on
-      fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 })
-    } catch {}
+    this.saveConfig({ shareAgent: on })
     this.scheduleStatusWrite()
     return on
   }
