@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
@@ -32,12 +32,13 @@ export class Connection extends EventEmitter {
    * @param {import('yjs').Doc} opts.doc
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files' }) {
     super()
     // `key` (the relay key) is only needed to create a room on a relay that requires one.
     const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey, kind })
     if (key) q.set('relayKey', key)
     if (viewSecret) q.set('viewSecret', viewSecret)
+    if (features) q.set('features', features)
     this.access = null // what the relay says we may do: { state, role, scopes, owner, controlled }
     this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
     this.room = room
@@ -90,6 +91,9 @@ export class Connection extends EventEmitter {
       } else if (res.statusCode === 413) {
         this.emit('fatal', new Error(ROOM_FULL_MESSAGE))
         this.close()
+      } else if (res.statusCode === 410) {
+        this.emit('fatal', Object.assign(new Error(reason), { ended: true }))
+        this.close()
       } else if (res.statusCode === 429) {
         this.emit('warn', 'relay says there are too many connections from this network; retrying')
       } else {
@@ -100,7 +104,10 @@ export class Connection extends EventEmitter {
     ws.on('error', (err) => this.emit('warn', `connection error: ${err.message}`))
 
     ws.on('close', (code, reason) => {
-      if (code === CLOSE_DENIED) {
+      if (code === CLOSE_ENDED) {
+        this.emit('fatal', Object.assign(new Error(String(reason) || 'The owner ended this session'), { ended: true }))
+        this.close()
+      } else if (code === CLOSE_DENIED) {
         this.emit('fatal', Object.assign(new Error(String(reason) || 'The session owner did not let you in'), { denied: true }))
         this.close()
       } else if (code === CLOSE_AUTH_FAILED || code === CLOSE_NAME_TAKEN) {

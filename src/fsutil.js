@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { makeIgnore, isIgnored, scopeIgnore, IGNORE_FILES } from './pathrules.js'
 
 export { IGNORE_FILES } from './pathrules.js'
-export { MAX_TEXT_BYTES, MAX_BINARY_BYTES, isIgnored, isSafeRelPath, globMatcher, patternsOverlap } from './pathrules.js'
+export { MAX_TEXT_BYTES, MAX_BINARY_BYTES, LARGE_FILE_BYTES, MAX_STORED_BINARY_BYTES, isIgnored, isSafeRelPath, globMatcher, patternsOverlap } from './pathrules.js'
 
 export function toPosix (p) {
   return p.split(path.sep).join('/')

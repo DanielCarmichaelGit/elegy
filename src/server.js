@@ -22,13 +22,14 @@ import { handleAgentMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS,
-  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED,
+  CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_NEEDS_UPDATE,
   encoding, decoding, syncProtocol, awarenessProtocol,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { patternsOverlap, globMatcher } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
+import { makeStore, DiskStore } from './blobstore.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -56,7 +57,12 @@ export function relayConfig (opts = {}) {
     maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.QUILT_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
-    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || '')
+    trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''),
+    // Large files: Supabase Storage when both are set, otherwise the relay's own disk.
+    storageUrl: opts.storageUrl ?? env.QUILT_STORAGE_URL ?? '',
+    storageKey: opts.storageKey ?? env.QUILT_STORAGE_KEY ?? '',
+    storageBucket: opts.storageBucket ?? env.QUILT_STORAGE_BUCKET ?? 'session-files',
+    maxStoredFileBytes: num(opts.maxStoredFileBytes ?? env.QUILT_MAX_STORED_FILE_MB, 100) * (opts.maxStoredFileBytes !== undefined ? 1 : MB)
   }
 }
 
@@ -90,9 +96,10 @@ class Room {
     this.pending = new Map() // ws -> { key, name, kind, invitedAs, since } waiting for the owner
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
+    this.fileKeys = this.doc.getMap('fileKeys')
     // Undoes file changes from people who may not make them (viewers, and
     // agents outside their folders). Only their connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs], { trackedOrigins: new Set(), captureTimeout: 0 })
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
@@ -174,7 +181,17 @@ class Room {
   checkChange (ws, update, tr) {
     const a = this.access.get(ws)
     const touched = new Set()
+    const refused = []
     for (const [type, events] of tr.changedParentTypes) {
+      if (type === this.fileKeys) {
+        // Keys to stored files: viewers may not touch them, and others may
+        // only add new ones, so nobody can lock people out of stored files.
+        for (const e of events) {
+          if (e.target !== type) { refused.push('a file key'); continue }
+          for (const [id, c] of e.changes.keys) if (a?.role === 'viewer' || c.action !== 'add') refused.push(`file key ${id}`)
+        }
+        continue
+      }
       if (type !== this.files && type !== this.blobs) continue
       for (const e of events) {
         if (e.target === type) for (const k of e.changes.keys.keys()) touched.add(k)
@@ -186,7 +203,7 @@ class Room {
         }
       }
     }
-    const refused = [...touched].filter((rel) => !this.mayWrite(a, rel))
+    refused.push(...[...touched].filter((rel) => !this.mayWrite(a, rel)))
     if (!refused.length) { queueMicrotask(() => this.guard.clear()); return true }
     this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
     queueMicrotask(() => {
@@ -204,6 +221,23 @@ class Room {
       send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refused: refused.slice(0, 20), why }))
     })
     return false
+  }
+
+  /** Can this connection's app handle the session as it is now? */
+  supported (ws) {
+    return !this.meta.largeFiles || (ws.features || []).includes('large-files')
+  }
+
+  /**
+   * The session now keeps large files in storage. Older apps would get
+   * entries with no contents, so they're sent away to update.
+   */
+  startLargeFiles () {
+    if (this.meta.largeFiles) return
+    this.meta.largeFiles = true
+    for (const ws of [...this.conns.keys(), ...this.pending.keys()]) {
+      if (!this.supported(ws)) ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
+    }
   }
 
   accessMessage (a) {
@@ -249,6 +283,11 @@ class Room {
   adminRequest (ws, req) {
     const me = this.access.get(ws)
     if (!me || !me.owner) throw new Error('only the session owner can do that')
+    if (req.op === 'end') {
+      // Reply first; the relay then sends everyone away and deletes the room.
+      setTimeout(() => this.onEnd && this.onEnd(), 50)
+      return { ok: true }
+    }
     const key = String(req.key || '')
     const role = ROLES.includes(req.role) ? req.role : null
     const scopes = Array.isArray(req.scopes)
@@ -363,6 +402,7 @@ class Room {
   }
 
   saveMeta () {
+    if (this.ended) return
     if (this.metaFile) fs.writeFileSync(this.metaFile, JSON.stringify(this.meta))
   }
 
@@ -372,6 +412,7 @@ class Room {
   }
 
   save () {
+    if (this.ended) return
     clearTimeout(this.saveTimer)
     this.saveTimer = null
     if (!this.docFile || !this.exists) return
@@ -387,6 +428,7 @@ class Room {
    * it into the room. Nothing else is accepted until then.
    */
   admit (ws, name, publicKey, key, { kind = 'human', invitedAs = 'editor' } = {}, onJoin) {
+    if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
     clearTimeout(this.unloadTimer)
     const nonce = crypto.randomBytes(32)
     let joined = false
@@ -407,6 +449,9 @@ class Room {
         this.log(`[${this.name}] refused ${name}: ${err.message}`)
         return ws.close(CLOSE_AUTH_FAILED, 'Could not verify who you are')
       }
+      if (this.ended) return ws.close(CLOSE_ENDED, 'The owner ended this session')
+      // The session may have started storing files while this app signed in.
+      if (!this.supported(ws)) return ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
       // Re-check: someone else may have taken the name while we waited.
       if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
       this.bindName(name, publicKey)
@@ -522,6 +567,13 @@ class Room {
     this.awareness.destroy()
     this.doc.destroy()
   }
+
+  /** Stored-file ids the document still points at. */
+  storedIds () {
+    const ids = new Set()
+    for (const b of this.blobs.values()) if (b && b.stored && b.stored.id) ids.add(b.stored.id)
+    return ids
+  }
 }
 
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
@@ -566,13 +618,29 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       rooms.set(name, room)
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
-        if (!dataDir) return
+        if (!dataDir || rooms.get(name) !== room) return
         clearTimeout(room.unloadTimer)
         room.unloadTimer = setTimeout(() => {
           if (room.conns.size || rooms.get(name) !== room) return
+          collectStored(room)
           room.destroy()
           rooms.delete(name)
         }, cfg.idleUnloadMs)
+      }
+      room.onEnd = () => {
+        if (room.ended) return
+        room.ended = true
+        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) ws.close(CLOSE_ENDED, 'The owner ended this session')
+        clearTimeout(room.unloadTimer)
+        room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
+        if (rooms.get(name) === room) rooms.delete(name)
+        removeRoomData(name)
+        // A tombstone keeps the room refused for good, instead of letting a new one start under the same name.
+        if (dataDir) {
+          const now = Date.now()
+          fs.writeFileSync(path.join(dataDir, `${name}.json`), JSON.stringify({ ended: true, endedAt: now, lastActive: now }))
+        }
+        log(`[${name}] ended by its owner`)
       }
     }
     return room
@@ -611,6 +679,34 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
+  // Large files, already encrypted by the apps. See blobstore.js.
+  const store = makeStore(cfg, path.join(path.dirname(filesDir), 'blobs'))
+  const storedBytes = (room) => Object.values(room.meta.blobs || {}).reduce((n, b) => n + (b.size || 0), 0)
+  /** Deletes everything a room left on the relay and in storage. */
+  const removeRoomData = (name) => {
+    if (dataDir) {
+      fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
+      fs.rmSync(path.join(dataDir, `${name}.json`), { force: true })
+    }
+    fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+    store.removeRoom(name).catch((err) => log(`[${name}] could not delete stored files: ${err.message}`))
+  }
+  /** Deletes stored files nothing points at any more (a day's grace for uploads in flight, or apps still offline). */
+  const collectStored = (room) => {
+    const blobs = room.meta.blobs || {}
+    const used = room.storedIds()
+    const cutoff = Date.now() - DAY
+    const unused = Object.keys(blobs).filter((id) => !used.has(id) && (blobs[id].ts || 0) < cutoff)
+    if (!unused.length) return
+    for (const id of unused) delete blobs[id]
+    room.saveMeta()
+    store.remove(room.name, unused).catch((err) => log(`[${room.name}] could not delete stored files: ${err.message}`))
+  }
+  /** Refuses an ended room's tombstone without loading it into memory. */
+  const roomEnded = (name) => {
+    if (!dataDir) return false
+    try { return !!JSON.parse(fs.readFileSync(path.join(dataDir, `${name}.json`), 'utf8')).ended } catch { return false }
+  }
 
   // Public: the app's relay check reads this. It says nothing about who's using the relay.
   const health = () => ({ ok: true, version: 1, requiresKey: !!cfg.relayKey })
@@ -618,6 +714,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x')
     const text = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8' }); res.end(msg) }
+    const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
 
     if (url.pathname === '/healthz') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
@@ -637,6 +734,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (err) return text(400, err.message)
         const { token, room: roomName, secret, name, tool } = body || {}
         if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
+        if (roomEnded(roomName)) return text(410, ENDED_MESSAGE)
         const room = getRoom(roomName)
         if (!room) return text(413, TOO_BIG)
         if (!room.exists || room.authorize(String(secret || ''), '') !== 'editor') { dropIfUnused(room); return text(403, 'wrong room secret') }
@@ -667,10 +765,61 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
       return
     }
+    const bm = url.pathname.match(/^\/blobs\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})\/(upload|download|data)$/)
+    if (bm) {
+      const [, name, id, action] = bm
+      if (roomEnded(name)) return text(410, ENDED_MESSAGE)
+      if (action === 'data') {
+        // The disk store's signed links: no secret needed, the signature is the permission.
+        if (!(store instanceof DiskStore)) return text(404, 'not found')
+        const method = req.method === 'PUT' ? 'PUT' : 'GET'
+        const n = url.searchParams.get('n')
+        if (url.searchParams.get('m') !== method || !store.verify(name, id, method, url.searchParams.get('exp'), url.searchParams.get('sig'), method === 'PUT' ? Number(n) : undefined)) return text(403, 'this link has expired')
+        const file = store.file(name, id)
+        if (method === 'GET') return streamFile(res, file, text)
+        return receiveBlob(req, file, Number(n), (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
+      }
+      if (req.method !== 'POST') return text(405, 'method not allowed')
+      const room = getRoom(name)
+      if (!room) return text(413, TOO_BIG)
+      const creating = !room.exists
+      if (creating && !canCreate(clientIp(req))) { dropIfUnused(room); return text(429, 'too many new sessions from this address; try again later') }
+      const auth = room.authorize(req.headers['x-quilt-secret'] || '', req.headers['x-quilt-key'] || '')
+      if (auth === 'need-key' || auth === 'bad-secret') {
+        dropIfUnused(room)
+        return text(auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'this relay needs a key to create rooms' : 'wrong room secret')
+      }
+      if (creating) noteCreated(clientIp(req))
+      const done = () => { if (!room.conns.size && room.onEmpty) room.onEmpty() }
+      return readJson(req, 1024, async (err, body) => {
+        try {
+          if (err) return text(400, err.message)
+          room.meta.blobs = room.meta.blobs || {}
+          if (action === 'download') {
+            if (!room.meta.blobs[id]) return text(404, 'no such file')
+            return json(200, await store.downloadTarget(name, id))
+          }
+          if (auth !== 'editor') return text(403, 'you can only view this session')
+          const size = Number(body && body.size)
+          if (!(size >= 0)) return text(400, 'size required')
+          if (size > cfg.maxStoredFileBytes) return text(413, `files over ${Math.round(cfg.maxStoredFileBytes / MB)} MB can't be shared`)
+          const others = storedBytes(room) - (room.meta.blobs[id]?.size || 0)
+          if (others + size + dirSize(path.join(filesDir, name)) > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
+          room.meta.blobs[id] = { size, ts: Date.now() }
+          room.startLargeFiles()
+          room.saveMeta()
+          json(200, await store.uploadTarget(name, id, size))
+        } catch (e) {
+          log(`[${name}] storage error: ${e.message}`)
+          if (!res.headersSent) text(502, 'file storage is unavailable right now')
+        } finally { done() }
+      })
+    }
     const m = url.pathname.match(/^\/files\/([A-Za-z0-9_-]{1,64})(?:\/([a-f0-9]{32}))?$/)
     if (!m) return text(404, 'not found')
 
     const [, name, id] = m
+    if (roomEnded(name)) return text(410, ENDED_MESSAGE)
     const room = getRoom(name)
     if (!room) return text(413, TOO_BIG)
     const creating = !room.exists
@@ -683,17 +832,13 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) {
-      const used = dirSize(dir)
+      // Chat files and stored large files share one quota.
+      const used = dirSize(dir) + storedBytes(room)
       const incoming = Number(req.headers['content-length'] || 0)
       if (used + incoming > cfg.maxRoomFileBytes) return text(413, 'this room has used its file storage quota')
       return receiveFile(req, dir, cfg.maxRoomFileBytes - used, (err, newId) => err ? text(err.code || 500, err.message) : text(201, newId))
     }
-    if (req.method === 'GET' && id) {
-      const file = path.join(dir, id)
-      if (!fs.existsSync(file)) return text(404, 'no such file')
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(file).size })
-      return fs.createReadStream(file).pipe(res)
-    }
+    if (req.method === 'GET' && id) return streamFile(res, path.join(dir, id), text)
     text(405, 'method not allowed')
   })
   // One message can't be bigger than a whole room may be.
@@ -709,10 +854,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const viewSecret = url.searchParams.get('viewSecret') || ''
     const kind = url.searchParams.get('kind') === 'agent' ? 'agent' : 'human'
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
+    if (roomEnded(name)) return reject(socket, 410, ENDED_MESSAGE)
     const ip = clientIp(req)
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
     if (!room) return reject(socket, 413, TOO_BIG)
+    const features = String(url.searchParams.get('features') || '').split(',')
     const creating = !room.exists
     if (creating && !canCreate(ip)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret)
@@ -721,11 +868,17 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       dropIfUnused(room)
       return reject(socket, auth === 'need-key' ? 403 : 401, auth === 'need-key' ? 'Relay key required to create rooms' : 'Wrong room secret')
     }
+    // Checked after the secret, so only members learn what the session needs.
+    if (room.meta.largeFiles && !features.includes('large-files')) {
+      if (!room.conns.size && room.onEmpty) room.onEmpty() // don't keep it in memory for nobody
+      return reject(socket, 400, NEEDS_UPDATE)
+    }
     if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.features = features
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1)
       ws.isAlive = true
       ws.on('pong', () => { ws.isAlive = true })
@@ -756,16 +909,15 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     const cutoff = Date.now() - cfg.roomTtlDays * DAY
     let removed = 0
     for (const f of fs.readdirSync(dataDir)) {
-      if (!f.endsWith('.json')) continue
+      if (!f.endsWith('.json') || f === 'agent-links.json') continue
       const name = f.slice(0, -5)
+      if (!ROOM_RE.test(name)) continue
       if (rooms.has(name)) continue
       try {
         const meta = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))
         if ((meta.lastActive || meta.createdAt || 0) > cutoff) continue
       } catch {}
-      fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
-      fs.rmSync(path.join(dataDir, f), { force: true })
-      fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+      removeRoomData(name)
       removed++
     }
     if (removed) log(`removed ${removed} room(s) idle for more than ${cfg.roomTtlDays} days`)
@@ -782,6 +934,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         port: actualPort,
         config: cfg,
         rooms, // exposed for tests
+        store, // exposed for tests
         sweep,
         close: () => new Promise((resolve) => {
           clearInterval(heartbeat)
@@ -841,7 +994,75 @@ function receiveFile (req, dir, room, done) {
   out.on('error', (err) => fail(500, err.message))
 }
 
+/**
+ * Sends a stored file. The file can vanish at any moment (the room ended, or
+ * the sweep ran), so every step copes with that instead of throwing.
+ */
+function streamFile (res, file, text) {
+  const rs = fs.createReadStream(file)
+  rs.on('error', (err) => {
+    if (!res.headersSent) text(err.code === 'ENOENT' || err.code === 'EISDIR' ? 404 : 500, 'no such file')
+    else res.destroy()
+  })
+  rs.on('open', (fd) => {
+    let size
+    try { size = fs.fstatSync(fd).size } catch { rs.destroy(); return text(404, 'no such file') }
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': size })
+    rs.pipe(res)
+  })
+}
+
+/**
+ * Streams a request body to `file`, refusing anything over `limit` bytes.
+ * Stored files are written once: their ids come from their content, so one
+ * that's already there is refused with 409 and left as it is.
+ */
+function receiveBlob (req, file, limit, done) {
+  let size = 0
+  let failed = false
+  let drained = 0
+  let out = null
+  let tmp = null
+  const fail = (code, message) => {
+    if (failed) return
+    failed = true
+    if (out) { req.unpipe(out); out.destroy() }
+    if (tmp) fs.rm(tmp, { force: true }, () => {})
+    // Read what's left so the reply gets through, but not forever.
+    req.resume()
+    done(Object.assign(new Error(message), { code }))
+  }
+  req.on('data', (chunk) => {
+    if (failed) { drained += chunk.length; if (drained > MB) req.destroy(); return }
+    size += chunk.length
+    if (size > limit) fail(413, 'file too large')
+  })
+  req.on('error', () => fail(400, 'upload interrupted'))
+  if (fs.existsSync(file)) return fail(409, 'already stored')
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    tmp = `${file}.${crypto.randomBytes(4).toString('hex')}.tmp`
+    out = fs.createWriteStream(tmp)
+  } catch { return fail(500, 'could not save the file') }
+  out.on('error', () => fail(500, 'could not save the file'))
+  out.on('finish', () => {
+    if (failed) return
+    // link, unlike rename, never replaces a file that's already there. It
+    // also fails if the room's folder is gone by now (it ended, or was swept).
+    try {
+      fs.linkSync(tmp, file)
+    } catch (err) {
+      return err.code === 'EEXIST' ? fail(409, 'already stored') : fail(500, 'could not save the file')
+    }
+    fs.rm(tmp, { force: true }, () => {})
+    done(null)
+  })
+  req.pipe(out)
+}
+
 const TOO_BIG = 'Session over the size limit'
+const ENDED_MESSAGE = 'The owner ended this session'
+const NEEDS_UPDATE = 'This session needs a newer version of Quilt. Update Quilt, then join again.'
 
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)

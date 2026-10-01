@@ -5,9 +5,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
+import { deriveWrapKey, wrapKey, newFileKey } from '../src/largefiles.js'
 
 let srv, server
 const sessions = []
@@ -160,4 +162,41 @@ test('sessions without an owner (older clients) still let everyone edit', async 
   write(bDir, 'a.txt', 'b edit\n')
   await waitFor(() => read(aDir, 'a.txt') === 'b edit\n')
   assert.equal(a.waiting.length, 0)
+})
+
+test('only editors can change file keys: a viewer\'s overwrite is undone, an agent may only add keys', async () => {
+  const { owner, ownerDir, bring } = await ownedRoom()
+  const img = crypto.randomBytes(300 * 1024)
+  fs.writeFileSync(path.join(ownerDir, 'hero.png'), img)
+  await waitFor(() => owner.blobs.get('hero.png')?.stored)
+  const keyId = owner.blobs.get('hero.png').stored.key
+  const original = JSON.stringify(owner.fileKeys.get(keyId))
+
+  const { s: vic } = await bring('vic3', { secret: VIEW })
+  await waitFor(() => vic.fileKeys.has(keyId))
+  vic.doc.transact(() => vic.fileKeys.set(keyId, { wraps: ['garbage'], ts: 1 }))
+  await waitFor(() => JSON.stringify(vic.fileKeys.get(keyId)) === original)
+  vic.doc.transact(() => vic.fileKeys.set('viewer-made', { wraps: ['garbage'], ts: 1 }))
+  await waitFor(() => !vic.fileKeys.has('viewer-made'))
+
+  const { s: bot } = await bring('key bot', { kind: 'agent', scopes: ['src'] })
+  bot.doc.transact(() => bot.fileKeys.delete(keyId))
+  await waitFor(() => JSON.stringify(bot.fileKeys.get(keyId)) === original)
+  bot.doc.transact(() => bot.fileKeys.set('agent-made', { wraps: [], ts: 1 }))
+  await waitFor(() => owner.fileKeys.has('agent-made'))
+  assert.equal(JSON.stringify(owner.fileKeys.get(keyId)), original, 'the owner never saw the changes')
+
+  // Someone joining later can still open the stored file.
+  const { dir } = await bring('sam2')
+  await waitFor(() => { try { return fs.readFileSync(path.join(dir, 'hero.png')).equals(img) } catch { return false } })
+})
+
+test('uploads only use keys the uploader\'s own secret opens', async () => {
+  const { owner } = await ownedRoom()
+  // A key wrapped only for viewers (as anyone with the view secret could make) is never picked.
+  const vk = deriveWrapKey(VIEW, owner.room)
+  owner.doc.transact(() => owner.fileKeys.set('0000', { wraps: [wrapKey(newFileKey(), vk)], ts: 1 }))
+  const { id } = owner.currentFileKey()
+  assert.notEqual(id, '0000')
+  assert.ok(owner.fileKeysICanOpen().has('0000'), 'it can still be opened for downloads')
 })
