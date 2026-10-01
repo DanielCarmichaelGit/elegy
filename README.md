@@ -103,7 +103,7 @@ cd ~/code/my-app
 quilt join --server wss://your-relay.example.com --name you --tool claude
 ```
 
-It prints an invite link like `https://cowove-relay.fly.dev/join/room-1a2b#…`.
+It prints an invite link like `https://relay.heyquilt.com/join/room-1a2b#…`.
 Send it to your friend. Opening it in a browser shows them how to join.
 
 **3. Your friend joins** from an empty folder (or their own clone of the same repo):
