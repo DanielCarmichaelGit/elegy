@@ -197,3 +197,23 @@ test('settings: profile is validated, saved, and used by new sessions', async ()
   assert.ok(!forgot.body.recent.some((r) => r.dir === dir))
   assert.ok(fs.existsSync(path.join(dir, '.quilt', 'config.json')), 'forgetting leaves the folder alone')
 })
+
+test('the owner can end a session for everyone from the app', async () => {
+  const dir = path.join(home, 'ending')
+  fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'bye')
+  const created = await api('POST', '/api/sessions', { mode: 'create', dir, name: 'olive', tool: 'Claude Code', hostRelay: true })
+  assert.equal(created.status, 200, JSON.stringify(created.body))
+  const id = created.body.id
+  for (let i = 0; i < 50; i++) {
+    const state = await api('GET', '/api/state')
+    const s = state.body.sessions.find((s) => s.id === id)
+    if (s?.status?.access?.owner) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  const r = await api('POST', `/api/sessions/${id}/end`)
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.deepEqual(r.body, { ok: true })
+  const state = await api('GET', '/api/state')
+  assert.equal(state.body.sessions.filter((s) => s.id === id).length, 0, 'stopped locally')
+})

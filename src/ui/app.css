@@ -62,6 +62,7 @@ h1, h2, h3, .serif { font-family: var(--sans); font-weight: 600; letter-spacing:
 .btn.primary:hover { background: color-mix(in srgb, var(--text) 86%, var(--accent)); }
 .btn.ghost { background: transparent; border-color: transparent; }
 .btn.ghost:hover { background: var(--panel-2); }
+.btn.danger { color: var(--bad); }
 .btn.sm { height: 30px; padding: 0 10px; font-size: 13px; border-radius: 4px; }
 .btn.icon { width: 38px; padding: 0; }
 .btn.sm.icon { width: 30px; }
