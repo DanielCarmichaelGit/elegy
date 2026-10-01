@@ -98,6 +98,28 @@ test('a bad request never burns the invite', async () => {
   assert.deepEqual([agent.name.length, agent.description.length], [40, 180])
 })
 
+test('name, provider, type and description must be strings, checked before the invite is claimed', async () => {
+  const { token, id } = await invite('mem')
+  assert.equal((await join(token, { ...PROFILE, name: 42 })).status, 400, 'a number, not a string')
+  assert.equal((await join(token, { ...PROFILE, provider: ['Anthropic'] })).status, 400, 'an array, not a string')
+  assert.equal((await join(token, { ...PROFILE, type: { x: 1 } })).status, 400, 'an object, not a string')
+  assert.equal((await join(token, { ...PROFILE, description: 180 })).status, 400, 'a number, not a string')
+  assert.equal(await statusOf('mem', id), 'waiting', 'none of these burned the invite')
+  assert.equal((await join(token)).status, 200, 'and the link still works')
+})
+
+test('a profile field holding the example\'s <placeholder> brackets is refused, so copying it literally never joins', async () => {
+  const { token, id } = await invite('mem')
+  assert.equal((await join(token, { ...PROFILE, name: '<your-agent-name>' })).status, 400)
+  assert.equal((await join(token, { ...PROFILE, provider: '<provider>' })).status, 400)
+  assert.equal((await join(token, { ...PROFILE, type: '<type>' })).status, 400)
+  assert.equal((await join(token, { ...PROFILE, description: '<short-description>' })).status, 400)
+  assert.equal(await statusOf('mem', id), 'waiting', 'none of these burned the invite')
+  const stray = await raw(`/v1/join/${token}?name=A&provider=B&type=C&description=looks%3Cfine%3E`)
+  assert.equal(stray.status, 400, 'the same check applies to a GET join')
+  assert.equal(await statusOf('mem', id), 'waiting')
+})
+
 test('an agent may bring its own public key, which belongs to one agent only', async () => {
   const id = generateIdentity()
   const a = await invite('mem'); const b = await invite('mem')
@@ -105,6 +127,22 @@ test('an agent may bring its own public key, which belongs to one agent only', a
   assert.equal((await t.store.agentById(r.body.agentId)).publicKey, id.publicKey)
   assert.equal((await join(b.token, { ...PROFILE, publicKey: id.publicKey })).status, 409)
   assert.equal(await statusOf('mem', b.id), 'waiting')
+})
+
+test('two joins racing with the same public key: the one the pre-check misses still gets a clear 409 from the store itself', async () => {
+  const id = generateIdentity()
+  const a = await invite('mem'); const b = await invite('mem')
+  // Make every read see "no agent has this key yet", as two requests racing truly
+  // concurrently would, so the friendly pre-check in join() can't catch it and the
+  // store's own unique index is what actually stops the second one.
+  const racy = { ...t.store, agentByPublicKey: async () => null }
+  const t2 = await startTestApi({ store: racy })
+  try {
+    const winner = await t2.call('POST', `/v1/join/${a.token}`, { ...PROFILE, publicKey: id.publicKey })
+    assert.equal(winner.status, 200)
+    const loser = await t2.call('POST', `/v1/join/${b.token}`, { ...PROFILE, publicKey: id.publicKey })
+    assert.deepEqual([loser.status, loser.body.error], [409, 'That public key already belongs to an agent.'])
+  } finally { await t2.close() }
 })
 
 test('expired, cancelled and unknown invites are refused, and their GET says why', async () => {
@@ -160,6 +198,23 @@ test('a join that fails part way removes the half-made agent and reopens the inv
   assert.deepEqual([after.usedAt, after.usedByAgentId], [null, null])
   assert.equal((await t.store.listMembers(o.org.id)).some((m) => m.name === 'Half'), false, 'the half-made agent is gone')
   assert.equal((await join(token)).status, 200, 'and the link still works')
+})
+
+test('a join that fails part way, when the half-made agent itself cannot be deleted, leaves the invite used instead of reopening it', async () => {
+  const o = await makeOrg(t, 'Join Worse Co')
+  const core = await t.store.createTeam({ orgId: o.org.id, name: 'Core' })
+  const { token, id } = await invite('admin', `/v1/orgs/${o.slug}/agent-invites`, { teams: [{ teamId: core.id }] })
+  const logs = []
+  const broken = await startTestApi({
+    store: { ...t.store, addTeamMember: async () => { throw new Error('db down') }, deleteAgent: async () => { throw new Error('delete also down') } },
+    log: (m) => logs.push(m)
+  })
+  try {
+    assert.equal((await broken.call('POST', `/v1/join/${token}`, { ...PROFILE, name: 'Stuck' })).status, 500)
+  } finally { await broken.close() }
+  const after = await t.store.agentInviteById(id)
+  assert.ok(after.usedAt, 'the invite stays used: retrying would only make a second broken agent')
+  assert.ok(logs.some((m) => m.includes('join rollback')), 'the failed delete is logged')
 })
 
 test('joining is rate-limited per address', async () => {

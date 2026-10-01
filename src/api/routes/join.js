@@ -14,19 +14,28 @@ const GONE = {
   cancelled: 'this invite was cancelled; ask for a new one'
 }
 
-export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth }) {
+export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = () => {} }) {
   const inviteFor = async (token) => (String(token).startsWith('qj_') ? store.agentInviteByToken(hashToken(token)) : null)
   const statusOf = (invite) => (invite ? inviteStatus(invite, now()) : 'unknown')
+
+  // Required as an actual string, never a stray number or object a loose client sent,
+  // and never the literal <placeholder> text from the join instructions.
+  function field (value, name, fallback) {
+    if (value === undefined && fallback !== undefined) value = fallback
+    if (typeof value !== 'string') throw new HttpError(400, `${name} must be a string`)
+    if (value.includes('<') || value.includes('>')) throw new HttpError(400, `${name} can't contain < or >`)
+    return value
+  }
 
   // The agent's profile, checked in full before the invite is touched.
   function profile (src) {
     const publicKey = src.publicKey == null || src.publicKey === '' ? null : String(src.publicKey)
     if (publicKey && !parsePublicKey(publicKey)) throw new HttpError(400, 'publicKey must be an Ed25519 key (spki, base64url)')
     return {
-      name: cleanName(src.name, 40, 'give your name (up to 40 characters)'),
-      provider: cleanName(src.provider, 40, 'give your provider, e.g. Anthropic, OpenAI or Cursor'),
-      type: cleanName(src.type, 40, 'give your type, e.g. coding agent'),
-      description: stripInvisible(src.description ?? '').slice(0, MAX_DESCRIPTION).join('').trim(),
+      name: cleanName(field(src.name, 'name'), 40, 'give your name (up to 40 characters)'),
+      provider: cleanName(field(src.provider, 'provider'), 40, 'give your provider, e.g. Anthropic, OpenAI or Cursor'),
+      type: cleanName(field(src.type, 'type'), 40, 'give your type, e.g. coding agent'),
+      description: stripInvisible(field(src.description, 'description', '')).slice(0, MAX_DESCRIPTION).join('').trim(),
       publicKey
     }
   }
@@ -56,8 +65,16 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth }) {
       return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl }) }
     } catch (err) {
       // Undo the half-made agent and reopen the link, so the AI can simply try again.
-      if (agent) await store.deleteAgent(agent.id).catch(() => {})
-      await store.releaseAgentInvite(invite.id).catch(() => {})
+      // But if the agent couldn't be deleted, it may still be half-wired into the org
+      // (team membership, etc): leave the invite used rather than hand out a link that
+      // would make a second, equally broken agent on top of the first.
+      let deleted = !agent
+      if (agent) {
+        try { await store.deleteAgent(agent.id); deleted = true } catch (delErr) {
+          log(`join rollback: couldn't delete half-made agent ${agent.id}: ${delErr?.stack || delErr?.message || delErr}`)
+        }
+      }
+      if (deleted) await store.releaseAgentInvite(invite.id).catch(() => {})
       throw err
     }
   }

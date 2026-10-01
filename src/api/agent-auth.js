@@ -40,7 +40,15 @@ export function makeAgentAuth ({ store, now, bearer }) {
     if (!agent || agent.revokedAt) throw new HttpError(401, 'This agent was revoked.')
     // Two refreshes racing with one key: only one spends it, and the other is a reuse.
     if (!await store.claimRefresh(row.id)) { await store.revokeFamily(row.familyId); throw new HttpError(401, REUSED) }
-    const pair = await mintKeys(agent.id, row.familyId)
+    let pair
+    try {
+      pair = await mintKeys(agent.id, row.familyId)
+    } catch (err) {
+      // Minting failed after the claim went through: release it rather than
+      // leave the key stuck "spent" with no pair to show for it.
+      await store.releaseRefresh(row.id)
+      throw err
+    }
     // A reuse caught while this pair was being made (the family revoked
     // meanwhile) must not leave this new pair working.
     if ((await store.agentKeyByRefresh(hashToken(key)))?.revokedAt) { await store.revokeFamily(row.familyId); throw new HttpError(401, REUSED) }

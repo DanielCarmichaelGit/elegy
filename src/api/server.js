@@ -179,13 +179,20 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   }
 
   const server = http.createServer(async (req, res) => {
+    // The parsed pathname (not the raw url string) decides this: it's what a route
+    // actually matches against, so "/v1/../v1/join/x" counts as a join link too.
+    let pathname
+    try { pathname = new URL(req.url, 'http://x').pathname } catch { pathname = '' }
     // Join links are secrets in a URL: never cache them, and ask crawlers not to index them.
-    const extra = String(req.url).startsWith('/v1/join/') ? { 'x-robots-tag': 'noindex' } : {}
+    const extra = pathname.startsWith('/v1/join/') ? { 'x-robots-tag': 'noindex' } : {}
     const send = (status, data, type = 'application/json') => {
       res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...extra, ...cors(req) })
       res.end(type === 'application/json' ? JSON.stringify(data) : data)
     }
-    if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' }); return res.end() }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { 'cache-control': 'no-store', ...extra, ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' })
+      return res.end()
+    }
     try {
       const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
@@ -196,8 +203,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       else if (Array.isArray(out)) send(out[0], out[1])
       else send(200, out)
     } catch (err) {
-      // A unique index said no (a taken team or role name): the caller can fix that.
-      if (err?.code === '23505') return send(409, { error: 'that name is already taken' })
+      // A unique index said no. Agents share one index on their public key; everything
+      // else that's unique (a taken team or role name) gets the generic message.
+      if (err?.code === '23505') {
+        const detail = `${err.constraint || ''} ${err.message || ''} ${err.details || ''}`
+        return send(409, { error: detail.includes('public_key') ? 'That public key already belongs to an agent.' : 'that name is already taken' })
+      }
       // A foreign-key check said no (something from another org, or still referenced): a conflict, not a crash.
       if (err?.code === '23503') return send(409, { error: 'that is still in use' })
       // Supabase errors are plain objects, so fall back to their JSON.

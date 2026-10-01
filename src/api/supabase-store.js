@@ -131,6 +131,10 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async revokeFamily (familyId) {
       await one(db.from('agent_keys').update({ revoked_at: new Date().toISOString() }).eq('family_id', familyId).is('revoked_at', null))
     },
+    // Undoes a claim when minting the new pair failed, so the same refresh key can retry.
+    async releaseRefresh (id) {
+      await one(db.from('agent_keys').update({ refreshed_at: null }).eq('id', id).is('revoked_at', null))
+    },
     // Deleting the auth user cascades through profiles, devices, links and agents.
     async deleteUser (userId) {
       const { error } = await db.auth.admin.deleteUser(userId)

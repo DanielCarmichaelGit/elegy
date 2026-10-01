@@ -96,6 +96,55 @@ test('two refreshes racing with one key: at most one gets a pair, and no pair su
   for (const r of results.filter((x) => x.status === 200)) assert.equal((await me(r.body.accessKey)).status, 401)
 })
 
+test('if minting the new pair fails after the claim went through, the claim is released so the same key can retry', async () => {
+  const { agent, refreshKey } = await makeAgent(t, { ownerUserId: 'mem' })
+  let fail = true
+  const flaky = { ...t.store, createAgentKeys: async (k) => { if (fail) { fail = false; throw new Error('db hiccup') } return t.store.createAgentKeys(k) } }
+  const t2 = await startTestApi({ store: flaky })
+  try {
+    const first = await t2.call('POST', '/v1/agents/token', { refreshKey })
+    assert.equal(first.status, 500, 'the mint failure surfaces, not a false reuse')
+    const retry = await t2.call('POST', '/v1/agents/token', { refreshKey })
+    assert.equal(retry.status, 200, 'the same refresh key works on retry')
+    assert.equal((await t2.call('GET', '/v1/agents/me', null, null, { authorization: `Bearer ${retry.body.accessKey}` })).status, 200)
+    const rows = await t.store.listAgentKeys(agent.id)
+    assert.equal(rows.some((k) => k.revokedAt), false, 'nothing was revoked')
+  } finally { await t2.close() }
+})
+
+test('two refreshes forced to interleave inside claimRefresh: at most one pair survives, the family is revoked', async () => {
+  const { agent, refreshKey } = await makeAgent(t, { ownerUserId: 'mem' })
+  // Both calls stall right before the real claimRefresh mutation until both have
+  // arrived, so the check-and-set genuinely races rather than happening to run in order.
+  let entered = 0
+  let release
+  const bothIn = new Promise((resolve) => { release = resolve })
+  const paused = {
+    ...t.store,
+    async claimRefresh (id) {
+      if (++entered === 2) release()
+      await bothIn
+      return t.store.claimRefresh(id)
+    }
+  }
+  const t2 = await startTestApi({ store: paused })
+  try {
+    const results = await Promise.all([
+      t2.call('POST', '/v1/agents/token', { refreshKey }),
+      t2.call('POST', '/v1/agents/token', { refreshKey })
+    ])
+    // The claim itself is exclusive (one true, one false), but even the "true" side can
+    // lose: if the loser's reuse-triggered revoke lands before the winner's post-mint
+    // recheck, the winner's own pair comes back dead too. Either way, no pair survives.
+    assert.ok(results.some((r) => r.status === 401), 'the losing side is always a reuse')
+    for (const r of results.filter((x) => x.status === 200)) {
+      assert.equal((await t2.call('GET', '/v1/agents/me', null, null, { authorization: `Bearer ${r.body.accessKey}` })).status, 401, 'a surviving 200 still has a dead key')
+    }
+    const rows = await t.store.listAgentKeys(agent.id)
+    assert.ok(rows.every((k) => k.revokedAt), 'the whole family is revoked')
+  } finally { await t2.close() }
+})
+
 test('bad, expired and revoked refresh keys are 401s', async () => {
   assert.equal((await t.call('POST', '/v1/agents/token', {})).status, 401)
   assert.equal((await refresh('qr_nope')).status, 401)

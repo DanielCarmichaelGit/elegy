@@ -135,6 +135,25 @@ test('browsers: only the website origin gets CORS headers', async () => {
   assert.equal(other.headers.get('access-control-allow-origin'), null)
 })
 
+test('join links are never cached or indexed, by their parsed path rather than the raw url', async () => {
+  // The parsed pathname normalizes dot segments, so a path that only looks like it's
+  // escaping /v1/join/ still gets the same treatment as a plain one.
+  for (const path of ['/v1/join/qj_nope', '/v1/../v1/join/qj_nope', '/v1/orgs/../join/qj_nope']) {
+    const r = await fetch(api.url + path)
+    assert.equal(r.headers.get('cache-control'), 'no-store', path)
+    assert.equal(r.headers.get('x-robots-tag'), 'noindex', path)
+  }
+  const notJoin = await fetch(api.url + '/healthz')
+  assert.equal(notJoin.headers.get('x-robots-tag'), null)
+  for (const path of ['/v1/join/qj_nope', '/v1/../v1/join/qj_nope']) {
+    const opt = await fetch(api.url + path, { method: 'OPTIONS' })
+    assert.equal(opt.headers.get('cache-control'), 'no-store', `OPTIONS ${path}`)
+    assert.equal(opt.headers.get('x-robots-tag'), 'noindex', `OPTIONS ${path}`)
+  }
+  const optOther = await fetch(api.url + '/v1/agents', { method: 'OPTIONS' })
+  assert.equal(optOther.headers.get('x-robots-tag'), null)
+})
+
 test('starting links is rate-limited per address', async () => {
   const limited = await startApi({ store: createMemoryStore(), verifyUser, siteUrl: SITE, startLimit: 2 })
   try {

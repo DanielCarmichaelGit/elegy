@@ -119,6 +119,10 @@ test('supabase agent keys: ISO expiries, a refresh spent once, a family revoked 
   await s.revokeFamily('f1')
   assert.ok(has(calls[4], 'eq', 'family_id', 'f1'))
   assert.ok(has(calls[4], 'is', 'revoked_at', null))
+  await s.releaseRefresh('k1')
+  assert.ok(has(calls[5], 'update', { refreshed_at: null }))
+  assert.ok(has(calls[5], 'eq', 'id', 'k1'))
+  assert.ok(has(calls[5], 'is', 'revoked_at', null))
 })
 
 test('supabase setTeamAccess changes folders only when given; teamsOfMember returns them', async () => {

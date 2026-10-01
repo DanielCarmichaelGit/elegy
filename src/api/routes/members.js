@@ -65,6 +65,10 @@ export function memberRoutes ({ store, user }) {
         // An agent's role is Agents: Update, and it may have none (team access only).
         a.need('agents', 'u')
         await outranks(a, m)
+        // roleId must be given explicitly: a body that omits it is never read as "clear
+        // the role", so a partial PUT (e.g. missing a field a future client meant to send)
+        // can't silently wipe one.
+        if (!('roleId' in body)) throw new HttpError(400, 'roleId is required; use null to clear the role')
         const role = body.roleId ? await a.assignable(body.roleId) : null
         const saved = await store.setMemberRole(m.id, role ? role.id : null)
         return { member: { id: saved.id, roleId: saved.roleId } }

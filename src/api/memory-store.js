@@ -6,6 +6,12 @@ const uuid = () => crypto.randomUUID()
 const copy = (o) => (o ? structuredClone(o) : null)
 // Postgres's unique-violation code, which the API turns into a 409.
 const duplicate = (what) => Object.assign(new Error(`${what} already exists`), { code: '23505' })
+// The one unique-violation the API gives its own message: it checks the constraint
+// name, the message and the details for 'public_key', the way a real Postgres error
+// (constraint "agents_public_key_key", detail "Key (public_key)=(...) already exists.") would read.
+const duplicatePublicKey = () => Object.assign(new Error('duplicate key value violates unique constraint "agents_public_key_key"'), {
+  code: '23505', constraint: 'agents_public_key_key', details: 'Key (public_key)=(...) already exists.'
+})
 // Postgres's foreign-key-violation code, mirrored for the checks the schema
 // enforces with NO ACTION (a delete blocked by a live reference) and for
 // composite-FK checks at insert time (a row that doesn't point at a valid
@@ -88,7 +94,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // agents_one_home (a person's or an org's, never both) and the unique public_key.
     async createAgent ({ name, provider, type, description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = null }) {
       if ((ownerUserId == null) === (orgId == null)) throw Object.assign(new Error('an agent belongs to one person or one org'), { code: '23514' })
-      if (publicKey && all(agents, (a) => a.publicKey === publicKey).length) throw duplicate('agent')
+      if (publicKey && all(agents, (a) => a.publicKey === publicKey).length) throw duplicatePublicKey()
       const row = { id: uuid(), name, provider, type, description, publicKey, ownerUserId, orgId, invitedBy, createdAt: now(), lastUsedAt: null, revokedAt: null }
       agents.set(row.id, row); return copy(row)
     },
@@ -155,6 +161,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     async revokeFamily (familyId) {
       for (const k of keyRows.values()) if (k.familyId === familyId && !k.revokedAt) k.revokedAt = now()
+    },
+    // Undoes a claim when minting the new pair failed, so the same refresh key can retry.
+    async releaseRefresh (id) {
+      const k = keyRows.get(id)
+      if (k && !k.revokedAt) k.refreshedAt = null
     },
     async deleteUser (userId) {
       profiles.delete(userId); users.delete(userId)

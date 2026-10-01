@@ -45,6 +45,15 @@ test("an org agent's role needs Agents: Update and stays within your grid; no ro
   assert.equal((await put('mem', null)).status, 200, 'Tender can take a role away')
 })
 
+test("an org agent's role is left alone by a PUT body that leaves roleId out entirely", async () => {
+  const o = await makeOrg(t, 'Partial Body Co')
+  const { agent } = await makeAgent(t, { orgId: o.org.id })
+  const m = await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id, roleId: o.role('member').id })
+  const r = await t.call('PUT', `/v1/orgs/${o.slug}/members/${m.id}`, {}, 'admin')
+  assert.deepEqual([r.status, r.body.error], [400, 'roleId is required; use null to clear the role'])
+  assert.equal((await t.store.memberById(o.org.id, m.id)).roleId, o.role('member').id, "a missing roleId never clears the agent's role")
+})
+
 test("an agent's team folders change with Team membership; people have no folders", async () => {
   const o = await makeOrg(t, 'Folder Co')
   const core = (await t.call('POST', `/v1/orgs/${o.slug}/teams`, { name: 'Core' }, 'admin')).body.team
