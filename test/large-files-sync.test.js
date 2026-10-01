@@ -245,3 +245,108 @@ test('uploading a file that is already stored counts as done', async (t) => {
   assert.deepEqual(puts, [409])
   assert.equal(A.blobs.get('photo.png').stored.id, id)
 })
+
+/** Replaces fetch for this test: `fn(url, opts, real)` answers each request. */
+function stubFetch (t, fn) {
+  const real = globalThis.fetch
+  globalThis.fetch = (url, opts) => fn(String(url), opts || {}, real)
+  t.after(() => { globalThis.fetch = real })
+}
+const gate = () => { let open; const p = new Promise((resolve) => { open = resolve }); return { p, open } }
+
+test('an upload that finishes after a partner\'s newer version arrived does not replace it', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  const A = await open(dirA, 'alice', { room })
+  const B = await open(dirB, 'bob', { room })
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img) && B.storedOnDisk.get('photo.png'))
+
+  // Bob's next upload and every download wait until released.
+  const put = gate(); const downloads = gate()
+  let held = null
+  stubFetch(t, async (url, opts, real) => {
+    if (opts.method === 'PUT' && !held) { held = url; await put.p }
+    if (url.includes('/download')) await downloads.p
+    return real(url, opts)
+  })
+  const mine = big()
+  fs.writeFileSync(path.join(dirB, 'photo.png'), mine)
+  await waitFor(() => held)
+  const next = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), next)
+  await waitFor(() => B.blobs.get('photo.png')?.hash === sha1(next) && B.downloading.has('photo.png'))
+  put.open()
+  await waitFor(() => !B.uploading.has('photo.png'))
+  await roundTrip(B, A)
+  assert.equal(A.blobs.get('photo.png').hash, sha1(next), 'Alice\'s newer version stays')
+  downloads.open()
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(next))
+  const conflicts = path.join(B.stateDir, 'conflicts')
+  assert.ok(fs.readdirSync(conflicts).some((d) => bytes(path.join(conflicts, d), 'photo.png')?.equals(mine)), 'Bob\'s version was kept aside')
+})
+
+test('a file the relay refuses as too big is skipped until it changes', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a')
+  const A = await open(dirA, 'alice', { room })
+  const logs = []
+  A.on('log', (m) => logs.push(m))
+  let asked = 0
+  stubFetch(t, (url, opts, real) => {
+    if (url.endsWith('/upload')) { asked++; return Promise.resolve(new Response('files over 1 MB can\'t be shared', { status: 413 })) }
+    return real(url, opts)
+  })
+  fs.writeFileSync(path.join(dirA, 'huge.bin'), big())
+  await waitFor(() => logs.some((m) => /skipping huge\.bin: the relay won't store it \(files over 1 MB/.test(m)))
+  assert.equal(A.retry.has('huge.bin'), false, 'not retried')
+  A.retryFailed()
+  A.ingest('huge.bin')
+  assert.equal(asked, 1)
+  assert.equal(A.blobs.has('huge.bin'), false)
+  assert.equal(logs.filter((m) => m.includes('skipping huge.bin')).length, 1, 'warned once')
+  fs.writeFileSync(path.join(dirA, 'huge.bin'), big())
+  await waitFor(() => asked === 2)
+})
+
+test('an app whose invite only lets it view shares large files inside the document, up to 8 MB', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const A = await open(dirA, 'alice', { room })
+  await open(dirB, 'bob', { room })
+  const logs = []
+  A.on('log', (m) => logs.push(m))
+  stubFetch(t, (url, opts, real) => {
+    if (url.endsWith('/upload')) return Promise.resolve(new Response('you can only view this session', { status: 403 }))
+    return real(url, opts)
+  })
+  const img = big()
+  fs.writeFileSync(path.join(dirA, 'photo.png'), img)
+  await waitFor(() => bytes(dirB, 'photo.png')?.equals(img))
+  assert.ok(A.blobs.get('photo.png').data, 'inline')
+  fs.writeFileSync(path.join(dirA, 'video.bin'), crypto.randomBytes(9 * 1024 * 1024))
+  await waitFor(() => logs.some((m) => /skipping video\.bin: you joined with a view-only invite/.test(m)))
+  assert.equal(A.retry.has('video.bin'), false, 'not retried')
+  assert.equal(A.blobs.has('video.bin'), false)
+})
+
+test('at most two large files move at once; the rest wait their turn', async (t) => {
+  const room = `lf-${++n}`
+  const dirA = tmp('a'); const dirB = tmp('b')
+  const A = await open(dirA, 'alice', { room })
+  await open(dirB, 'bob', { room })
+  const puts = gate()
+  let running = 0; let most = 0
+  stubFetch(t, async (url, opts, real) => {
+    if (opts.method !== 'PUT') return real(url, opts)
+    running++; most = Math.max(most, running)
+    try { await puts.p; return await real(url, opts) } finally { running-- }
+  })
+  const files = ['a.bin', 'b.bin', 'c.bin', 'd.bin'].map((name) => [name, big()])
+  for (const [name, buf] of files) fs.writeFileSync(path.join(dirA, name), buf)
+  await waitFor(() => running === 2 && A.transferQueue.length === 2)
+  puts.open()
+  for (const [name, buf] of files) await waitFor(() => bytes(dirB, name)?.equals(buf))
+  assert.equal(most, 2)
+})

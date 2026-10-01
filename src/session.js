@@ -36,6 +36,8 @@ const WATCH_RECHECK_MS = 80
 const RECONCILE_MS = 1000
 // Failed large-file uploads and downloads are tried again this often (and on reconnecting).
 const RETRY_MS = 30 * 1000
+// Large uploads and downloads each hold the whole file in memory (twice), so only this many run at once.
+const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null }) {
@@ -64,6 +66,11 @@ export class Session extends EventEmitter {
     this.largeFilesOff = false // the relay has no file storage (an older relay)
     this.storedOnDisk = new Map() // path -> hash of the stored large file actually in the folder (saved in state.json)
     this.retry = new Map() // path -> 'upload'|'download' that failed and is tried again later
+    // path -> { hash, inline } the relay refused to store for good; tried again only once the file changes.
+    // `inline`: it may travel inside the document instead.
+    this.uploadRefused = new Map()
+    this.transfers = 0 // large uploads and downloads running
+    this.transferQueue = [] // resolvers waiting for one to finish
     this.stopped = false
     // pattern -> { by, pattern, note, ts }. The relay owns claims (it checks
     // who asks), so they live outside the shared doc; we keep the last list.
@@ -467,8 +474,10 @@ export class Session extends EventEmitter {
       return false
     }
     if (disk.binary && disk.buf.length >= LARGE_FILE_BYTES && !this.largeFilesOff) {
-      this.uploadLarge(rel, disk)
-      return false
+      const refused = this.uploadRefused.get(rel)
+      if (!refused || refused.hash !== disk.hash) { this.uploadLarge(rel, disk); return false }
+      if (!refused.inline || disk.buf.length > MAX_BINARY_BYTES) return false
+      // Storage refused it, but it's small enough to share inside the document.
     }
 
     let detail = ''
@@ -717,15 +726,36 @@ export class Session extends EventEmitter {
     return res.json()
   }
 
+  /** Waits for a free transfer slot; call doneTransfer() when finished. */
+  async startTransfer () {
+    if (this.transfers < MAX_TRANSFERS) { this.transfers++; return }
+    await new Promise((resolve) => this.transferQueue.push(resolve))
+  }
+
+  doneTransfer () {
+    const next = this.transferQueue.shift()
+    if (next) next() // the slot passes straight on
+    else this.transfers--
+  }
+
   /** Encrypts and uploads a large file, then points the shared document at it. */
   async uploadLarge (rel, disk) {
-    if (this.uploading.get(rel) === disk.hash) return
-    this.uploading.set(rel, disk.hash)
+    const { hash, key: diskKey } = disk
+    disk = null // read again once it's our turn, so waiting uploads don't hold files in memory
+    if (this.uploading.get(rel) === hash) return
+    this.uploading.set(rel, hash)
+    // If a partner's version lands while this uploads, theirs wins (ours is kept as a conflict copy).
+    const sharedBefore = this.sharedKey(rel)
+    await this.startTransfer()
     try {
+      if (this.stopped) return
+      const cur = this.readDisk(rel)
+      if (!cur || cur.key !== diskKey) return // it changed again; that change is already queued
       const { id: keyId, key } = this.currentFileKey()
-      const id = blobId(key, disk.hash)
+      const id = blobId(key, hash)
       // Encrypted first: the upload link is signed for exactly the size we send.
-      const sealed = encryptBlob(disk.buf, key)
+      const sealed = encryptBlob(cur.buf, key)
+      const size = cur.buf.length
       const target = await this.blobRequest(id, 'upload', { size: sealed.length })
       if (!target.exists) {
         const res = await fetch(new URL(target.url, this.httpBase() + '/'), {
@@ -736,28 +766,55 @@ export class Session extends EventEmitter {
         if (!res.ok && !(await alreadyStored(res))) throw Object.assign(new Error(`upload failed (HTTP ${res.status})`), { status: res.status, put: true })
       }
       const now = this.readDisk(rel)
-      if (!now || now.key !== disk.key) return // it changed again; that change is already queued
+      if (!now || now.key !== diskKey) return // it changed again; that change is already queued
+      if (this.sharedKey(rel) !== sharedBefore || this.downloading.has(rel)) return // a partner's newer version wins
       const existed = this.files.has(rel) || this.blobs.has(rel)
       this.doc.transact(() => {
         this.files.delete(rel)
-        this.blobs.set(rel, { hash: disk.hash, size: disk.buf.length, stored: { id, key: keyId } })
-        this.recordActivity(rel, existed ? 'edited' : 'created', `${disk.buf.length} bytes`)
+        this.blobs.set(rel, { hash, size, stored: { id, key: keyId } })
+        this.recordActivity(rel, existed ? 'edited' : 'created', `${size} bytes`)
       }, LOCAL)
-      this.lastKnown.set(rel, disk.key)
-      this.setOnDisk(rel, disk.hash)
+      this.lastKnown.set(rel, diskKey)
+      this.setOnDisk(rel, hash)
       this.retry.delete(rel)
+      this.uploadRefused.delete(rel)
       this.noteMyEdit(rel)
     } catch (err) {
-      if (err.status === 404) {
-        // An older relay without file storage: share it inside the document if it fits.
-        this.largeFilesOff = true
-        this.queue(rel)
-      } else {
-        this.log(`could not upload ${rel}: ${err.message}`)
-        this.retry.set(rel, 'upload')
-      }
+      this.uploadFailed(rel, hash, err)
     } finally {
-      if (this.uploading.get(rel) === disk.hash) this.uploading.delete(rel)
+      this.doneTransfer()
+      if (this.uploading.get(rel) === hash) this.uploading.delete(rel)
+    }
+  }
+
+  /** Decides what to do after an upload failed: try later, share it another way, or give up until it changes. */
+  uploadFailed (rel, hash, err) {
+    const warnOnce = (msg) => {
+      if (this.warnedLarge.has(rel)) return
+      this.warnedLarge.add(rel)
+      this.log(msg)
+    }
+    if (err.status === 404 && !err.put) {
+      // An older relay without file storage: share it inside the document if it fits.
+      this.largeFilesOff = true
+      this.queue(rel)
+    } else if (err.status === 413) {
+      // Over the relay's size limit, or the session's storage is full.
+      this.uploadRefused.set(rel, { hash, inline: false })
+      warnOnce(`skipping ${rel}: the relay won't store it (${err.message}). It will be tried again if the file changes.`)
+    } else if (err.status === 403 && !err.put) {
+      // Our invite only lets us view (even if we may edit now), so we can't store files.
+      this.uploadRefused.set(rel, { hash, inline: true })
+      let size = Infinity
+      try { size = fs.statSync(path.join(this.root, ...rel.split('/'))).size } catch {}
+      if (size <= MAX_BINARY_BYTES) this.queue(rel)
+      else warnOnce(`skipping ${rel}: you joined with a view-only invite, so files over ${MAX_BINARY_BYTES / 1024 / 1024} MB can't be shared from here`)
+    } else if (!err.status || err.status >= 500) {
+      // Network trouble or a relay or storage hiccup: try again later.
+      this.log(`could not upload ${rel}: ${err.message}`)
+      this.retry.set(rel, 'upload')
+    } else {
+      this.log(`could not upload ${rel}: ${err.message}`)
     }
   }
 
@@ -766,9 +823,15 @@ export class Session extends EventEmitter {
     if (this.downloading.get(rel) === entry.hash) return
     this.downloading.set(rel, entry.hash)
     const before = this.readDisk(rel)?.key
+    let started = false
     try {
+      if (!this.fileKeysICanOpen().has(entry.stored.key)) return // its key hasn't arrived yet; the fileKeys observer retries
+      await this.startTransfer()
+      started = true
+      if (this.stopped) return
+      const cur0 = this.blobs.get(rel)
+      if (!cur0 || cur0.hash !== entry.hash) return // replaced while waiting; that version is on its way
       const key = this.fileKeysICanOpen().get(entry.stored.key)
-      if (!key) return // its key hasn't arrived yet; the fileKeys observer retries
       const { url } = await this.blobRequest(entry.stored.id, 'download')
       const res = await fetch(new URL(url, this.httpBase() + '/'))
       if (!res.ok) throw new Error(`download failed (HTTP ${res.status})`)
@@ -791,6 +854,7 @@ export class Session extends EventEmitter {
       this.log(`could not download ${rel}: ${err.message}`)
       this.retry.set(rel, 'download')
     } finally {
+      if (started) this.doneTransfer()
       if (this.downloading.get(rel) === entry.hash) this.downloading.delete(rel)
       // Look again at anything ingest skipped meanwhile. Only if the folder
       // changed, so a download that can't happen yet doesn't loop.
