@@ -88,7 +88,27 @@
     },
     "dmg": {
       "title": "Quilt",
-      "artifactName": "quilt-mac-${arch}.${ext}"
+      "artifactName": "quilt-mac-${arch}.${ext}",
+      "background": "desktop/build/background.png",
+      "iconSize": 96,
+      "iconTextSize": 13,
+      "window": {
+        "width": 660,
+        "height": 420
+      },
+      "contents": [
+        {
+          "x": 180,
+          "y": 215,
+          "type": "file"
+        },
+        {
+          "x": 480,
+          "y": 215,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "win": {
       "target": [

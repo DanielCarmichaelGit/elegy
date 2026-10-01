@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 660px; height: 420px; overflow: hidden; }
+  body {
+    background: #fff8f3; font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; color: #2b2a38;
+    position: relative;
+  }
+  /* Quilt patches in the corners, in the Sherbet palette */
+  .patch { position: absolute; width: 46px; height: 46px; border-radius: 9px; }
+  .title { position: absolute; top: 36px; width: 100%; text-align: center; font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+  .sub { position: absolute; top: 70px; width: 100%; text-align: center; font-size: 13.5px; color: #6e6c7e; }
+  /* Finder draws the icons at (180,215) and (480,215); the arrow sits between them */
+  .arrow { position: absolute; left: 262px; top: 191px; }
+  .note {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 50px; width: 520px; box-sizing: border-box;
+    padding: 10px 14px; border-radius: 8px; background: #fdeee6; border: 1px solid #f3dfd4;
+    font-size: 11.5px; line-height: 1.45; color: #6e6c7e; text-align: center;
+  }
+  .note b { color: #2b2a38; font-weight: 600; }
+</style></head>
+<body>
+  <div class="patch" style="left:-14px;top:-14px;background:#ffb8a3"></div>
+  <div class="patch" style="left:38px;top:-24px;background:#ffe08a"></div>
+  <div class="patch" style="left:-24px;top:38px;background:#c9b8ff"></div>
+  <div class="patch" style="right:-14px;top:-14px;background:#a8e6cf"></div>
+  <div class="patch" style="right:38px;top:-24px;background:#c9b8ff"></div>
+  <div class="patch" style="right:-24px;top:38px;background:#ffb8a3"></div>
+
+  <div class="title">Install Quilt</div>
+  <div class="sub">Drag the Quilt icon into your Applications folder.</div>
+
+  <svg class="arrow" width="136" height="48" viewBox="0 0 136 48" fill="none">
+    <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#ffe08a"/><stop offset="1" stop-color="#ffb8a3"/></linearGradient></defs>
+    <path d="M8 24 C40 6 80 6 106 18" stroke="url(#g)" stroke-width="6" stroke-linecap="round" stroke-dasharray="1 12"/>
+    <path d="M106 10 L124 23 L106 34" stroke="#ff9f86" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+
+  <div class="note"><b>Opening it the first time?</b> If macOS says it can’t verify Quilt, open <b>System Settings → Privacy &amp; Security</b>, scroll down and click <b>Open Anyway</b>. You only do this once.</div>
+</body></html>
