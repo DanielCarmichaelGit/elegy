@@ -233,3 +233,26 @@ test('signing in twice is refused, and an approval that lands after cancelling i
     await proxy.close()
   }
 })
+
+test("a sign-in this computer can't save fails clearly, and its token is revoked", async () => {
+  assert.equal((await api('GET', '/api/account')).body.signedIn, false)
+  // A folder where account.json goes: saving the sign-in fails.
+  fs.mkdirSync(path.join(accountFile, 'blocked'), { recursive: true })
+  const proxy = await gatedApi(accounts.api.url)
+  process.env.QUILT_API_URL = proxy.url
+  try {
+    const started = await api('POST', '/api/account/start')
+    assert.equal(started.status, 200, JSON.stringify(started.body))
+    await accounts.call('POST', '/v1/device/approve', { userCode: started.body.link.userCode, approve: true }, 'mem')
+    const failed = await waitFor(async () => { const r = await api('GET', '/api/account'); return r.body.link && r.body.link.state === 'failed' && r.body })
+    assert.equal(failed.signedIn, false)
+    assert.equal(failed.link.error, "Quilt couldn't save your sign-in on this computer.")
+    const token = await proxy.token
+    await waitFor(async () => (await accounts.call('GET', '/v1/me', null, null, { authorization: `Bearer ${token}` })).status === 401)
+  } finally {
+    process.env.QUILT_API_URL = accounts.api.url
+    fs.rmSync(accountFile, { recursive: true, force: true })
+    await api('POST', '/api/account/cancel')
+    await proxy.close()
+  }
+})

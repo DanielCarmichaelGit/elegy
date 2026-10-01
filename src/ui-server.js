@@ -21,6 +21,7 @@ import { loadIdentity } from './identity.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
+const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
 const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
 // Until this computer is signed in, only these answer.
 const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown'])
@@ -146,7 +147,19 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     waitForLink({ identity, link: mine, stopped: () => link !== mine }).then((r) => {
       // Approved after it was cancelled or replaced: don't leave that token live on the server.
       if (link !== mine) return revokeToken({ token: r.token })
-      saveAccount({ token: r.token, account: accountFromProfile(r.profile), signedInAt: Date.now() })
+      // Not saved (or an odd reply), so this computer isn't signed in: don't leave the token live either.
+      const failed = (message) => {
+        revokeToken({ token: r.token })
+        mine.state = 'failed'
+        mine.error = message
+      }
+      let account
+      try { account = accountFromProfile(r.profile) } catch (err) { return failed(err.message) }
+      try {
+        saveAccount({ token: r.token, account, signedInAt: Date.now() })
+      } catch {
+        return failed(SAVE_FAILED)
+      }
       link = null
       passes = null
       signedOutReason = null
