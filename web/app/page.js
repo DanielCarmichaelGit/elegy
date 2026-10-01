@@ -1,14 +1,19 @@
-import { headers } from 'next/headers'
+import { Suspense } from 'react'
 import Header from '@/components/Header.js'
 import Footer from '@/components/Footer.js'
 import Mark from '@/components/Mark.js'
 import DownloadButtons from '@/components/DownloadButtons.js'
-import { pickDownloads } from '@/lib/platform.js'
+import DeletedNotice from '@/components/DeletedNotice.js'
+import { SHOT_RATIO, shotSrc, shotSrcSet } from '@/lib/shots.js'
+
+// Fully static: no headers()/cookies()/searchParams, so this prerenders at build time and is
+// served straight from the CDN. The download pick and the "account deleted" notice are both
+// worked out in the browser (DownloadButtons.js, DeletedNotice.js).
 
 const STEPS = [
-  ['start.png', 'The Quilt app, picking a project folder to start a session.', 'Start a session', 'Pick a project folder in the Quilt app.'],
-  ['invite.png', 'A Quilt invite link, ready to send to a partner.', 'Send the link', 'Your partner clicks it and the project appears on their computer.'],
-  ['session.png', 'A live Quilt session with both partners editing.', 'Build together', 'Edits sync live, and you see who is changing what.']
+  ['start', 'The Quilt app, picking a project folder to start a session.', 'Start a session', 'Pick a project folder in the Quilt app.'],
+  ['invite', 'A Quilt invite link, ready to send to a partner.', 'Send the link', 'Your partner clicks it and the project appears on their computer.'],
+  ['session', 'A live Quilt session with both partners editing.', 'Build together', 'Edits sync live, and you see who is changing what.']
 ]
 const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'VS Code', 'Zed']
 const AGENT_STEPS = [
@@ -30,8 +35,9 @@ const AGENT_CAP_ICONS = {
 }
 
 // The window-frame chrome around a screenshot, sewn onto a quilt patch band in the hero and the
-// closing band, or plain on the cards and the dark feature band.
-function WindowShot ({ src, alt, title, height = 360, eager = false }) {
+// closing band, or plain on the cards and the dark feature band. `sizes` is how wide it shows,
+// so the browser picks the smallest WebP that's sharp enough; below the fold it loads lazily.
+function WindowShot ({ name, alt, title, sizes, height = 360, eager = false }) {
   return (
     <div className='qwin'>
       <div className='qwin-bar'>
@@ -39,34 +45,43 @@ function WindowShot ({ src, alt, title, height = 360, eager = false }) {
         <span>{title}</span>
       </div>
       {/* eslint-disable-next-line @next/next/no-img-element -- fixed local screenshots, plain img keeps object-fit/position simple */}
-      <img className='qwin-shot' src={`/shots/${src}`} alt={alt} width={1600} height={1000} style={{ height }} loading={eager ? 'eager' : 'lazy'} />
+      <img
+        className='qwin-shot'
+        src={shotSrc(name)}
+        srcSet={shotSrcSet(name)}
+        sizes={sizes}
+        alt={alt}
+        width={SHOT_RATIO.width}
+        height={SHOT_RATIO.height}
+        style={{ height }}
+        loading={eager ? 'eager' : 'lazy'}
+        fetchPriority={eager ? 'high' : undefined}
+        decoding='async'
+      />
     </div>
   )
 }
 
-export default async function Home ({ searchParams }) {
-  const q = await searchParams
-  const ua = (await headers()).get('user-agent') || ''
-  const initial = pickDownloads({ ua })
+export default function Home () {
   return (
     <>
       <Header />
       <main className='page'>
         <div className='wrap'>
-          {q.deleted && <p className='notice'>Your Quilt account was deleted.</p>}
+          <Suspense fallback={null}><DeletedNotice /></Suspense>
 
           <section className='hero-b'>
             <Mark word={false} sew className='hero-mark' />
             <h1>Build together, live. Everyone in their own AI.</h1>
             <p className='lead'>One project folder, synced between you and your partners. Each of you keeps your own AI, and you can watch each other's work as it happens.</p>
-            <DownloadButtons initial={initial} />
+            <DownloadButtons />
           </section>
 
           <section className='hero-band'>
             <div className='quilt-patch' aria-hidden='true' />
             <div className='quilt-stitch' aria-hidden='true' />
             <div className='hero-band-win'>
-              <WindowShot src='session.png' alt='A live Quilt session, with both partners editing the same project and a feed of what each AI is doing.' title='quilt · landing-page (shared with Sam)' height={440} eager />
+              <WindowShot name='session' sizes='(max-width: 952px) calc(100vw - 32px), 920px' alt='A live Quilt session, with both partners editing the same project and a feed of what each AI is doing.' title='quilt · landing-page (shared with Sam)' height={440} eager />
             </div>
           </section>
         </div>
@@ -77,7 +92,7 @@ export default async function Home ({ searchParams }) {
           <div className='steps'>
             {STEPS.map(([shot, alt, title, text], i) => (
               <div key={title} className='step'>
-                <WindowShot src={shot} alt={alt} title='quilt · project' height={150} />
+                <WindowShot name={shot} sizes='(max-width: 760px) calc(100vw - 32px), 350px' alt={alt} title='quilt · project' height={150} />
                 <div className='step-t'>
                   <span className='pill step-n'>{i + 1}</span>
                   <h3>{title}</h3>
@@ -94,7 +109,7 @@ export default async function Home ({ searchParams }) {
               <h2>See what their AI is doing</h2>
               <p>Every prompt and change from your partner's Claude Code or Cursor shows up in the feed, so two AIs never step on the same file.</p>
             </div>
-            <WindowShot src='feed.png' alt="The activity feed in a Quilt session, showing a partner's prompts and their AI's edits as they happen." title='quilt · landing-page (shared with Sam)' height={320} />
+            <WindowShot name='feed' sizes='(max-width: 760px) calc(100vw - 72px), 560px' alt="The activity feed in a Quilt session, showing a partner's prompts and their AI's edits as they happen." title='quilt · landing-page (shared with Sam)' height={320} />
           </section>
         </div>
 
@@ -212,7 +227,7 @@ export default async function Home ({ searchParams }) {
             <div className='cta-inner'>
               <h2>Start a session in a minute</h2>
               <p className='sub'>Free while we build it.</p>
-              <DownloadButtons initial={initial} />
+              <DownloadButtons />
             </div>
           </section>
         </div>

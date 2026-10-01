@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { downloadFor, pickDownloads, DOWNLOADS } from '../lib/platform.js'
+import { downloadFor, pickDownloads, detectDownloads, DOWNLOADS } from '../lib/platform.js'
 
 test('the right download for each system', () => {
   assert.equal(downloadFor('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'), DOWNLOADS.macArm, 'Macs report "Intel" even on Apple silicon; offer Apple silicon (most Macs now)')
@@ -38,4 +38,29 @@ test('pickDownloads: unknown (empty input) falls back to both, and a UA string s
   assert.deepEqual(pickDownloads({}).primary, [DOWNLOADS.macArm, DOWNLOADS.windows])
   const { primary } = pickDownloads({ ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' })
   assert.deepEqual(primary, [DOWNLOADS.windows])
+})
+
+test('detectDownloads: no navigator offers both', async () => {
+  assert.deepEqual((await detectDownloads(undefined)).primary, [DOWNLOADS.macArm, DOWNLOADS.windows])
+})
+
+test('detectDownloads: high-entropy values win over the user-agent string', async () => {
+  const nav = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+    userAgentData: { getHighEntropyValues: async () => ({ platform: 'macOS', architecture: 'x86' }) }
+  }
+  assert.deepEqual((await detectDownloads(nav)).primary, [{ ...DOWNLOADS.macIntel, label: 'Download for Mac' }])
+})
+
+test('detectDownloads: falls back to the user-agent string when high-entropy values fail or are missing', async () => {
+  const win = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+  const failing = { userAgent: win, userAgentData: { getHighEntropyValues: async () => { throw new Error('nope') } } }
+  assert.deepEqual((await detectDownloads(failing)).primary, [DOWNLOADS.windows])
+  assert.deepEqual((await detectDownloads({ userAgent: win })).primary, [DOWNLOADS.windows])
+  assert.deepEqual((await detectDownloads({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' })).primary, [DOWNLOADS.macArm, DOWNLOADS.windows])
+})
+
+test('pickDownloads: an iPhone says "like Mac OS X" but gets both, like any phone', () => {
+  const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15'
+  assert.deepEqual(pickDownloads({ ua: iphone }).primary, [DOWNLOADS.macArm, DOWNLOADS.windows])
 })

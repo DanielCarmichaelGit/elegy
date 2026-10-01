@@ -5,6 +5,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import net from 'node:net'
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
 
 const env = {
   ...process.env,
@@ -31,6 +32,22 @@ const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
   for (const path of ['/', '/pricing', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
+})
+
+// A dynamic homepage runs a Netlify function on every visit (and a cold start can take a second);
+// a prerendered one is served straight from the CDN.
+test('the homepage and pricing are prerendered at build time', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../.next/prerender-manifest.json', import.meta.url)))
+  for (const path of ['/', '/pricing']) assert.ok(manifest.routes[path], `${path} is static`)
+})
+
+test('the homepage serves sized WebP screenshots, lazily below the fold, and both downloads before hydration', async () => {
+  const html = await (await get('/')).text()
+  assert.doesNotMatch(html, /\/shots\/[a-z]+\.png/)
+  assert.match(html, /srcSet="\/shots\/session-640\.webp 640w, \/shots\/session-1280\.webp 1280w, \/shots\/session-1920\.webp 1920w"/)
+  assert.equal((html.match(/loading="lazy"/g) || []).length, 4, 'three step shots and the feed shot are lazy')
+  assert.match(html, /quilt-mac-arm64\.dmg/)
+  assert.match(html, /quilt-windows-x64\.exe/)
 })
 
 test('private pages send signed-out people to sign in, and come back after', async () => {
