@@ -8,35 +8,26 @@ import { Session } from './session.js'
 import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
-import { relayUrl } from './settings.js'
+import { relayUrl, isHostedRelay } from './settings.js'
 import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
+import { JOIN_HOST, buildInvite, parseInvite } from './ui/invite.js'
+
+export { JOIN_HOST }
 
 /**
- * An invite is a link to the relay's join page: https://<relay>/join/<room>#<secret>.
- * The secret sits after `#`, so browsers never send it to the relay.
+ * An invite link: https://join.heyquilt.com/<room>#<secret> for sessions on Quilt's relay,
+ * or https://<relay>/join/<room>#<secret> for any other relay (development relays).
  */
 export function encodeInvite (c) {
-  const base = String(c.server).replace(/\/+$/, '').replace(/^ws(s?):\/\//, 'http$1://')
-  return `${base}/join/${encodeURIComponent(c.room)}#${encodeURIComponent(c.secret || '')}`
+  return buildInvite(c, isHostedRelay)
 }
 
-/** Reads an invite link (or an older base64 invite code), with or without "quilt join" in front. */
+/** Reads an invite link (or an older base64 code), with or without "quilt join" or "quilt:" in front. */
 export function decodeInvite (code) {
-  const raw = String(code).trim().replace(/^quilt join\s+/, '').replace(/^quilt:/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
-  const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
-  if (m) {
-    try {
-      return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]), secret: decodeURIComponent(m[4] || '') }
-    } catch {}
-  }
-  let j
-  try {
-    j = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
-  } catch {}
-  if (!j || !j.s || !j.r) throw new Error('That invite link is not valid. Copy the whole link they sent.')
-  return { server: j.s, room: j.r, secret: j.k || '' }
+  const r = parseInvite(code)
+  return { server: r.relay || relayUrl(), room: r.room, secret: r.secret }
 }
 
 /** A new room on Quilt's relay: `secret` invites people to edit, `viewSecret` to only watch. */

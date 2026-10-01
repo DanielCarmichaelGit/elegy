@@ -1,4 +1,9 @@
 // Shared state and helpers for the Quilt app (native ES modules, no build step).
+import { parseInvite } from './invite.js'
+
+// The app only ever talks to Quilt's own relay, so an old-style relay link that happens
+// to be this address resolves the same way a join.heyquilt.com link does.
+const HOSTED_RELAY = 'wss://relay.heyquilt.com'
 
 // ---------------------------------------------------------------- token --
 const params = new URLSearchParams(location.search)
@@ -143,17 +148,14 @@ export async function api (method, path, body, headers = {}) {
   return data
 }
 
-/** Same as decodeInvite in runner.js: an invite link, or an older base64 code. */
+/** Same as decodeInvite in runner.js (room and relay only): an invite link, or an older base64 code. */
 export function decodeInvite (code) {
-  const raw = String(code || '').trim().replace(/^quilt join\s+/, '').split(/\s/)[0].replace(/^["']|["']$/g, '')
-  const m = raw.match(/^(https?):\/\/(.+)\/join\/([^/#?]+)\/?(?:#(.*))?$/)
-  if (m) {
-    try { return { server: `${m[1] === 'https' ? 'wss' : 'ws'}://${m[2]}`, room: decodeURIComponent(m[3]) } } catch { return null }
-  }
   try {
-    const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')))
-    return j && j.s && j.r ? { server: j.s, room: j.r } : null
-  } catch { return null }
+    const r = parseInvite(code)
+    return { server: r.relay || HOSTED_RELAY, room: r.room }
+  } catch {
+    return null
+  }
 }
 
 export function remember (key, value) { try { localStorage.setItem(`quilt-${key}`, value) } catch {} }

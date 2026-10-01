@@ -76,6 +76,7 @@ const STATIC = {
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/common.js': ['common.js', 'text/javascript; charset=utf-8'],
   '/mark.js': ['mark.js', 'text/javascript; charset=utf-8'],
+  '/invite.js': ['invite.js', 'text/javascript; charset=utf-8'],
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],

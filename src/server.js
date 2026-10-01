@@ -33,6 +33,7 @@ import { verifyPass } from './passes.js'
 import { patternsOverlap, globMatcher } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
+import { JOIN_HOST } from './ui/invite.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -830,8 +831,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const j = url.pathname.match(/^\/join\/([A-Za-z0-9_-]{1,64})\/?$/)
     if (j) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-      return res.end(joinPage(j[1]))
+      // Invites live on the website now. Browsers keep the #secret across the redirect.
+      res.writeHead(302, { location: `https://${JOIN_HOST}/${j[1]}`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+      return res.end()
     }
     if (url.pathname === '/agent/link' && req.method === 'POST') {
       const pass = httpPass(req)
@@ -1189,54 +1191,4 @@ const PASS_EXPIRED = 'Your sign-in expired. Reconnecting.'
 function reject (socket, code, message) {
   socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`)
   socket.destroy()
-}
-
-const PAGE_STYLE = `
-:root{--bg:#f6f4f0;--card:#fff;--text:#1c1929;--muted:#6d6882;--ok:#22a06b;--border:#e7e2da;--code:#f1eee8;--accent:#1c1929;--on-accent:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#0e0c17;--card:#161327;--text:#f0edf8;--muted:#a09ab8;--border:#2a2542;--code:#221e38;--accent:#f0edf8;--on-accent:#0e0c17}}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:32px;max-width:440px;width:100%;text-align:center}
-img{width:64px;height:64px}h1{margin:12px 0 4px;font-size:22px;letter-spacing:-.02em}
-.ok{display:inline-flex;align-items:center;gap:8px;color:var(--ok);font-weight:650}.ok i{width:9px;height:9px;border-radius:50%;background:var(--ok)}
-p{color:var(--muted);margin:12px 0 0}code{font-size:13px}a{color:inherit}`
-
-const DOWNLOADS = 'https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download'
-
-/** Where an invite link lands in a browser: opens the Quilt app, or offers to download it. */
-function joinPage (room) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>Join on Quilt</title><link rel="icon" href="/logo.svg">
-<style>${PAGE_STYLE}
-.btn{display:block;width:100%;border:0;border-radius:10px;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:650;padding:12px 16px;margin-top:22px;cursor:pointer;text-decoration:none;font-size:16px}
-.btn.alt{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:10px;font-size:15px}
-.dl{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px}.dl a{font-weight:600}
-.small{font-size:13px}
-details{margin-top:18px;text-align:left;color:var(--muted);font-size:13px}summary{cursor:pointer;text-align:center}
-code.block{display:block;background:var(--code);border-radius:8px;padding:8px 10px;margin-top:8px;overflow-wrap:anywhere;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
-</style></head><body><div class="card"><img src="/logo.svg" alt=""><h1>You're invited to code together</h1>
-<p>Join the Quilt session <b>${room}</b>.</p>
-<a class="btn" id="open" href="#">Open in Quilt</a>
-<p id="missing" hidden>This link is missing its secret. Ask for the full invite link.</p>
-<div id="get">
-<p>Don't have Quilt yet? Download it, open it, then click <b>Open in Quilt</b> again.</p>
-<div class="dl" id="dl">
-<a href="${DOWNLOADS}/quilt-mac-arm64.dmg">Mac (Apple silicon)</a> ·
-<a href="${DOWNLOADS}/quilt-mac-x64.dmg">Mac (Intel)</a> ·
-<a href="${DOWNLOADS}/quilt-windows-x64.exe">Windows</a>
-</div>
-<p class="small">On a Mac, the first time you open it macOS may say it can't check Quilt. Open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>.</p>
-</div>
-<details><summary>Use the terminal instead</summary>
-In the folder where you want the project, run:<code class="block" id="cmd"></code>
-<button class="btn alt" id="copy">Copy invite link</button></details>
-</div><script>
-const link = location.href
-document.getElementById('open').href = 'quilt://join?invite=' + encodeURIComponent(link)
-document.getElementById('cmd').textContent = 'quilt join "' + link + '"'
-if (!location.hash) { document.getElementById('missing').hidden = false; document.getElementById('open').hidden = true }
-document.getElementById('copy').onclick = async (e) => {
-  try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied' } catch { prompt('Copy this link:', link) }
-}
-</script></body></html>`
 }

@@ -198,7 +198,7 @@ export async function runMcp () {
   server.registerTool('quilt_join_session', {
     description: 'Join a live quilt session from an invite link, as an AI agent. The shared project is synced into a folder (the current folder if it is empty or already this session\'s, otherwise a new "quilt-<room>" subfolder) and kept in sync live. Other people see you in the session.',
     inputSchema: {
-      invite: z.string().describe('The invite link, like https://<relay>/join/<room>#<secret> (or the full "quilt join <link>" command)'),
+      invite: z.string().describe('The invite link, like https://join.heyquilt.com/<room>#<secret> (or the full "quilt join <link>" command)'),
       folder: z.string().optional().describe('Where to put the project, relative to the current folder'),
       agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.')
     }

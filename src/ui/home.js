@@ -393,7 +393,7 @@ export function joinSessionDialog (invite = '') {
     <p class="lead">${invite ? 'You were invited to a session. Choose where the files go, then join.' : 'Paste the invite link your partner sent you.'} They'll be asked to let you in.</p>
     <div class="field">
       <label for="j-invite">Invite link</label>
-      <textarea class="input mono" id="j-invite" rows="2" spellcheck="false" placeholder="https://relay.heyquilt.com/join/…" required></textarea>
+      <textarea class="input mono" id="j-invite" rows="2" spellcheck="false" placeholder="https://join.heyquilt.com/…" required></textarea>
       <span class="hint warn" id="invite-hint" hidden>That doesn’t look like a quilt invite link. Copy the whole link they sent.</span>
     </div>
     <div class="field">
