@@ -104,6 +104,10 @@ All settings are environment variables on the relay.
 | `QUILT_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one address can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
 | `QUILT_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
 | `QUILT_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
+| `QUILT_STORAGE_URL` | none | A Supabase project URL. With `QUILT_STORAGE_KEY`, large files go to Supabase Storage instead of the relay's disk. |
+| `QUILT_STORAGE_KEY` | none | A Supabase secret key for that project. Set it as a secret, never in `fly.toml`. |
+| `QUILT_STORAGE_BUCKET` | `session-files` | The private bucket to use (see `supabase/migrations/20261001000000_session_files_bucket.sql`). |
+| `QUILT_MAX_STORED_FILE_MB` | `100` | The largest file people can share this way. |
 
 ## Checking on it
 
@@ -113,6 +117,16 @@ All settings are environment variables on the relay.
   starting sessions needs a key). It doesn't reveal usage.
 - `quilt relay check wss://your-relay` tests it from any machine.
 - Logs show sessions connecting and leaving, but never their contents.
+
+## Large files
+
+Binary files of 256 KB or more (images, builds, archives) don't travel inside
+the session. Each person's Quilt encrypts them with a key only the session's
+members have, and uploads them to storage: Supabase Storage when
+`QUILT_STORAGE_URL` and `QUILT_STORAGE_KEY` are set, otherwise the relay's own
+disk. Whoever runs the storage can't read them. They're deleted when the owner
+ends the session, when the session is deleted after `QUILT_ROOM_TTL_DAYS`, and
+when a file is replaced or removed (an hour later, once the session is idle).
 
 ## Good to know
 
