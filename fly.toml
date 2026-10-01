@@ -9,7 +9,9 @@ primary_region = "iad"
 [env]
   QUILT_DATA = "/data"
   QUILT_TRUST_PROXY = "1"
-  QUILT_STORAGE_URL = "https://pwebomewzuezaxoowykk.supabase.co"
+  # Turn on Supabase Storage only together with the QUILT_STORAGE_KEY secret;
+  # with just one of them the relay refuses to start.
+  # QUILT_STORAGE_URL = "https://pwebomewzuezaxoowykk.supabase.co"
   # Supabase's free plan caps uploads at 50 MB per file; raise this on a paid plan.
   QUILT_MAX_STORED_FILE_MB = "50"
   PORT = "4321"
