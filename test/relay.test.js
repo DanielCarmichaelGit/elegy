@@ -147,6 +147,11 @@ test('file storage quota per room', async (t) => {
   const r = await post('x'.repeat(600))
   assert.equal(r.status, 413)
   assert.match(await r.text(), /quota/)
+  // Stored large files count against the same quota.
+  const upload = await fetch(`http://127.0.0.1:${srv.port}/blobs/fq/${'a'.repeat(32)}/upload`, { method: 'POST', headers: { 'x-quilt-secret': 's' }, body: JSON.stringify({ size: 300 }) })
+  assert.equal(upload.status, 200)
+  assert.equal((await post('x'.repeat(200))).status, 413, 'chat files see the stored file')
+  assert.equal((await post('x'.repeat(50))).status, 201)
 })
 
 test('idle rooms leave memory and come back intact', async (t) => {
@@ -177,12 +182,14 @@ test('rooms unused for longer than the TTL are deleted', async (t) => {
   fs.writeFileSync(path.join(dataDir, 'old.ydoc'), Buffer.from([0, 0]))
   fs.mkdirSync(path.join(dataDir, 'files', 'old'), { recursive: true })
   fs.writeFileSync(path.join(dataDir, 'fresh.json'), JSON.stringify({ secretHash: 'ab', lastActive: Date.now() }))
+  fs.writeFileSync(path.join(dataDir, 'agent-links.json'), JSON.stringify({ abc: { room: 'old', name: 'a', tabSeenAt: Date.now() - 40 * 86400e3 } }))
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, roomTtlDays: 30 })
   defer(() => srv.close())
   assert.equal(fs.existsSync(path.join(dataDir, 'old.json')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'old.ydoc')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'files', 'old')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'fresh.json')), true)
+  assert.equal(fs.existsSync(path.join(dataDir, 'agent-links.json')), true, 'the relay\'s own link file is not mistaken for a room')
 })
 
 test('new sessions are rate-limited per address; joining existing ones is not', async () => {
@@ -199,4 +206,127 @@ test('new sessions are rate-limited per address; joining existing ones is not', 
   assert.equal(await open('r3'), 429)
   assert.equal(await open('r1'), 'open', 'rejoining an existing room still works')
   await srv.close()
+})
+
+test('the owner can end a session: everyone is sent away, its data is deleted, and a tombstone is left', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('end')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  defer(() => srv.close())
+  const server = `ws://127.0.0.1:${srv.port}`
+  const ownerDoc = new Y.Doc()
+  const owner = new Connection({ server, room: 'ending', secret: 's', viewSecret: 'v', name: 'olive', identity: generateIdentity(), doc: ownerDoc })
+  defer(() => owner.close())
+  await owner.waitForSync()
+  await waitFor(() => owner.access && owner.access.owner)
+  ownerDoc.getText('t').insert(0, 'bye')
+  await waitFor(() => fs.existsSync(path.join(dataDir, 'ending.ydoc')))
+  fs.mkdirSync(path.join(dataDir, 'blobs', 'ending'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'blobs', 'ending', 'a'.repeat(32)), 'x')
+
+  const ended = new Promise((resolve) => owner.on('fatal', resolve))
+  await owner.adminRequest({ op: 'end' })
+  const err = await ended
+  assert.equal(err.ended, true)
+  await waitFor(() => !srv.rooms.has('ending'))
+  assert.equal(fs.existsSync(path.join(dataDir, 'ending.ydoc')), false)
+  await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'ending')))
+  const tombstone = JSON.parse(fs.readFileSync(path.join(dataDir, 'ending.json'), 'utf8'))
+  assert.equal(tombstone.ended, true)
+  const base = `http://127.0.0.1:${srv.port}`
+  const id = 'a'.repeat(32)
+  const headers = { 'x-quilt-secret': 's' }
+  assert.equal((await fetch(`${base}/blobs/ending/${id}/upload`, { method: 'POST', headers, body: '{"size":1}' })).status, 410)
+  assert.equal((await fetch(`${base}/blobs/ending/${id}/download`, { method: 'POST', headers, body: '{}' })).status, 410)
+  assert.equal((await fetch(`${base}/blobs/ending/${id}/data?m=GET&exp=1&sig=00`)).status, 410)
+  assert.equal((await fetch(`${base}/files/ending`, { method: 'POST', headers, body: 'x' })).status, 410)
+  assert.equal((await fetch(`${base}/files/ending/${id}`, { headers })).status, 410)
+
+  // Reconnecting to the same room, even with the right secret, is refused for good.
+  const laterDoc = new Y.Doc()
+  const later = new Connection({ server, room: 'ending', secret: 's', name: 'olive', identity: generateIdentity(), doc: laterDoc })
+  defer(() => later.close())
+  const laterErr = await new Promise((resolve) => later.on('fatal', resolve))
+  assert.equal(laterErr.ended, true)
+})
+
+test('ending a session sends everyone away, not just the owner, even if they were only part-way admitted', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  defer(() => srv.close())
+  const server = `ws://127.0.0.1:${srv.port}`
+  const ownerDoc = new Y.Doc()
+  const owner = new Connection({ server, room: 'end-everyone', secret: 's', viewSecret: 'v', name: 'olive', identity: generateIdentity(), doc: ownerDoc })
+  defer(() => owner.close())
+  await owner.waitForSync()
+  await waitFor(() => owner.access && owner.access.owner)
+
+  const guestIdentity = generateIdentity()
+  const guestDoc = new Y.Doc()
+  const guest = new Connection({ server, room: 'end-everyone', secret: 's', name: 'gus', identity: guestIdentity, doc: guestDoc })
+  defer(() => guest.close())
+  await waitFor(() => guest.access && guest.access.state === 'pending')
+  await owner.adminRequest({ op: 'approve', key: guestIdentity.publicKey })
+  await waitFor(() => guest.access && guest.access.state === 'approved')
+
+  const ownerEnded = new Promise((resolve) => owner.on('fatal', resolve))
+  const guestEnded = new Promise((resolve) => guest.on('fatal', resolve))
+  await owner.adminRequest({ op: 'end' })
+  const [ownerErr, guestErr] = await Promise.all([ownerEnded, guestEnded])
+  assert.equal(ownerErr.ended, true)
+  assert.equal(guestErr.ended, true)
+})
+
+test('only the owner can end a session', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir: tmp('end2') })
+  defer(() => srv.close())
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'open-room', secret: 's', name: 'eve', identity: generateIdentity(), doc: new Y.Doc() })
+  defer(() => c.close())
+  await c.waitForSync()
+  await assert.rejects(c.adminRequest({ op: 'end' }), /only the session owner/)
+})
+
+test('stored files go with their room when it expires, and unreferenced ones when it unloads', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('gc')
+  fs.writeFileSync(path.join(dataDir, 'old.json'), JSON.stringify({ secretHash: 'ab', lastActive: Date.now() - 40 * 86400e3 }))
+  fs.mkdirSync(path.join(dataDir, 'blobs', 'old'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'blobs', 'old', 'a'.repeat(32)), 'x')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, roomTtlDays: 30, idleUnloadMs: 50 })
+  defer(() => srv.close())
+  await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'old')))
+
+  // A room that stored two files but only references one of them now.
+  const doc = new Y.Doc()
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'gc', secret: 's', name: 'gil', identity: generateIdentity(), doc })
+  defer(() => { if (!c.closed) c.close() })
+  await c.waitForSync()
+  const keep = 'a'.repeat(32)
+  const drop = 'b'.repeat(32)
+  const room = srv.rooms.get('gc')
+  const old = Date.now() - 25 * 60 * 60 * 1000
+  const recent = 'c'.repeat(32)
+  room.meta.blobs = { [keep]: { size: 1, ts: old }, [drop]: { size: 1, ts: old }, [recent]: { size: 1, ts: Date.now() - 2 * 60 * 60 * 1000 } }
+  for (const id of [keep, drop]) { fs.mkdirSync(path.join(dataDir, 'blobs', 'gc'), { recursive: true }); fs.writeFileSync(path.join(dataDir, 'blobs', 'gc', id), 'x') }
+  doc.getMap('blobs').set('img.png', { hash: 'h', size: 1, stored: { id: keep, key: 'k1' } })
+  await waitFor(() => room.doc.getMap('blobs').has('img.png'))
+  c.close()
+  await waitFor(() => !srv.rooms.has('gc'), 3000)
+  await waitFor(() => !fs.existsSync(path.join(dataDir, 'blobs', 'gc', drop)))
+  assert.equal(fs.existsSync(path.join(dataDir, 'blobs', 'gc', keep)), true)
+  const meta = JSON.parse(fs.readFileSync(path.join(dataDir, 'gc.json'), 'utf8'))
+  assert.deepEqual(Object.keys(meta.blobs).sort(), [keep, recent], 'unreferenced uploads get a day\'s grace')
+})
+
+test('the sweep removes the tombstone of a session ended long ago', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('tomb')
+  const long = Date.now() - 40 * 86400e3
+  fs.writeFileSync(path.join(dataDir, 'gone.json'), JSON.stringify({ ended: true, endedAt: long, lastActive: long }))
+  fs.writeFileSync(path.join(dataDir, 'recent.json'), JSON.stringify({ ended: true, endedAt: Date.now(), lastActive: Date.now() }))
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, roomTtlDays: 30 })
+  defer(() => srv.close())
+  assert.equal(fs.existsSync(path.join(dataDir, 'gone.json')), false)
+  assert.equal(fs.existsSync(path.join(dataDir, 'recent.json')), true, 'a recently ended session stays refused')
 })

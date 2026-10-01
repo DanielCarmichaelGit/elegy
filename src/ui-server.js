@@ -293,6 +293,7 @@ export async function startUi ({ port = 7420, relayPort = 4321, onShutdown, prev
     'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': async (b, id) => (await get(id).removeMember(b.key), { ok: true }),
+    'POST /api/sessions/:id/end': async (b, id) => { await get(id).endForEveryone(); await stop(id); return { ok: true } },
     'POST /api/sessions/:id/summarize': (b, id) => {
       const r = runs.get(id)
       if (!r) throw httpError(404, 'That session is not running.')

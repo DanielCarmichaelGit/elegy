@@ -336,6 +336,13 @@ function bindTop () {
     if (!confirm(`Remove ${f.querySelector('.nm').textContent.trim()} from this session? They'll need a new invite and your approval to come back.`)) return
     try { await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast('Removed') } catch (err) { toast(err.message) }
   })
+  menu.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-end-session]')) {
+      if (!confirm('End this session for everyone? Everyone is disconnected, and the session and its stored files are deleted from the relay. Your own folder is not touched.')) return
+      try { await api('POST', `/api/sessions/${current}/end`); toast('Session ended') } catch (err) { toast(err.message) }
+      return
+    }
+  })
   menu.addEventListener('submit', async (e) => {
     e.preventDefault()
     if (e.target.closest('.pm-member')) return
@@ -490,7 +497,9 @@ function membersHtml (st) {
         </select>
         ${m.kind === 'agent' ? `<input class="input" name="scopes" value="${esc(scopesText(m.scopes))}" placeholder="All folders" aria-label="Folders ${esc(m.name)} may change" title="Folders this agent may change, separated by commas">` : ''}
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
-      </form>`).join('') : '<div class="empty-note">Only you so far. People you let in show up here.</div>'}`
+      </form>`).join('') : '<div class="empty-note">Only you so far. People you let in show up here.</div>'}
+    <div class="pm-sep"></div>
+    <button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button>`
 }
 
 function renderPeopleMenu () {

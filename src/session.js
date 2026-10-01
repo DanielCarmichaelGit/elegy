@@ -14,8 +14,9 @@ import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { formatBytes } from './status.js'
 import {
   loadIgnore, IGNORE_FILES, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
-  toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES
+  toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES, LARGE_FILE_BYTES, MAX_STORED_BINARY_BYTES
 } from './fsutil.js'
+import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob, blobId } from './largefiles.js'
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
 
@@ -33,6 +34,10 @@ const WATCH_RECHECK_MS = 80
 // event in that gap is never delivered. The folder is re-scanned this often
 // to catch anything the watcher missed.
 const RECONCILE_MS = 1000
+// Failed large-file uploads and downloads are tried again this often (and on reconnecting).
+const RETRY_MS = 30 * 1000
+// Large uploads and downloads each hold the whole file in memory (twice), so only this many run at once.
+const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null }) {
@@ -53,7 +58,20 @@ export class Session extends EventEmitter {
 
     this.doc = new Y.Doc()
     this.files = this.doc.getMap('files') // path -> Y.Text
-    this.blobs = this.doc.getMap('blobs') // path -> { hash, data(base64) }
+    this.blobs = this.doc.getMap('blobs') // path -> { hash, data(base64) } or { hash, size, stored: { id, key } }
+    // keyId -> { wraps, ts }: file keys for large files, each wrapped for editors and viewers.
+    this.fileKeys = this.doc.getMap('fileKeys')
+    this.uploading = new Map() // path -> hash being uploaded
+    this.downloading = new Map() // path -> hash being downloaded
+    this.largeFilesOff = false // the relay has no file storage (an older relay)
+    this.storedOnDisk = new Map() // path -> hash of the stored large file actually in the folder (saved in state.json)
+    this.retry = new Map() // path -> 'upload'|'download' that failed and is tried again later
+    // path -> { hash, inline } the relay refused to store for good; tried again only once the file changes.
+    // `inline`: it may travel inside the document instead.
+    this.uploadRefused = new Map()
+    this.transfers = 0 // large uploads and downloads running
+    this.transferQueue = [] // resolvers waiting for one to finish
+    this.stopped = false
     // pattern -> { by, pattern, note, ts }. The relay owns claims (it checks
     // who asks), so they live outside the shared doc; we keep the last list.
     this.claims = new Map()
@@ -106,7 +124,13 @@ export class Session extends EventEmitter {
       doc: this.doc,
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
-    this.conn.on('status', (s) => { this.log(s === 'connected' ? `connected to relay` : 'disconnected from relay, reconnecting…'); this.scheduleStatusWrite() })
+    this.conn.on('status', (s) => {
+      this.log(s === 'connected' ? `connected to relay` : 'disconnected from relay, reconnecting…')
+      this.scheduleStatusWrite()
+      if (s === 'connected') this.retryFailed()
+    })
+    this.retryTimer = setInterval(() => this.retryFailed(), RETRY_MS)
+    this.retryTimer.unref()
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
     this.conn.on('claims', (list) => this.setClaims(list))
@@ -208,8 +232,14 @@ export class Session extends EventEmitter {
     })
     this.blobs.observe((ev, tr) => {
       if (tr.origin === LOCAL) return
-      for (const k of ev.changes.keys.keys()) this.fromRemote(k)
+      for (const k of ev.changes.keys.keys()) { this.retry.delete(k); this.fromRemote(k) }
     })
+    this.fileKeys.observe(() => {
+      this.shareKeysWithViewers()
+      // Files whose key just arrived can be downloaded now.
+      for (const [rel, b] of this.blobs) if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
+    })
+    this.shareKeysWithViewers()
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
         for (const msg of item.content.getContent()) {
@@ -256,6 +286,7 @@ export class Session extends EventEmitter {
       const meta = JSON.parse(fs.readFileSync(path.join(this.stateDir, 'state.json'), 'utf8'))
       if (meta.room !== this.room || meta.server !== this.server) return false
       Y.applyUpdate(this.doc, fs.readFileSync(this.stateFile), LOCAL)
+      this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
       return true
     } catch {
       return false
@@ -273,7 +304,7 @@ export class Session extends EventEmitter {
     const tmp = this.stateFile + '.tmp'
     fs.writeFileSync(tmp, Y.encodeStateAsUpdate(this.doc))
     fs.renameSync(tmp, this.stateFile)
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server }))
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk) }))
   }
 
   // ------------------------------------------------------------ reconcile --
@@ -288,13 +319,29 @@ export class Session extends EventEmitter {
 
   reconcileOffline () {
     const onDisk = new Set(walk(this.root, this.ig))
+    const downloads = []
     for (const rel of this.sharedPaths()) {
       if (!this.syncable(rel)) continue
       const known = this.sharedKey(rel)
       if (known !== undefined) this.lastKnown.set(rel, known)
+      const b = this.blobs.get(rel)
+      const had = this.storedOnDisk.get(rel)
+      if (b && b.stored && had !== b.hash) {
+        // Its download hadn't finished when we stopped, so the folder doesn't
+        // have it yet: fetch it rather than share what's on disk. Anything
+        // other than the version we last wrote was edited offline; keep it.
+        const disk = this.readDisk(rel)
+        if (disk && disk.key !== undefined && !(disk.binary && disk.hash === had)) this.keepConflict(rel, disk)
+        if (disk && disk.key !== undefined) this.lastKnown.set(rel, disk.key)
+        else this.lastKnown.delete(rel)
+        onDisk.delete(rel)
+        downloads.push(rel)
+        continue
+      }
       if (!onDisk.has(rel)) this.ingest(rel) // deleted while offline
     }
     for (const rel of onDisk) this.ingest(rel)
+    for (const rel of downloads) this.downloadLarge(rel, this.blobs.get(rel))
   }
 
   reconcileFirstJoin () {
@@ -305,13 +352,20 @@ export class Session extends EventEmitter {
       if (!this.syncable(rel)) continue
       const disk = this.readDisk(rel)
       const shared = this.sharedKey(rel)
-      if (disk && disk.key === shared) { this.lastKnown.set(rel, shared); continue }
+      const b = this.blobs.get(rel)
+      if (disk && disk.key === shared) {
+        this.lastKnown.set(rel, shared)
+        if (b && b.stored) this.setOnDisk(rel, b.hash)
+        continue
+      }
       if (disk && this.prefer === 'local') continue // pushed below
       if (disk) {
         const dest = path.join(backupDir, ...rel.split('/'))
         fs.mkdirSync(path.dirname(dest), { recursive: true })
         fs.copyFileSync(path.join(this.root, ...rel.split('/')), dest)
         backedUp++
+        // Already backed up: the download needn't keep another copy.
+        if (b && b.stored && disk.key !== undefined) this.lastKnown.set(rel, disk.key)
       }
       this.writeOut(rel)
       onDisk.delete(rel)
@@ -339,9 +393,10 @@ export class Session extends EventEmitter {
     let st
     try { st = fs.lstatSync(abs) } catch { return null }
     if (!st.isFile()) return { skip: true }
-    if (st.size > MAX_BINARY_BYTES) return { tooLarge: true }
+    if (st.size > MAX_STORED_BINARY_BYTES) return { tooLarge: true }
     const buf = fs.readFileSync(abs)
     if (looksBinary(buf)) {
+      if (buf.length > MAX_BINARY_BYTES && this.largeFilesOff) return { tooLarge: true }
       const hash = sha1(buf)
       return { binary: true, buf, hash, key: `bin:${hash}` }
     }
@@ -370,6 +425,7 @@ export class Session extends EventEmitter {
   /** Pushes the on-disk state of a path into the shared doc. Returns true if anything changed. */
   ingest (rel) {
     if (!this.syncable(rel)) return false
+    if (this.downloading.has(rel)) return false // our copy is being replaced by a download
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) {
@@ -377,6 +433,14 @@ export class Session extends EventEmitter {
         this.warnedLarge.add(rel)
         this.log(`skipping ${rel}: file too large to sync`)
       }
+      return false
+    }
+    const stored = this.blobs.get(rel)
+    if (stored && stored.stored && this.storedOnDisk.get(rel) !== stored.hash &&
+        (!disk || (disk.binary && disk.hash === this.storedOnDisk.get(rel)))) {
+      // The folder still has the version before (or nothing): a download is
+      // due, not a local change. Never share the stale copy.
+      this.downloadLarge(rel, stored)
       return false
     }
 
@@ -399,11 +463,22 @@ export class Session extends EventEmitter {
         this.recordActivity(rel, 'deleted', '')
       }, LOCAL)
       this.lastKnown.delete(rel)
+      this.setOnDisk(rel, null)
       this.noteMyEdit(rel)
       return true
     }
 
-    if (disk.key === this.sharedKey(rel)) { this.lastKnown.set(rel, disk.key); return false }
+    if (disk.key === this.sharedKey(rel)) {
+      this.lastKnown.set(rel, disk.key)
+      if (stored && stored.stored) this.setOnDisk(rel, stored.hash)
+      return false
+    }
+    if (disk.binary && disk.buf.length >= LARGE_FILE_BYTES && !this.largeFilesOff) {
+      const refused = this.uploadRefused.get(rel)
+      if (!refused || refused.hash !== disk.hash) { this.uploadLarge(rel, disk); return false }
+      if (!refused.inline || disk.buf.length > MAX_BINARY_BYTES) return false
+      // Storage refused it, but it's small enough to share inside the document.
+    }
 
     let detail = ''
     this.doc.transact(() => {
@@ -424,6 +499,7 @@ export class Session extends EventEmitter {
       this.recordActivity(rel, existed ? 'edited' : 'created', detail)
     }, LOCAL)
     this.lastKnown.set(rel, disk.key)
+    this.setOnDisk(rel, null)
     this.noteMyEdit(rel)
     return true
   }
@@ -445,7 +521,9 @@ export class Session extends EventEmitter {
     const abs = path.join(this.root, ...rel.split('/'))
     const t = this.files.get(rel)
     const b = this.blobs.get(rel)
-    if (t || b) {
+    if (b && b.stored) {
+      this.downloadLarge(rel, b)
+    } else if (t || b) {
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
       this.lastKnown.set(rel, this.sharedKey(rel))
@@ -492,7 +570,7 @@ export class Session extends EventEmitter {
     if (!this.syncable(rel)) return
     const t = this.files.get(rel)
     const b = this.blobs.get(rel)
-    if ((t || b) && this.sharedKey(rel) !== this.lastKnown.get(rel)) {
+    if ((t || (b && !b.stored)) && this.sharedKey(rel) !== this.lastKnown.get(rel)) {
       const dest = path.join(this.stateDir, 'rejected', `${Date.now()}`, ...rel.split('/'))
       fs.mkdirSync(path.dirname(dest), { recursive: true })
       fs.writeFileSync(dest, t ? t.toString() : Buffer.from(b.data, 'base64'))
@@ -517,10 +595,7 @@ export class Session extends EventEmitter {
     if (this.ready && disk && disk.key !== known && disk.key !== shared) {
       // The file changed locally in the instant before this remote change
       // arrived. Keep a copy so nothing is lost.
-      const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
-      fs.mkdirSync(path.dirname(dest), { recursive: true })
-      fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
-      this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
+      this.keepConflict(rel, disk)
     }
 
     if (shared === undefined) {
@@ -529,12 +604,19 @@ export class Session extends EventEmitter {
         removeEmptyParents(this.root, path.dirname(abs))
       }
       this.lastKnown.delete(rel)
+      this.setOnDisk(rel, null)
     } else {
-      if (!disk || disk.key !== shared) {
+      const b = this.blobs.get(rel)
+      if (b && b.stored) {
+        // Written once it's downloaded; downloadLarge sets lastKnown and says who changed it.
+        if (!disk || disk.key !== shared) { this.downloadLarge(rel, b); return }
+        this.setOnDisk(rel, b.hash)
+      } else if (!disk || disk.key !== shared) {
         fs.mkdirSync(path.dirname(abs), { recursive: true })
         const t = this.files.get(rel)
-        fs.writeFileSync(abs, t ? t.toString() : Buffer.from(this.blobs.get(rel).data, 'base64'))
+        fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
       }
+      if (!b || !b.stored) this.setOnDisk(rel, null)
       this.lastKnown.set(rel, shared)
     }
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
@@ -549,6 +631,22 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** Keeps our version of rel aside before something replaces it. */
+  keepConflict (rel, disk) {
+    const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
+    this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
+  }
+
+  /** Moves our copy of rel into the conflicts folder (for files too big to copy through memory). */
+  moveAside (rel, abs) {
+    const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    try { fs.renameSync(abs, dest) } catch { fs.copyFileSync(abs, dest) }
+    this.log(`⚠️  ${rel} is being replaced by the shared version; yours was moved to ${path.relative(this.root, dest)}`)
+  }
+
   lastEditorOf (rel) {
     for (let i = this.activity.length - 1; i >= 0; i--) {
       const a = this.activity.get(i)
@@ -556,6 +654,237 @@ export class Session extends EventEmitter {
     }
     return null
   }
+
+  // ------------------------------------------------------- large files --
+
+  /** Records which stored version of rel is in the folder (null: none, or it isn't a stored file). */
+  setOnDisk (rel, hash) {
+    if ((this.storedOnDisk.get(rel) || null) === (hash || null)) return
+    if (hash) this.storedOnDisk.set(rel, hash)
+    else this.storedOnDisk.delete(rel)
+    this.scheduleStateSave()
+  }
+
+  /** Tries failed uploads and downloads again. */
+  retryFailed () {
+    if (!this.ready || this.stopped) return
+    const failed = [...this.retry]
+    this.retry.clear()
+    for (const [rel, kind] of failed) {
+      if (kind === 'upload') { this.queue(rel); continue }
+      const b = this.blobs.get(rel)
+      if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
+    }
+  }
+
+  wrapKeys () {
+    const keys = [deriveWrapKey(this.secret, this.room)]
+    if (this.viewSecret) keys.push(deriveWrapKey(this.viewSecret, this.room))
+    return keys
+  }
+
+  /** The file keys this app can open (with `mine`, by default every wrap key it has): keyId -> key. */
+  fileKeysICanOpen (mine = this.wrapKeys()) {
+    const out = new Map()
+    for (const [id, entry] of this.fileKeys) {
+      for (const w of (entry && entry.wraps) || []) {
+        const key = mine.map((wk) => unwrapKey(w, wk)).find(Boolean)
+        if (key) { out.set(id, key); break }
+      }
+    }
+    return out
+  }
+
+  /**
+   * The key for new uploads: the first one our own secret opens, or a new one.
+   * Not one only the view secret opens: anyone who can view could have made
+   * that, and editors couldn't open what we stored with it.
+   */
+  currentFileKey () {
+    const open = this.fileKeysICanOpen([deriveWrapKey(this.secret, this.room)])
+    if (open.size) {
+      const id = [...open.keys()].sort()[0]
+      return { id, key: open.get(id) }
+    }
+    const key = newFileKey()
+    const id = crypto.randomBytes(4).toString('hex')
+    const wraps = this.wrapKeys().map((wk) => wrapKey(key, wk))
+    this.doc.transact(() => this.fileKeys.set(id, { wraps, ts: Date.now() }), LOCAL)
+    return { id, key }
+  }
+
+  /** The owner (the only one with the view secret) makes every key open for viewers too. */
+  shareKeysWithViewers () {
+    if (!this.viewSecret) return
+    const vk = deriveWrapKey(this.viewSecret, this.room)
+    for (const [id, key] of this.fileKeysICanOpen()) {
+      const entry = this.fileKeys.get(id)
+      if (entry.wraps.some((w) => unwrapKey(w, vk))) continue
+      this.doc.transact(() => this.fileKeys.set(id, { ...entry, wraps: [...entry.wraps, wrapKey(key, vk)] }), LOCAL)
+    }
+  }
+
+  async blobRequest (id, action, body = {}) {
+    const res = await fetch(`${this.httpBase()}/blobs/${encodeURIComponent(this.room)}/${id}/${action}`, {
+      method: 'POST',
+      headers: { 'x-quilt-secret': this.secret, 'content-type': 'application/json', ...(this.key ? { 'x-quilt-key': this.key } : {}) },
+      body: JSON.stringify(body)
+    })
+    if (!res.ok) throw Object.assign(new Error(await res.text()), { status: res.status })
+    return res.json()
+  }
+
+  /** Waits for a free transfer slot; call doneTransfer() when finished. */
+  async startTransfer () {
+    if (this.transfers < MAX_TRANSFERS) { this.transfers++; return }
+    await new Promise((resolve) => this.transferQueue.push(resolve))
+  }
+
+  doneTransfer () {
+    const next = this.transferQueue.shift()
+    if (next) next() // the slot passes straight on
+    else this.transfers--
+  }
+
+  /** Encrypts and uploads a large file, then points the shared document at it. */
+  async uploadLarge (rel, disk) {
+    const { hash, key: diskKey } = disk
+    disk = null // read again once it's our turn, so waiting uploads don't hold files in memory
+    if (this.uploading.get(rel) === hash) return
+    this.uploading.set(rel, hash)
+    // If a partner's version lands while this uploads, theirs wins (ours is kept as a conflict copy).
+    const sharedBefore = this.sharedKey(rel)
+    await this.startTransfer()
+    try {
+      if (this.stopped) return
+      const cur = this.readDisk(rel)
+      if (!cur || cur.key !== diskKey) return // it changed again; that change is already queued
+      const { id: keyId, key } = this.currentFileKey()
+      const id = blobId(key, hash)
+      // Encrypted first: the upload link is signed for exactly the size we send.
+      const sealed = encryptBlob(cur.buf, key)
+      const size = cur.buf.length
+      const target = await this.blobRequest(id, 'upload', { size: sealed.length })
+      if (!target.exists) {
+        const res = await fetch(new URL(target.url, this.httpBase() + '/'), {
+          method: target.method || 'PUT',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: sealed
+        })
+        if (!res.ok && !(await alreadyStored(res))) throw Object.assign(new Error(`upload failed (HTTP ${res.status})`), { status: res.status, put: true })
+      }
+      const now = this.readDisk(rel)
+      if (!now || now.key !== diskKey) return // it changed again; that change is already queued
+      if (this.sharedKey(rel) !== sharedBefore || this.downloading.has(rel)) return // a partner's newer version wins
+      const existed = this.files.has(rel) || this.blobs.has(rel)
+      this.doc.transact(() => {
+        this.files.delete(rel)
+        this.blobs.set(rel, { hash, size, stored: { id, key: keyId } })
+        this.recordActivity(rel, existed ? 'edited' : 'created', `${size} bytes`)
+      }, LOCAL)
+      this.lastKnown.set(rel, diskKey)
+      this.setOnDisk(rel, hash)
+      this.retry.delete(rel)
+      this.uploadRefused.delete(rel)
+      this.noteMyEdit(rel)
+    } catch (err) {
+      this.uploadFailed(rel, hash, err)
+    } finally {
+      this.doneTransfer()
+      if (this.uploading.get(rel) === hash) this.uploading.delete(rel)
+    }
+  }
+
+  /** Decides what to do after an upload failed: try later, share it another way, or give up until it changes. */
+  uploadFailed (rel, hash, err) {
+    const warnOnce = (msg) => {
+      if (this.warnedLarge.has(rel)) return
+      this.warnedLarge.add(rel)
+      this.log(msg)
+    }
+    if (err.status === 404 && !err.put) {
+      // An older relay without file storage: share it inside the document if it fits.
+      this.largeFilesOff = true
+      this.queue(rel)
+    } else if (err.status === 413) {
+      // Over the relay's size limit, or the session's storage is full.
+      this.uploadRefused.set(rel, { hash, inline: false })
+      warnOnce(`skipping ${rel}: the relay won't store it (${err.message}). It will be tried again if the file changes.`)
+    } else if (err.status === 403 && !err.put) {
+      // Our invite only lets us view (even if we may edit now), so we can't store files.
+      this.uploadRefused.set(rel, { hash, inline: true })
+      let size = Infinity
+      try { size = fs.statSync(path.join(this.root, ...rel.split('/'))).size } catch {}
+      if (size <= MAX_BINARY_BYTES) this.queue(rel)
+      else warnOnce(`skipping ${rel}: you joined with a view-only invite, so files over ${MAX_BINARY_BYTES / 1024 / 1024} MB can't be shared from here`)
+    } else if (!err.status || err.status >= 500) {
+      // Network trouble or a relay or storage hiccup: try again later.
+      this.log(`could not upload ${rel}: ${err.message}`)
+      this.retry.set(rel, 'upload')
+    } else {
+      this.log(`could not upload ${rel}: ${err.message}`)
+    }
+  }
+
+  /** Downloads and decrypts a large file, then writes it into the folder. */
+  async downloadLarge (rel, entry) {
+    if (this.downloading.get(rel) === entry.hash) return
+    this.downloading.set(rel, entry.hash)
+    const before = this.readDisk(rel)?.key
+    let started = false
+    try {
+      if (!this.fileKeysICanOpen().has(entry.stored.key)) return // its key hasn't arrived yet; the fileKeys observer retries
+      await this.startTransfer()
+      started = true
+      if (this.stopped) return
+      const cur0 = this.blobs.get(rel)
+      if (!cur0 || cur0.hash !== entry.hash) return // replaced while waiting; that version is on its way
+      const key = this.fileKeysICanOpen().get(entry.stored.key)
+      const { url } = await this.blobRequest(entry.stored.id, 'download')
+      const res = await fetch(new URL(url, this.httpBase() + '/'))
+      if (!res.ok) throw new Error(`download failed (HTTP ${res.status})`)
+      const buf = decryptBlob(Buffer.from(await res.arrayBuffer()), key)
+      if (sha1(buf) !== entry.hash) throw new Error('the downloaded file did not match')
+      const cur = this.blobs.get(rel)
+      if (!cur || cur.hash !== entry.hash) return // replaced meanwhile; that version is on its way
+      if (this.stopped) return
+      const abs = resolveInside(this.root, rel)
+      let st = null
+      try { st = fs.lstatSync(abs) } catch {}
+      if (st && !st.isFile()) {
+        // A link or folder in its place: never write through it, maybe out of the project.
+        this.log(`not writing ${rel}: something other than a plain file is in its place. Move it away to get the shared version.`)
+        return
+      }
+      let now = null
+      try { now = this.readDisk(rel) } catch { now = { unreadable: true } }
+      if (now && (now.tooLarge || now.unreadable)) {
+        this.moveAside(rel, abs) // we can't tell what it is, so it's kept rather than replaced
+      } else if (now && now.key !== undefined && now.key !== this.lastKnown.get(rel) && now.key !== `bin:${entry.hash}`) {
+        // Edited while it downloaded (ingest waits for downloads): keep that version.
+        this.keepConflict(rel, now)
+      }
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      // O_NOFOLLOW: if a link appeared since the check, fail rather than follow it.
+      fs.writeFileSync(abs, buf, { flag: fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0) })
+      this.lastKnown.set(rel, `bin:${entry.hash}`)
+      this.setOnDisk(rel, entry.hash)
+      this.retry.delete(rel)
+      if (this.ready) this.emit('file-changed', { path: rel, by: this.lastEditorOf(rel) || 'partner' })
+    } catch (err) {
+      this.log(`could not download ${rel}: ${err.message}`)
+      this.retry.set(rel, 'download')
+    } finally {
+      if (started) this.doneTransfer()
+      if (this.downloading.get(rel) === entry.hash) this.downloading.delete(rel)
+      // Look again at anything ingest skipped meanwhile. Only if the folder
+      // changed, so a download that can't happen yet doesn't loop.
+      if (!this.stopped && this.readDisk(rel)?.key !== before) this.queue(rel)
+    }
+  }
+
+  /** Owner only: deletes the session from the relay and sends everyone away. */
+  endForEveryone () { return this.conn.adminRequest({ op: 'end' }) }
 
   // --------------------------------------------------------------- watcher --
 
@@ -1053,7 +1382,7 @@ export class Session extends EventEmitter {
     const t = this.files.get(rel)
     if (t) return { path: rel, text: t.toString() }
     const b = this.blobs.get(rel)
-    if (b) return { path: rel, binary: true, size: Math.floor(b.data.length * 3 / 4) - (b.data.endsWith('==') ? 2 : b.data.endsWith('=') ? 1 : 0) }
+    if (b) return { path: rel, binary: true, size: b.size ?? (Math.floor(b.data.length * 3 / 4) - (b.data.endsWith('==') ? 2 : b.data.endsWith('=') ? 1 : 0)) }
     return null
   }
 
@@ -1114,6 +1443,8 @@ export class Session extends EventEmitter {
 
   async stop () {
     this.ready = false
+    this.stopped = true
+    clearInterval(this.retryTimer)
     if (this.watcher) await this.watcher.close()
     for (const t of this.rechecks.values()) clearTimeout(t)
     this.rechecks.clear()
@@ -1131,6 +1462,18 @@ export function formatMessage (m) {
   const head = m.to ? `${m.by} → ${m.to} (direct)` : m.by
   const file = m.file ? ` 📎 ${m.file.name} (${formatBytes(m.file.size)})` : ''
   return `${head}: ${m.text}${file}`
+}
+
+/**
+ * Storage refused an upload because that file is already there: as good as
+ * done, since ids come from the content. The relay's disk answers 409;
+ * Supabase answers 400 or 409 saying the object already exists.
+ */
+async function alreadyStored (res) {
+  if (res.status !== 409 && res.status !== 400) return false
+  if (res.status === 409) return true
+  const body = await res.text().catch(() => '')
+  return /exists|duplicate/i.test(body)
 }
 
 function safeName (name) {
