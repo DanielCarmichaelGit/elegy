@@ -109,9 +109,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
 
   /** Forgets this computer's sign-in and stops its sessions. 'revoked': the API turned the token away. */
   async function signedOut (reason) {
+    // Forget the sign-in first, so a start can't pick it up again while sessions stop.
     passes = null
-    for (const id of [...runs.keys()]) await stop(id)
     clearAccount()
+    for (const id of [...runs.keys()]) await stop(id)
     signedOutReason = reason
     broadcast('signed-out', { reason })
   }
@@ -327,8 +328,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     'POST /api/account/cancel': () => { link = null; return accountState() },
     'POST /api/account/signout': async () => {
       const account = readAccount()
+      // Forget the sign-in first, so a start can't pick it up again while sessions stop.
       passes = null
       link = null
+      clearAccount()
       for (const id of [...runs.keys()]) await stop(id)
       await signOut({ token: account?.token })
       signedOutReason = null

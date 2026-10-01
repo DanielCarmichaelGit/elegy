@@ -256,3 +256,21 @@ test("a sign-in this computer can't save fails clearly, and its token is revoked
     await proxy.close()
   }
 })
+
+test('a session started while signing out stops the others does not survive it', async () => {
+  await signIn()
+  // Several running sessions make the sign-out's stop window wide enough for a start to land in it.
+  for (const n of [1, 2, 3]) {
+    const s = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, `busy-${n}`) })
+    assert.equal(s.status, 200, JSON.stringify(s.body))
+  }
+  const signingOut = api('POST', '/api/account/signout')
+  const late = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'late') })
+  assert.deepEqual((await signingOut).body, { ok: true })
+  // Refused, or (if it got in before the sign-out began) stopped along with the rest.
+  if (late.status !== 200) assert.equal(late.body.signedOut, true, JSON.stringify(late.body))
+  await waitFor(() => [...relay.rooms.values()].every((r) => r.conns.size === 0))
+  await signIn()
+  assert.deepEqual((await api('GET', '/api/state')).body.sessions, [], 'nothing kept running on the old sign-in')
+  await api('POST', '/api/account/signout')
+})
