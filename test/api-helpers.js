@@ -1,9 +1,11 @@
 // Shared setup for the org API tests: an API over a fresh memory store, a fake
 // mailer that keeps what it sends, and a cast of people.
+import crypto from 'node:crypto'
 import { startApi } from '../src/api/server.js'
 import { createMemoryStore } from '../src/api/memory-store.js'
 import { BUILTIN } from '../src/api/permissions.js'
 import { uniqueSlug } from '../src/api/slugs.js'
+import { newToken, hashToken } from '../src/api/tokens.js'
 
 export const SITE = 'https://quilt.test'
 // A bearer "user:<id>" stands in for a website user's JWT.
@@ -22,7 +24,7 @@ export async function startTestApi (opts = {}) {
   for (const [id, name, email, confirmed = true, kind = 'personal'] of CAST) store.addUser(id, { name, email, confirmed, kind })
   const sent = []
   const mailer = { send: async (m) => { sent.push(m) } }
-  const api = await startApi({ store, verifyUser, siteUrl: SITE, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, mailer, ...opts })
+  const api = await startApi({ store, verifyUser, siteUrl: SITE, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, tokenLimit: 1000, mailer, ...opts })
   const call = async (method, path, body, userId, headers = {}) => {
     const res = await fetch(api.url + path, {
       method,
@@ -47,4 +49,13 @@ export async function makeOrg (t, name = 'Acme') {
   const mem = await t.store.addMember({ orgId: org.id, userId: 'mem', roleId: role('member').id })
   const owner = await t.store.memberOf(org.id, 'owner')
   return { slug: org.slug, org, role, owner, admin, mem }
+}
+
+/** A joined agent with a working key pair, made straight through the store. */
+export async function makeAgent (t, { name = 'Larry', provider = 'Anthropic', type = 'coding agent', description = '', ownerUserId = null, orgId = null, invitedBy = 'owner', accessTtl = 60 * 60 * 1000, refreshTtl = 30 * 24 * 60 * 60 * 1000 } = {}) {
+  const agent = await t.store.createAgent({ name, provider, type, description, ownerUserId, orgId, invitedBy })
+  const accessKey = newToken('qa_'); const refreshKey = newToken('qr_')
+  const at = Date.now()
+  await t.store.createAgentKeys({ agentId: agent.id, familyId: crypto.randomUUID(), accessHash: hashToken(accessKey), refreshHash: hashToken(refreshKey), accessExpiresAt: at + accessTtl, refreshExpiresAt: at + refreshTtl })
+  return { agent, accessKey, refreshKey }
 }

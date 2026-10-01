@@ -1,0 +1,64 @@
+// Agents' keys. An access key (qa_, 1 hour) signs an agent in; a refresh key
+// (qr_, 30 days, single use) swaps for a new pair. Pairs minted by refreshing
+// share a family, and presenting a spent refresh key revokes the whole family:
+// someone copied it, and we can't tell which holder is the real agent.
+import crypto from 'node:crypto'
+import { newToken, hashToken } from './tokens.js'
+import { HttpError } from './http.js'
+
+export const ACCESS_TTL_MS = 60 * 60 * 1000
+export const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000
+// last_used_at is for people reading the dashboard; once a minute is plenty.
+const TOUCH_EVERY_MS = 60 * 1000
+export const REUSED = "This key was already used, so this agent's keys were revoked. Invite it again."
+
+/** 'active' while some key can still refresh; 'reused' once a family was revoked; otherwise 'expired'. */
+export function keyStatus (rows, at) {
+  if (rows.some((k) => !k.revokedAt && k.refreshExpiresAt > at)) return 'active'
+  return rows.some((k) => k.revokedAt) ? 'reused' : 'expired'
+}
+
+export function makeAgentAuth ({ store, now, bearer }) {
+  /** A fresh pair for an agent, in a new family unless one is given. The keys are shown once. */
+  async function mintKeys (agentId, familyId = crypto.randomUUID()) {
+    const accessKey = newToken('qa_'); const refreshKey = newToken('qr_')
+    const at = now()
+    const accessExpiresAt = at + ACCESS_TTL_MS; const refreshExpiresAt = at + REFRESH_TTL_MS
+    await store.createAgentKeys({ agentId, familyId, accessHash: hashToken(accessKey), refreshHash: hashToken(refreshKey), accessExpiresAt, refreshExpiresAt })
+    return { agentId, accessKey, accessExpiresAt, refreshKey, refreshExpiresAt }
+  }
+
+  /** Swaps a refresh key for a new pair in the same family, once. */
+  async function refresh (refreshKey) {
+    const key = typeof refreshKey === 'string' && refreshKey.startsWith('qr_') ? refreshKey : ''
+    const row = key && await store.agentKeyByRefresh(hashToken(key))
+    if (!row) throw new HttpError(401, "This key isn't valid. Invite the agent again.")
+    if (row.revokedAt) throw new HttpError(401, "This agent's keys were revoked. Invite it again.")
+    if (row.refreshedAt) { await store.revokeFamily(row.familyId); throw new HttpError(401, REUSED) }
+    if (row.refreshExpiresAt <= now()) throw new HttpError(401, 'This key has expired. Invite the agent again.')
+    const agent = await store.agentById(row.agentId)
+    if (!agent || agent.revokedAt) throw new HttpError(401, 'This agent was revoked.')
+    // Two refreshes racing with one key: only one spends it, and the other is a reuse.
+    if (!await store.claimRefresh(row.id)) { await store.revokeFamily(row.familyId); throw new HttpError(401, REUSED) }
+    const pair = await mintKeys(agent.id, row.familyId)
+    // A reuse caught while this pair was being made (the family revoked
+    // meanwhile) must not leave this new pair working.
+    if ((await store.agentKeyByRefresh(hashToken(key)))?.revokedAt) { await store.revokeFamily(row.familyId); throw new HttpError(401, REUSED) }
+    return pair
+  }
+
+  /** The agent behind a request's `qa_` bearer key, or a 401. */
+  async function agentFromRequest (req) {
+    const key = bearer(req)
+    const keyRow = key.startsWith('qa_') ? await store.agentKeyByAccess(hashToken(key)) : null
+    if (!keyRow) throw new HttpError(401, 'sign the agent in first')
+    if (keyRow.revokedAt) throw new HttpError(401, "this agent's keys were revoked; invite it again")
+    if (keyRow.accessExpiresAt <= now()) throw new HttpError(401, 'this access key has expired; refresh it')
+    const agent = await store.agentById(keyRow.agentId)
+    if (!agent || agent.revokedAt) throw new HttpError(401, 'this agent was revoked')
+    if (!agent.lastUsedAt || now() - agent.lastUsedAt >= TOUCH_EVERY_MS) await store.touchAgent(agent.id)
+    return { agent, keyRow }
+  }
+
+  return { mintKeys, refresh, agentFromRequest }
+}

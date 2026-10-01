@@ -10,6 +10,7 @@ import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
 import { inviteRoutes } from './routes/invites.js'
 import { agentRoutes } from './routes/agents.js'
+import { makeAgentAuth } from './agent-auth.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -17,7 +18,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, trustProxy = false, maxStartKeys = 10_000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, trustProxy = false, maxStartKeys = 10_000 }) {
   const site = String(siteUrl || '').replace(/\/+$/, '')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
@@ -57,6 +58,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const limitInvites = makeLimiter(inviteLimit, 'too many tries; wait a minute and try again')
   // Sending (or resending) an email invite, capped per signed-in user rather than per IP.
   const limitInviteSend = makeLimiter(inviteSendLimit, 'too many invites sent; wait a bit and try again', { windowMs: 60 * 60_000, keyOf: (userId) => userId })
+  const limitTokens = makeLimiter(tokenLimit, 'too many key refreshes; try again in a minute')
+  const agentAuth = makeAgentAuth({ store, now, bearer })
 
   const COLOR = /^#[0-9a-fA-F]{6}$/
   function cleanProfile (b) {
@@ -159,7 +162,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, now, site, mailer, log, limit: limitInvites, limitSend: limitInviteSend }
+  const ctx = { store, user, now, site, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, agentAuth }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx))
 
   async function openLink (code) {

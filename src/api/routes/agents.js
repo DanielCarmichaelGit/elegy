@@ -1,13 +1,41 @@
-// A person's personal agents. (Task 4 adds the agents' own key and /me routes.)
+// Agents: swapping a refresh key, who an agent is, and a person's personal agents.
 import { HttpError, needId } from '../http.js'
+import { keyStatus } from '../agent-auth.js'
 
-const agentView = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, createdAt: a.createdAt, lastUsedAt: a.lastUsedAt })
+const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description })
 
-export function agentRoutes ({ store, user }) {
+export function agentRoutes ({ store, user, now, limitTokens, agentAuth }) {
   return [
+    ['POST', /^\/v1\/agents\/token$/, async (req, body) => {
+      limitTokens(req)
+      return agentAuth.refresh(body.refreshKey)
+    }],
+
+    ['GET', /^\/v1\/agents\/me$/, async (req) => {
+      const { agent } = await agentAuth.agentFromRequest(req)
+      if (!agent.orgId) return { agent: { ...profileOf(agent), kind: 'personal', org: null }, teams: [], role: null }
+      const [org, m, teams] = await Promise.all([store.orgById(agent.orgId), store.memberByAgent(agent.orgId, agent.id), store.listTeams(agent.orgId)])
+      const [role, mine] = await Promise.all([m?.roleId ? store.roleById(agent.orgId, m.roleId) : null, m ? store.teamsOfMember(m.id) : []])
+      const names = new Map(teams.map((x) => [x.id, x.name]))
+      return {
+        agent: { ...profileOf(agent), kind: 'org', org: { slug: org.slug, name: org.name } },
+        teams: mine.map((x) => ({ id: x.teamId, name: names.get(x.teamId) || '', access: x.access, scopes: x.scopes })),
+        role: role ? { name: role.name } : null
+      }
+    }],
+
     ['GET', /^\/v1\/agents$/, async (req) => {
       const u = await user(req)
-      return { agents: (await store.listPersonalAgents(u.userId)).map(agentView) }
+      const agents = await store.listPersonalAgents(u.userId)
+      return {
+        agents: await Promise.all(agents.map(async (a) => ({
+          ...profileOf(a),
+          createdAt: a.createdAt,
+          lastUsedAt: a.lastUsedAt,
+          // Why an agent is signed out (reused or expired keys), so the dashboard can say so.
+          status: keyStatus(await store.listAgentKeys(a.id), now())
+        })))
+      }
     }],
 
     ['DELETE', /^\/v1\/agents\/([^/]+)$/, async (req, body, [id]) => {
