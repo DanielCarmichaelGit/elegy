@@ -24,7 +24,8 @@ function run (args, env) {
   let out = ''
   child.stdout.on('data', (d) => { out += d })
   child.stderr.on('data', (d) => { out += d })
-  return { out: () => out, done: new Promise((resolve) => child.on('exit', resolve)) }
+  // 'close' (not 'exit'): fires once stdout/stderr have finished draining, so `out()` is final.
+  return { out: () => out, done: new Promise((resolve) => child.on('close', resolve)) }
 }
 const quilt = (args, env) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: 'utf8' })
 /** Like `quilt`, but doesn't block this process's event loop: needed for `logout`, which
