@@ -113,13 +113,17 @@ that ends a session for others.
 project ever being written to their computer. Only edit (and above) gets a
 synced directory. That keeps read-only truly read-only: nothing to copy,
 nothing left behind when they're removed.
-**Rough shape:** Not settled. Viewers probably read through the relay
-instead of syncing: a tunnel into the machine that holds the session files,
-or the relay serving file contents and the feed over the existing
-connection for the app to render in place. The app would show the same
-feed, chat and file view for a viewer but skip the "choose a folder" step
-and never start the sync client. See role handling in `src/session.js`
-(`access.role === 'viewer'`).
+**Rough shape:** Viewers read through the relay instead of syncing. The
+relay already holds every room's full file tree, and the hosted MCP already
+serves file reads from that copy to cloud agents with no folder; a viewer
+is the same case with a human UI. The app connects like any member, keeps
+room state in memory instead of writing it, and renders a file tree, a
+read-only file viewer, the feed and chat in place. It skips the "choose a
+folder" step and never starts the sync client. Viewers lose "Open in
+Cursor" and running the code, which is what viewing means; promotion to
+edit is the moment to ask for a folder. An editor demoted to view keeps
+their folder but syncing to it stops, and the app says so. See role
+handling in `src/session.js` (`access.role === 'viewer'`).
 
 ## Toasts stay while hovered, and can be copied
 **Status:** Idea
