@@ -22,6 +22,7 @@ import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
+import { Inbox } from './inbox.js'
 import { pickChecklist } from './agent-task-workflow.js'
 
 export { applyTextDiff }
@@ -91,6 +92,8 @@ export class Session extends EventEmitter {
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
     this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, order, ts }
+    // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
+    this.inboxTracker = new Inbox()
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
 
@@ -318,10 +321,14 @@ export class Session extends EventEmitter {
           }
         }
       }
+      this.scanInbox({ quiet: tr.origin === LOCAL })
       this.scheduleStatusWrite()
     })
     this.activity.observe(() => this.scheduleStatusWrite())
-    this.tasks.observe(() => this.scheduleStatusWrite())
+    this.tasks.observe((ev, tr) => {
+      this.scanInbox({ quiet: tr.origin === LOCAL })
+      this.scheduleStatusWrite()
+    })
     this.commitRequests.observe((ev, tr) => {
       for (const [id, change] of ev.changes.keys) {
         const r = this.commitRequests.get(id)
@@ -338,6 +345,7 @@ export class Session extends EventEmitter {
     })
     this.doc.on('update', () => this.scheduleStateSave())
     this.ready = true
+    this.scanInbox({ quiet: true }) // take stock: what is already here wakes nobody
     this.fetchMissedFiles()
     this.scheduleStateSave()
     this.scheduleStatusWrite()
@@ -1324,6 +1332,33 @@ export class Session extends EventEmitter {
   }
 
   deleteTask (id) { dropTask(this.doc, this.tasks, id, LOCAL) }
+
+  // ------------------------------------------------------------- inbox --
+
+  /** Who the inbox is for: this agent, or this person's AI (tasks for "their AI" are its). */
+  inboxReader () { return { name: this.name, asAi: this.kind !== 'agent' } }
+
+  /**
+   * Looks for new mentions, direct messages and handed-over tasks. `quiet` takes
+   * stock without waking anyone (our own changes, and everything there before we were ready).
+   */
+  scanInbox ({ quiet = false } = {}) {
+    let events
+    try {
+      events = this.inboxTracker.scan({
+        messages: this.chat.toArray().filter((m) => this.canSee(m)),
+        tasks: this.taskList(),
+        reader: this.inboxReader()
+      }, { quiet: quiet || !this.ready })
+    } catch (err) {
+      this.emit('debug', `inbox: ${err.message}`)
+      return
+    }
+    if (events.length) this.emit('inbox', events)
+  }
+
+  /** Inbox events after sequence number `after` (0 for all kept), and the latest number. */
+  inbox ({ after = 0 } = {}) { return this.inboxTracker.since(after) }
 
   /** Marks open requests as done by a commit. */
   resolveCommitRequests ({ hash = '', ids = null } = {}) {

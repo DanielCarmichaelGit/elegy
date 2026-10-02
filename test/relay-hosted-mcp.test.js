@@ -27,9 +27,9 @@ const GROK = 'agent:agent-grok'
 const hostedPass = (over = {}) => signPass({ v: 1, sub: 'agent-grok', kind: 'agent', name: 'Grok-Bot', key: '', exp: Date.now() + PASS_TTL_MS, ...over }, PASS_KEYS.privateKey)
 
 let srv, http, carl, carlDir, grok
-async function client (pass) {
+async function client (pass, headers = {}) {
   const c = new Client({ name: 'grok', version: '1.0.0' })
-  await c.connect(new StreamableHTTPClientTransport(new URL(`${http}/mcp`), { requestInit: { headers: pass ? { 'x-quilt-pass': pass } : {} } }))
+  await c.connect(new StreamableHTTPClientTransport(new URL(`${http}/mcp`), { requestInit: { headers: { ...(pass ? { 'x-quilt-pass': pass } : {}), ...headers } } }))
   return c
 }
 const call = (name, args = {}) => grok.callTool({ name, arguments: args })
@@ -202,6 +202,39 @@ test('messages, shares and claims reach the owner, and claims are respected', as
   await carl.claim('README.md', 'mine')
   await waitFor(async () => /README.md is claimed by Carl/.test(out(await call('quilt_write_file', { path: 'README.md', content: 'x' }))))
   await carl.release('README.md')
+})
+
+test('quilt_inbox shows mentions, direct messages and tasks handed to the hosted agent since it joined', async () => {
+  carl.say('@Grok-Bot the README needs a usage section')
+  carl.say('between us: keep it short', { to: 'Grok-Bot' })
+  carl.say('nothing for the bot here')
+  const task = carl.addTask({ title: 'Write the usage section', assignee: 'Grok-Bot', files: ['README.md'] })
+  await waitFor(async () => /Write the usage section/.test(out(await call('quilt_tasks'))))
+  const inbox = out(await call('quilt_inbox'))
+  assert.match(inbox, /- Carl mentioned you in chat: @Grok-Bot the README needs a usage section/)
+  assert.match(inbox, /- Carl sent you a direct message: between us: keep it short/)
+  assert.match(inbox, new RegExp(`- Carl handed you a task: "Write the usage section" \\(id ${task.id}\\)\\. Files: README\\.md`))
+  assert.doesNotMatch(inbox, /nothing for the bot here/)
+  assert.doesNotMatch(inbox, /hello from the cloud/, 'its own messages')
+  assert.equal(out(await call('quilt_inbox')), 'Nothing new for you.')
+  carl.deleteTask(task.id)
+})
+
+test('an agent that sends an old image is told to update in every answer; quilt_check_update answers for any image', async () => {
+  const names = (await grok.listTools()).tools.map((t) => t.name)
+  assert.ok(names.includes('quilt_check_update'))
+  assert.match(out(await call('quilt_check_update')), /^Quilt \d+\.\d+\.\d+ is current \(the newest release is \d+\.\d+\.\d+\)\./, 'no image given: the relay checks its own')
+  assert.match(out(await call('quilt_check_update', { image: '0.0.1' })), /^You must update your app: you run Quilt 0\.0\.1 and \d+\.\d+\.\d+ is out\. Update Quilt/)
+  assert.doesNotMatch(out(await call('quilt_status')), /update your app/)
+  const old = await client(hostedPass(), { 'x-quilt-image': '0.0.1' })
+  try {
+    const r = await old.callTool({ name: 'quilt_status', arguments: {} })
+    assert.match(out(r), /You are Grok-Bot in a live quilt session/)
+    assert.match(out(r), /\n⚠️ You must update your app: you run Quilt 0\.0\.1 and \d+\.\d+\.\d+ is out/)
+    assert.match(out(await old.callTool({ name: 'quilt_check_update', arguments: {} })), /^You must update your app: you run Quilt 0\.0\.1/)
+  } finally {
+    await old.close()
+  }
 })
 
 test('the owner can limit the agent to folders, make it a viewer, or remove it', async () => {

@@ -36,6 +36,8 @@ export async function startControl (session, extras = {}) {
     'POST /commit-request': (b) => session.requestCommit(b.message),
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
     'GET /tasks': () => ({ tasks: session.taskList() }),
+    // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
+    'POST /inbox': (b) => session.inbox({ after: b.after }),
     'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
     'POST /tasks/update': (b) => ({ task: session.updateTask(b), tasks: session.taskList() }),
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.

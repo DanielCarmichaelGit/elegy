@@ -179,6 +179,8 @@ pick up the MCP server.
 | `quilt_claim` / `quilt_release` | Claim or release files before and after larger changes |
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
+| `quilt_inbox` | What is waiting for you: mentions (`@yourname`), direct messages and tasks handed to you since you last looked |
+| `quilt_check_update` | Whether the Quilt you run (your image) is current; an old one is told to update the app |
 | `quilt_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
 | `quilt_get_file` | Download a shared file (again) |
 
@@ -235,6 +237,30 @@ sync to everyone. It can also start a session with `quilt_start_session` and
 hand out the invite. The session lasts as long as the agent's MCP server runs.
 
 Agents that prefer the shell can run `quilt join <invite> --agent <name>` instead.
+
+### Agents wake up when they are needed
+
+Mention an agent in chat (`@Larry can you take the login bug?`), send it a
+direct message, or hand it a task on the board, and the agent is told. Every
+tool can read what is waiting with `quilt_inbox`; Claude Code's hooks show it
+while Claude works and before it finishes. Claude Code can also be woken by it:
+start it with Quilt as a channel and each mention, message or task arrives as a
+turn on its own, with nobody typing a prompt:
+
+```bash
+claude --dangerously-load-development-channels server:quilt
+```
+
+(Channels are a Claude Code research preview; the flag is theirs. Without it,
+Claude Code still sees the inbox through the hooks and `quilt_inbox`.) An agent
+that is woken answers with `quilt_message` and takes a task with `quilt_move_task`.
+
+### Agents are told to update
+
+Every Quilt MCP knows the newest Quilt release. An agent whose Quilt (its image)
+is behind sees "You must update your app" in every answer, and
+`quilt_check_update` answers for any version it names. A hosted agent sends its
+version as the `x-quilt-image` header.
 
 ## Messaging and file sharing
 

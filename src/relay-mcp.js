@@ -18,6 +18,8 @@ import { globMatcher, isSafeRelPath } from './pathrules.js'
 import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName, assigneeLabel, assignmentFields } from './tasks.js'
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
+import { scanInbox, renderInbox } from './inbox.js'
+import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 
@@ -58,6 +60,17 @@ const WAITING = 'The session owner has not let you in yet. They see you on their
 const REMOVED = 'You are no longer in that session. Ask for a new invite and call quilt_join_session again.'
 
 const id = () => crypto.randomBytes(8).toString('hex')
+
+/** The chat `me` can see: public messages, and direct ones to or from them. */
+const chatFor = (doc, me) => doc.getArray('chat').toArray().filter((m) => m && m.id && (!m.to || m.to === me || m.by === me))
+
+/** Takes stock of a room for `me`'s inbox: what is already there wakes nobody. */
+function takeStock (doc, me) {
+  return { state: scanInbox({ messages: chatFor(doc, me), tasks: readTasks(doc.getMap('tasks')), reader: { name: me, asAi: false } }).state }
+}
+
+// The link-based server is made anew for every request; a link's inbox lives here between them.
+const linkInboxes = new WeakMap()
 const text = (t) => ({ content: [{ type: 'text', text: t }] })
 const fail = (t) => ({ content: [{ type: 'text', text: t }], isError: true })
 
@@ -77,11 +90,23 @@ const cleanPath = (p) => String(p || '').trim().replace(/^\.\//, '').replace(/^\
  * for status, `withSession(fn)` runs a tool with the current room or explains why not.
  */
 function sessionTools (server, ctx) {
-  const tool = (name, def, fn) => server.registerTool(name, def, (args) => ctx.withSession((room) => {
+  // The agent's image (its Quilt version) came with the request; an old one is told to update in every answer.
+  const stale = (r) => {
+    const n = ctx.updates && ctx.image ? ctx.updates.notice(ctx.image()) : ''
+    if (!n || !r || !Array.isArray(r.content)) return r
+    return { ...r, content: [...r.content, { type: 'text', text: `⚠️ ${n}` }] }
+  }
+  const tool = (name, def, fn) => server.registerTool(name, def, async (args) => stale(await ctx.withSession((room) => {
     const doc = room.doc
     const parts = { room, doc, feed: doc.getArray('agentFeed'), chat: doc.getArray('chat'), activity: doc.getArray('activity'), files: doc.getMap('files'), blobs: doc.getMap('blobs') }
     return fn(args || {}, parts)
-  }))
+  })))
+  if (ctx.updates) {
+    server.registerTool('quilt_check_update', {
+      description: 'Whether the Quilt you run (your image) is current. Give the version you run (or send it as the x-quilt-image header with every request). An out-of-date image is told to update the app.',
+      inputSchema: { image: z.string().max(40).optional().describe('The Quilt version you run, such as 0.3.4') }
+    }, ({ image }) => text(ctx.updates.describe(image || (ctx.image ? ctx.image() : undefined))))
+  }
   const me = ctx.me
   const writable = (room) => room.full ? 'This session is over its size limit, so nothing new can be saved.' : null
   const visible = (m) => m && m.id && (!m.to || m.to === me || m.by === me)
@@ -298,6 +323,17 @@ function sessionTools (server, ctx) {
     }).join('\n'))
   })
 
+  tool('quilt_inbox', {
+    description: 'What is waiting for you: mentions of you in chat (@yourname), direct messages to you, and tasks handed to you since you last looked. Act on each one: answer with quilt_message, take a task with quilt_move_task.',
+    inputSchema: {}
+  }, (_, { doc, chat }) => {
+    const box = ctx.inbox ? ctx.inbox() : { state: null }
+    const r = scanInbox({ messages: chat.toArray().filter(visible), tasks: readTasks(taskMap(doc)), reader: reader() }, box.state)
+    box.state = r.state
+    if (ctx.saveInbox) ctx.saveInbox()
+    return text(renderInbox(r.events) || 'Nothing new for you.')
+  })
+
   tool('quilt_message', {
     description: 'Send a chat message to everyone in the session, or to one person with `to`.',
     inputSchema: {
@@ -434,6 +470,7 @@ async function serve (mcp, req, res) {
  * saveHosted, log, endedMessage }.
  */
 export async function handleHostedMcp ({ req, res, pass, relay }) {
+  const image = String(req.headers['x-quilt-image'] || '').trim()
   const mcp = new McpServer({ name: 'quilt', version: '0.2.0' }, { instructions: HOSTED_INSTRUCTIONS })
   const me = pass.name
   const account = `${pass.kind}:${pass.sub}`
@@ -463,6 +500,14 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     access: (room) => room.hostedAccess(pass),
     tool: () => toolLabel(mcp.server.getClientVersion()?.name) || 'hosted',
     warn: () => '',
+    inbox: () => {
+      const h = relay.hosted.get(account)
+      if (!h.inbox) h.inbox = { state: null }
+      return h.inbox
+    },
+    saveInbox: () => relay.saveHosted(),
+    updates: relay.updates || null,
+    image: () => image,
     withSession: (fn) => {
       const c = current()
       return c.error ? fail(c.error) : fn(c.room)
@@ -483,7 +528,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     const auth = room.authorize(inv.secret, '')
     if (auth !== 'editor' && auth !== 'viewer') return fail('Wrong room secret: copy the whole invite link, including the part after #.')
     const a = room.hostedRequest(pass, auth)
-    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending' })
+    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', inbox: takeStock(room.doc, me) })
     relay.saveHosted()
     if (a.state === 'pending') return text(`Asked to join room ${inv.room} as ${auth === 'viewer' ? 'a viewer' : 'an editor'}. ${WAITING}`)
     room.hostedActive(account)
@@ -533,18 +578,29 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
  * @param {object} o.link   { name, tool, tabSeenAt }
  * @param {string} [o.toolHint] tool name from the URL (?tool=Cursor)
  */
-export async function handleAgentMcp ({ req, res, room, link, toolHint }) {
+export async function handleAgentMcp ({ req, res, room, link, toolHint, updates = null }) {
   const mcp = new McpServer({ name: 'quilt', version: '0.1.0' }, { instructions: INSTRUCTIONS })
   const me = link ? link.name : ''
+  const image = String(req.headers['x-quilt-image'] || '').trim()
   const ctx = {
     me,
+    updates,
+    image: () => image,
     who: () => ({ name: me }),
     access: () => null,
     tool: () => toolHint || toolLabel(mcp.server.getClientVersion()?.name),
     warn: () => Date.now() - (link.tabSeenAt || 0) > TAB_STALE_MS
       ? `\n\n⚠️ ${me}'s quilt browser tab doesn't seem to be open, so file changes aren't syncing. Ask your user to reopen quilt in their browser.`
       : '',
-    withSession: (fn) => (room && link) ? fn(room) : fail(NOT_LINKED)
+    withSession: (fn) => (room && link) ? fn(room) : fail(NOT_LINKED),
+    inbox: () => {
+      let box = link ? linkInboxes.get(link) : null
+      if (!box) {
+        box = room && link ? takeStock(room.doc, me) : { state: null }
+        if (link) linkInboxes.set(link, box)
+      }
+      return box
+    }
   }
   sessionTools(mcp, ctx)
   await serve(mcp, req, res)

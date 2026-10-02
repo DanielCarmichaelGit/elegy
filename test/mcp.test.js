@@ -3,6 +3,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -52,7 +53,7 @@ after(async () => {
 
 test('exposes the join and workspace tools', async () => {
   const names = (await client.listTools()).tools.map((t) => t.name)
-  for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim']) {
+  for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim', 'quilt_inbox']) {
     assert.ok(names.includes(n), n)
   }
 })
@@ -116,6 +117,66 @@ test('the agent can read a partner\'s AI feed and the file tree', async () => {
   assert.match(files, /src\/app\.js/)
   assert.match(files, /Claims: src\/auth \(dana: refactoring\)/)
   assert.match(text(await call('quilt_status')), /dana/)
+})
+
+test('mentions, direct messages and handed-over tasks reach the agent: pushed as channel events, and listed by quilt_inbox', async () => {
+  // Claude Code started with the quilt channel gets each event as a turn. The push loop
+  // skips what was already waiting when it first saw the session, so start listening first.
+  const pushed = []
+  client.fallbackNotificationHandler = async (n) => { if (n.method === 'notifications/claude/channel') pushed.push(n.params) }
+  assert.equal(text(await call('quilt_inbox')), 'Nothing new for you.')
+  await new Promise((r) => setTimeout(r, 2500)) // one poll: the push loop takes stock
+  human.say('hello everyone, @helper please take the login bug')
+  human.say('and privately: when will you be done?', { to: 'helper' })
+  human.say('unrelated note') // no mention: not for the agent
+  const task = human.addTask({ title: 'Fix login', assignee: 'helper', files: ['src/app.js'] })
+  await waitFor(() => pushed.length >= 3)
+  assert.deepEqual(pushed.map((p) => [p.meta.kind, p.meta.from]), [['mention', 'dana'], ['dm', 'dana'], ['task', 'dana']])
+  assert.match(pushed[0].content, /^dana mentioned you in chat: hello everyone, @helper please take the login bug\n.*quilt_message/)
+  assert.match(pushed[1].content, /^dana sent you a direct message: and privately: when will you be done\?/)
+  assert.match(pushed[2].content, new RegExp(`^dana handed you a task: "Fix login" \\(id ${task.id}\\)\\. Files: src/app\\.js\\. Pick it up with quilt_move_task`))
+  assert.equal(pushed[2].meta.id, task.id)
+  // The tool lists the same events (its own cursor), then nothing new.
+  const inbox = text(await call('quilt_inbox'))
+  assert.match(inbox, /^Waiting for you:\n- dana mentioned you in chat: hello everyone, @helper please take the login bug\n- dana sent you a direct message: and privately/)
+  assert.match(inbox, /- dana handed you a task: "Fix login"/)
+  assert.doesNotMatch(inbox, /unrelated note/)
+  assert.equal(text(await call('quilt_inbox')), 'Nothing new for you.')
+  assert.match(text(await call('quilt_inbox', { all: true })), /Fix login/)
+  // The agent's own messages and tasks, and tasks moved along, wake nobody.
+  await call('quilt_message', { text: '@helper noted, on it' })
+  await call('quilt_move_task', { id: task.id, column: 'doing' })
+  await new Promise((r) => setTimeout(r, 2500))
+  assert.equal(pushed.length, 3)
+  assert.equal(text(await call('quilt_inbox')), 'Nothing new for you.')
+  client.fallbackNotificationHandler = undefined
+})
+
+test('an agent whose Quilt is behind the newest release is told to update in every answer', async () => {
+  // GitHub, as far as this agent's `quilt mcp` knows, has a far newer release.
+  const gh = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ tag_name: 'v99.0.0', html_url: 'https://github.com/x/releases/tag/v99.0.0', published_at: '2026-10-09T00:00:00Z', body: '' }))
+  })
+  await new Promise((r) => gh.listen(0, '127.0.0.1', r))
+  const old = new Client({ name: 'cursor', version: '1.0.0' })
+  await old.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentCwd, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}`, QUILT_RELEASES_URL: `http://127.0.0.1:${gh.address().port}/latest` }, stderr: 'ignore' }))
+  try {
+    const ask = (name, args = {}) => old.callTool({ name, arguments: args })
+    const check = await waitFor(async () => { const t = text(await ask('quilt_check_update')); return /99\.0\.0/.test(t) && t })
+    assert.match(check, /^You must update your app: you run Quilt \d+\.\d+\.\d+ and 99\.0\.0 is out\. Update Quilt/)
+    assert.match(text(await ask('quilt_check_update', { image: '99.0.0' })), /^Quilt 99\.0\.0 is current/)
+    assert.match(text(await ask('quilt_check_update', { image: '0.0.1' })), /^You must update your app: you run Quilt 0\.0\.1 and 99\.0\.0 is out/)
+    // Every other answer carries the warning too (this server found the agent's running session).
+    const status = text(await ask('quilt_status'))
+    assert.match(status, /dana/)
+    assert.match(status, /\n\n⚠️ You must update your app: you run Quilt \d+\.\d+\.\d+ and 99\.0\.0 is out/)
+  } finally {
+    await old.close().catch(() => {})
+    gh.close()
+  }
+  // The agent's own server knows no newer release: no warning.
+  assert.doesNotMatch(text(await call('quilt_status')), /update your app/)
 })
 
 test('agent edits sync back to people, and leaving removes the agent', async () => {

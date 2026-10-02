@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 import { handleAgentMcp, handleHostedMcp } from './relay-mcp.js'
+import { UpdateCheck } from './update-check.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
@@ -975,6 +976,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   // Hosted agents: which session each one (by pass id) is in, so every tool call over
   // /mcp knows its room. Kept on disk so a relay restart doesn't drop them out.
+  // The newest Quilt this relay knows of (its own build, or GitHub's latest), so agents are told to update.
+  const updates = new UpdateCheck().start()
   const hostedFile = dataDir && path.join(dataDir, 'hosted-agents.json')
   const hosted = new Map()
   try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(hostedFile, 'utf8')))) hosted.set(k, v) } catch {}
@@ -1070,7 +1073,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (!passKey) return text(404, 'this relay has sign-in off; hosted agents need it on')
       const pass = httpPass(req)
       if (!pass) return text(401, SIGN_IN)
-      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, log, endedMessage: ENDED_MESSAGE } })
+      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, log, endedMessage: ENDED_MESSAGE, updates } })
         .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
@@ -1089,7 +1092,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           saveLinks()
         }
       }
-      handleAgentMcp({ req, res, room, link: room ? link : null, toolHint: url.searchParams.get('tool') || '' })
+      handleAgentMcp({ req, res, room, link: room ? link : null, toolHint: url.searchParams.get('tool') || '', updates })
         .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
         .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
       return
@@ -1305,6 +1308,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         close: async () => {
           clearInterval(heartbeat)
           clearInterval(sweeper)
+          updates.stop()
           // Rooms are saved first, synchronously: Fly's kill timeout is about as long as
           // presence gets to reach the accounts API, so a hung or slow API must never be
           // able to delay saving a room's data.

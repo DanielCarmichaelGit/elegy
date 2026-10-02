@@ -36,6 +36,8 @@ ${TASK_WORKFLOW_MD}
   then carry on with other work.
 - Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
   hand the file over, or say when you'll be done.
+- \`quilt_inbox\` lists what is waiting for you: mentions of you (@yourname), direct
+  messages and tasks handed to you. Read it when you start and act on each one.
 - Before moving a ticket to Done, run the checks under "Verifying a change" (in
   AGENTS.md; add them there if the section is missing) and pass what you ran and saw
   as \`verified\` to \`quilt_move_task\`. Done without evidence is refused.

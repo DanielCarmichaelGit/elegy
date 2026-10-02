@@ -1,8 +1,9 @@
 // `quilt hook`: Claude Code hooks that make claims automatic. Before every
 // edit, the file is claimed for this person (or the edit is refused when
 // someone else holds it, with a nudge to ask them for help); claims the hooks
-// made are released when Claude finishes. Direct messages from collaborators
-// are handed to Claude so it can answer requests like "can you help with X?".
+// made are released when Claude finishes. Direct messages, mentions and tasks
+// handed over by collaborators are shown to Claude so it can answer requests
+// like "can you help with X?" and take work that is given to it.
 //
 // Reads the hook event as JSON on stdin and answers on stdout, as Claude Code
 // expects. Without a running session it does nothing, so the hooks are harmless
@@ -11,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { findDaemon } from './control.js'
 import { migrateDir } from './legacy.js'
+import { describeEvent } from './inbox.js'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const TIMEOUT_MS = 5000
@@ -39,7 +41,7 @@ export async function handleHook (event, { findDaemon: find = findDaemon, call =
   const api = (method, route, body) => call(d, method, route, body)
   const state = hookState(d.dir, event.session_id)
   switch (event.hook_event_name) {
-    case 'SessionStart': return sessionStart(api)
+    case 'SessionStart': return sessionStart(api, state)
     case 'PreToolUse': return preEdit(event, d, api, state)
     case 'PostToolUse': return postEdit(api, state)
     case 'Stop': return stop(event, api, state)
@@ -48,15 +50,18 @@ export async function handleHook (event, { findDaemon: find = findDaemon, call =
   }
 }
 
-async function sessionStart (api) {
+async function sessionStart (api, state) {
   const st = await api('GET', '/status')
+  // Only what arrives from now on is for this Claude; what came before is for quilt_inbox.
+  const { seq } = await api('POST', '/inbox', { after: 0 }).catch(() => ({ seq: 0 }))
+  state.update((s) => { s.after = seq || 0 })
   const who = st.peers.length ? st.peers.map((p) => p.name + (p.kind === 'agent' ? ' (AI agent)' : '')).join(', ') : 'nobody else yet'
   const text = [
     `This folder is in a live Quilt session (room ${st.room}) with ${who}. Files can change underneath you at any time; re-read a file right before editing it.`,
     'Quilt claims each file for you the moment you edit it, and releases those claims when you finish. ' +
     'If a file is claimed by someone else, your edit is refused: do not retry or work around it. ' +
     'Send them a direct message with quilt_message saying what you wanted to change and asking for help, then carry on with other work.',
-    'Messages from collaborators are shown to you as you work; answer them with quilt_message.'
+    'Messages from collaborators, mentions of you and tasks handed to you are shown to you as you work; answer with quilt_message and take a task with quilt_move_task.'
   ].join('\n')
   return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } } }
 }
@@ -99,19 +104,19 @@ function deny (rel, claim, hookEventName, error) {
 }
 
 async function postEdit (api, state) {
-  const msgs = await unseenDirect(api, state)
-  if (!msgs.length) return { exitCode: 0 }
-  state.update((s) => { for (const m of msgs) s.seen.push(m.id) })
-  const text = renderAsks(msgs)
+  const events = await unseenEvents(api, state)
+  if (!events.length) return { exitCode: 0 }
+  state.update((s) => { for (const e of events) s.seen.push(e.id) })
+  const text = renderAsks(events)
   return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text } } }
 }
 
 async function stop (event, api, state) {
   if (!event.stop_hook_active) {
-    const msgs = await unseenDirect(api, state)
-    if (msgs.length) {
-      state.update((s) => { for (const m of msgs) s.seen.push(m.id) })
-      return { exitCode: 0, output: { decision: 'block', reason: `${renderAsks(msgs)}\nReply with quilt_message before you finish (and release files you no longer need with quilt_release), then finish.` } }
+    const events = await unseenEvents(api, state)
+    if (events.length) {
+      state.update((s) => { for (const e of events) s.seen.push(e.id) })
+      return { exitCode: 0, output: { decision: 'block', reason: `${renderAsks(events)}\nReply with quilt_message, and take or decline a task you were handed, before you finish (and release files you no longer need with quilt_release), then finish.` } }
     }
   }
   await releaseAll(api, state)
@@ -124,18 +129,22 @@ async function sessionEnd (api, state) {
   return { exitCode: 0 }
 }
 
-/** Unread direct messages to me that this Claude session hasn't been shown yet. The person's own unread state is untouched. */
-async function unseenDirect (api, state) {
-  const { messages } = await api('POST', '/messages', { unreadOnly: true, markRead: false, limit: 50 })
-  const seen = new Set(state.read().seen)
-  return messages.filter((m) => m.to && m.text && !seen.has(m.id))
+/**
+ * Inbox events (direct messages, mentions, tasks handed over) since this Claude session
+ * started that it hasn't been shown yet. The person's own unread state is untouched.
+ */
+async function unseenEvents (api, state) {
+  const s = state.read()
+  const { events } = await api('POST', '/inbox', { after: s.after || 0 })
+  const seen = new Set(s.seen)
+  return events.filter((e) => e && e.id && !seen.has(e.id))
 }
 
-function renderAsks (msgs) {
-  const lines = msgs.map((m) => `- ${m.by} says: ${m.text}`)
-  return `Quilt: collaborators sent you direct messages while you were working:\n${lines.join('\n')}\n` +
-    'If one asks about a file you hold, reply with quilt_message (to: their name): help with the change, hand the file over ' +
-    '(quilt_release the file, then tell them), or say when you will be done.'
+function renderAsks (events) {
+  const lines = events.map((e) => `- ${describeEvent(e)}`)
+  return `Quilt: collaborators wrote to you, or handed you work, while you were working:\n${lines.join('\n')}\n` +
+    'If a message asks about a file you hold, reply with quilt_message (to: their name): help with the change, hand the file over ' +
+    '(quilt_release the file, then tell them), or say when you will be done. Take a task you were handed with quilt_move_task when you are free, or say in chat why not.'
 }
 
 /** Releases every claim the hooks made for this Claude session. */
@@ -150,7 +159,7 @@ export function hookState (projectDir, sessionId) {
   const dir = path.join(migrateDir(projectDir), 'hooks')
   const file = path.join(dir, `${String(sessionId || 'default').replace(/[^\w.-]/g, '_')}.json`)
   const read = () => {
-    try { const s = JSON.parse(fs.readFileSync(file, 'utf8')); return { claims: s.claims || [], seen: s.seen || [] } } catch { return { claims: [], seen: [] } }
+    try { const s = JSON.parse(fs.readFileSync(file, 'utf8')); return { claims: s.claims || [], seen: s.seen || [], after: s.after || 0 } } catch { return { claims: [], seen: [], after: 0 } }
   }
   return {
     file,

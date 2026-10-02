@@ -18,6 +18,8 @@ import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
+import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
+import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
 
 /**
@@ -33,6 +35,11 @@ export function roomFolder (cwd, room) {
 
 export { toolLabel }
 
+// How often `quilt mcp` asks the session for new inbox events to push to Claude Code.
+export const INBOX_POLL_MS = 2000
+// The notification Claude Code turns into a turn when it was started with the quilt channel.
+export const CHANNEL_METHOD = 'notifications/claude/channel'
+
 const NOT_RUNNING = 'There is no live quilt session for this project. If the user gave you an invite link, join with ' +
   'quilt_join_session. To start a new session, use quilt_start_session. A person can also run `quilt join` or `quilt ui`.'
 
@@ -47,12 +54,15 @@ export const MCP_INSTRUCTIONS =
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
   'Claim files or folders before larger changes and do not edit files someone else has claimed. ' +
   'Always re-read a file right before you edit it. ' +
+  'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
+  'When Claude Code is started with the quilt channel, they arrive on their own as <channel source="quilt"> events while you work: treat each like a request from that person, answer with quilt_message, and take a task with quilt_move_task. ' +
   TASK_WORKFLOW
 
 export async function runMcp () {
   const server = new McpServer(
     { name: 'quilt', version: '0.1.0' },
-    { instructions: MCP_INSTRUCTIONS }
+    // The channel capability lets Claude Code (started with the quilt channel) take inbox events as turns.
+    { instructions: MCP_INSTRUCTIONS, capabilities: { experimental: { 'claude/channel': {} } } }
   )
 
   // A session this MCP server runs itself, when the agent joined or started one.
@@ -60,11 +70,15 @@ export async function runMcp () {
   let logs = []
   const clientTool = () => toolLabel(server.server.getClientVersion()?.name)
 
+  // This install is the agent's image. When a newer Quilt is out, every answer says so.
+  const updates = new UpdateCheck().start()
+  const stale = () => { const n = updates.notice(); return n ? `\n\n⚠️ ${n}` : '' }
+
   const withDaemon = async (fn) => {
     const d = findDaemon(joined ? joined.dir : undefined)
-    if (!d) return { content: [{ type: 'text', text: NOT_RUNNING }], isError: true }
+    if (!d) return { content: [{ type: 'text', text: NOT_RUNNING + stale() }], isError: true }
     try {
-      return { content: [{ type: 'text', text: await fn(d) }] }
+      return { content: [{ type: 'text', text: (await fn(d)) + stale() }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }
     }
@@ -190,6 +204,53 @@ export async function runMcp () {
     const r = await call(d, 'POST', '/say', { text, to })
     return to && !r.recipientOnline ? `Sent. (${to} is offline and will see it when they reconnect.)` : 'Sent.'
   }))
+
+  // Inbox cursors: one for the tool, one for the channel push, so an event pushed to Claude
+  // Code still shows in quilt_inbox, and one that Claude Code ignored (no channel) is not lost.
+  const cursor = () => ({ key: null, seq: 0 })
+  const toolCursor = cursor()
+  const pushCursor = cursor()
+  const at = (c, d) => {
+    const key = `${d.dir}:${d.pid}`
+    if (c.key !== key) { c.key = key; c.seq = 0; c.fresh = true } else c.fresh = false
+    return c
+  }
+
+  server.registerTool('quilt_check_update', {
+    description: 'Whether the Quilt you run (your image) is current. Give the version you run; without one, this Quilt install is checked. An out-of-date image is told to update the app.',
+    inputSchema: { image: z.string().max(40).optional().describe('The Quilt version you run, such as 0.3.4') }
+  }, ({ image }) => ({ content: [{ type: 'text', text: updates.describe(image) }] }))
+
+  server.registerTool('quilt_inbox', {
+    description: 'What is waiting for you: mentions of you in chat (@yourname), direct messages to you, and tasks handed to you since you last looked. Act on each one: answer with quilt_message, take a task with quilt_move_task.',
+    inputSchema: { all: z.boolean().optional().describe('Include what you already looked at (the last 100 events)') }
+  }, ({ all }) => withDaemon(async (d) => {
+    const c = at(toolCursor, d)
+    const r = await call(d, 'POST', '/inbox', { after: all ? 0 : c.seq })
+    c.seq = r.seq
+    return renderInbox(r.events) || (all ? 'Nothing has been waiting for you.' : 'Nothing new for you.')
+  }))
+
+  // Claude Code started with the quilt channel gets each new inbox event as a turn. Other
+  // tools are not sent anything (they read quilt_inbox). What was already waiting when this
+  // server first finds the session is left to quilt_inbox, so a fresh Claude is not flooded.
+  const pushInbox = async () => {
+    if (clientTool() !== 'Claude Code') return
+    const d = findDaemon(joined ? joined.dir : undefined)
+    if (!d) return
+    const c = at(pushCursor, d)
+    const r = await call(d, 'POST', '/inbox', { after: c.seq })
+    c.seq = r.seq
+    if (c.fresh) return
+    for (const e of r.events) {
+      await server.server.notification({
+        method: CHANNEL_METHOD,
+        params: { content: `${describeEvent(e)}\n${INBOX_HOW}`, meta: { kind: e.kind, from: String(e.by || ''), id: String(e.id || '') } }
+      })
+    }
+  }
+  const pushTimer = setInterval(() => pushInbox().catch(() => {}), INBOX_POLL_MS)
+  pushTimer.unref()
 
   server.registerTool('quilt_read_messages', {
     description: 'Read chat messages from collaborators, including direct messages and shared files (with the local path each file was saved to). By default returns only unread messages.',
@@ -485,7 +546,7 @@ export async function runMcp () {
     return (lines.join('\n') || 'No shared files.') + claimLines
   }))
 
-  server.server.onclose = () => { leave().catch(() => {}) }
+  server.server.onclose = () => { clearInterval(pushTimer); updates.stop(); leave().catch(() => {}) }
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { leave().finally(() => process.exit(0)) })
 
   server.server.oninitialized = () => {
