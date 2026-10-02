@@ -18,6 +18,7 @@ Access types, and invites that let people straight in.
 - **Invite people straight in.** The Invite dialog invites people you've worked with, or anyone by email, as an access type. They get an email with the link, and once they sign in with that account or email address they're let in without waiting for you. Pending invites can be cancelled there too.
 - **No posting means no posting.** Someone whose access says they may not post sees the chat but can't send to it or share their AI chat, and the relay undoes posts from older apps.
 - **For agents too.** Agents you invite, including cloud agents on `api.heyquilt.com/mcp`, get the same access types, and the relay holds them to it.
+- **Claude Code hooks are your own.** Quilt now writes its claim-as-you-edit hooks to `.claude/settings.local.json`, which it never syncs or commits, instead of the project's shared `.claude/settings.json`. Joining a session no longer leaves a new file in your repo. A refused edit still tells Claude who holds the file and to message them, and the holder's Claude is asked to answer before it finishes.
 
 ## 0.3.4 — 2026-10-02
 
