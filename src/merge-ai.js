@@ -13,9 +13,13 @@ import { merge3 } from './merge3.js'
 
 export const MERGE_AI_LIMITS = { maxBytes: 200_000, maxHunks: 20, timeoutMs: 90_000 }
 
+// The merge runs on its own when someone rejoins, on text a peer wrote: the
+// AI only has to answer, so it gets no tools (claude --tools "") or a
+// read-only sandbox (codex). cursor-agent has no such switch: its -p mode has
+// every tool, so it runs without --force, as before.
 const CLIS = [
-  { exe: 'claude', args: ['-p', '--no-session-persistence'] },
-  { exe: 'codex', args: ['exec', '--full-auto', '-'] },
+  { exe: 'claude', args: ['-p', '--no-session-persistence', '--tools', ''] },
+  { exe: 'codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-'] },
   { exe: 'cursor-agent', args: ['-p'] }
 ]
 
@@ -40,8 +44,16 @@ export function findMergeCli ({ env = process.env, exists = fs.existsSync, claud
   return null
 }
 
+/** A fence longer than any run of backticks in the texts, so none of them can close it. */
+export function fenceFor (...texts) {
+  let longest = 0
+  for (const t of texts) for (const run of (t || '').match(/`+/g) || []) longest = Math.max(longest, run.length)
+  return '`'.repeat(Math.max(3, longest + 1))
+}
+
 export function mergePrompt ({ path: rel, base, ours, theirs, mine, theirsBy }) {
-  const fence = (label, text) => `${label}:\n\`\`\`\n${text}\`\`\`\n`
+  const f = fenceFor(base, ours, theirs)
+  const fence = (label, text) => `${label}:\n${f}\n${text}${f}\n`
   return `You are merging two people's edits to one file, \`${rel}\`, in a shared coding session.
 ${mine} edited it offline. Meanwhile ${theirsBy || 'someone in the session'} edited it in the session. Both started from BASE.
 
@@ -50,7 +62,7 @@ Rules:
 - Do not change what the code does, rename anything, reformat, or "improve" it.
 - Keep the file's line endings and trailing newline as they are.
 - If the two versions cannot both be true (they change the same thing in incompatible ways), answer with exactly one line: CONFLICT: <why, in one sentence>
-- Otherwise answer with ONLY the whole merged file inside one \`\`\` fenced block. No words before or after it.
+- Otherwise answer with ONLY the whole merged file inside one fenced block opened and closed with ${f} (${f.length} backticks, longer than any run of backticks inside the file). No words before or after it.
 
 ${fence('BASE', base)}
 ${fence(`${mine.toUpperCase()}'S VERSION (offline)`, ours)}
@@ -76,10 +88,18 @@ function runCli ({ cmd, args }, input, timeoutMs) {
   })
 }
 
-/** The fenced file in an answer, or null. Accepts an optional language tag after the opening fence. */
-function fencedFile (answer) {
-  const m = /```[^\n]*\n([\s\S]*?)```/.exec(answer)
-  return m ? m[1] : null
+/**
+ * The file in an answer that is exactly one fenced block, or null. Accepts a
+ * language tag after the opening fence. The closing fence is the same length
+ * as the opening one, and no line inside may start with that many backticks:
+ * otherwise the answer is several blocks (or a file whose own fences closed
+ * the wrapper) and taking any one of them could drop part of the file.
+ */
+export function fencedFile (answer) {
+  const m = /^(`{3,})[^`\n]*\n([\s\S]*?)\1[ \t]*$/.exec(String(answer).trim())
+  if (!m) return null
+  const inner = new RegExp(`^ {0,3}${m[1]}`, 'm')
+  return inner.test(m[2]) ? null : m[2]
 }
 
 /**
@@ -122,6 +142,7 @@ export async function aiMerge ({ path: rel, base, ours, theirs, mine, theirsBy, 
   const conflict = text === null ? /^CONFLICT:\s*(.*)/.exec(answer.trim()) : null
   if (conflict) return { refused: conflict[1].trim() || 'the AI says the changes conflict' }
   if (text === null) return { refused: 'the AI gave no file back' }
+  if (!text && (ours || theirs)) return { refused: 'the AI gave back an empty file' }
   const dropped = droppedLine(base, ours, theirs, text)
   if (dropped !== null) return { refused: `the AI's merge dropped a line nobody changed: ${dropped.trim().slice(0, 60)}` }
   return { text }

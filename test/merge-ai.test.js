@@ -60,6 +60,48 @@ test('files too big or binary are refused without running anything', async () =>
 test('QUILT_MERGE_CMD wins; otherwise the first installed CLI', () => {
   assert.deepEqual(findMergeCli({ env: { QUILT_MERGE_CMD: 'node fake.js --x' }, exists: () => false }), { cmd: 'node', args: ['fake.js', '--x'] })
   const exists = (p) => p.endsWith('/codex')
-  assert.deepEqual(findMergeCli({ env: { PATH: '/usr/bin' }, exists, claude: () => null }), { cmd: '/usr/bin/codex', args: ['exec', '--full-auto', '-'] })
+  assert.deepEqual(findMergeCli({ env: { PATH: '/usr/bin' }, exists, claude: () => null }), { cmd: '/usr/bin/codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-'] })
+  assert.deepEqual(findMergeCli({ env: {}, exists: () => false, claude: () => '/bin/claude' }), { cmd: '/bin/claude', args: ['-p', '--no-session-persistence', '--tools', ''] })
   assert.equal(findMergeCli({ env: { PATH: '/usr/bin' }, exists: () => false, claude: () => null }), null)
+})
+
+// A Markdown file with a fenced block of its own, as the AI should wrap it: in a longer fence.
+const mdBase = '# Notes\n\nIntro.\n\n```js\nconst a = 1\n```\n\nEnd.\n'
+const mdOurs = '# Notes\n\nIntro, by bob.\n\n```js\nconst a = 1\n```\n\nEnd.\n'
+const mdTheirs = '# Notes\n\nIntro.\n\n```js\nconst a = 1\n```\n\nEnd.\n\n```sh\nnpm test\n```\n'
+const mdMerged = '# Notes\n\nIntro, by bob.\n\n```js\nconst a = 1\n```\n\nEnd.\n\n```sh\nnpm test\n```\n'
+const md = { path: 'NOTES.md', base: mdBase, ours: mdOurs, theirs: mdTheirs, mine: 'bob', theirsBy: 'alice' }
+
+test('a file with its own code fences comes back whole inside a longer fence', async () => {
+  const run = async () => '````markdown\n' + mdMerged + '````\n'
+  assert.deepEqual(await aiMerge({ ...md, run }), { text: mdMerged })
+})
+
+test('a file whose inner fences close the outer one is refused, not cut short', async () => {
+  // Wrapped in the same three backticks it contains: the answer is several blocks, not one.
+  const run = async () => '```\n' + mdMerged + '```\n'
+  const r = await aiMerge({ ...md, run })
+  assert.ok(r.refused, JSON.stringify(r))
+})
+
+test('an answer with two fenced blocks, or words around the block, is refused', async () => {
+  const merged = 'function add (a, b) {\n  // bob: guard\n  return Number(a) + Number(b)\n}\n'
+  assert.ok((await aiMerge({ ...opts, run: async () => '```\n' + merged + '```\n\n```\nmore\n```\n' })).refused)
+  assert.ok((await aiMerge({ ...opts, run: async () => 'Here you go:\n```\n' + merged + '```\n' })).refused)
+})
+
+test('a fence with a language tag is accepted, with the trailing newline kept', async () => {
+  const merged = 'function add (a, b) {\n  // bob: guard\n  return Number(a) + Number(b)\n}\n'
+  assert.deepEqual(await aiMerge({ ...opts, run: async () => '```js\n' + merged + '```' }), { text: merged })
+})
+
+test('an empty answer is refused', async () => {
+  assert.match((await aiMerge({ ...opts, run: async () => '' })).refused, /no file/)
+  assert.match((await aiMerge({ ...opts, run: async () => '```\n```\n' })).refused, /dropped|empty|no file/)
+})
+
+test('the prompt asks for a fence longer than any inside the file', () => {
+  const p = mergePrompt(md)
+  assert.match(p, /````/, 'the versions are shown in a fence longer than theirs')
+  assert.match(p, /longer than any/)
 })
