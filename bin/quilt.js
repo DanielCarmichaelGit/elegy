@@ -179,7 +179,7 @@ async function join () {
       tool: { type: 'string' }, dir: { type: 'string' }, prefer: { type: 'string' }, agent: { type: 'string' }
     }
   })
-  const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
+  const { runSession, decodeInvite, newConn, readConfig, personsFolder, agentCopyFolder } = await import('../src/runner.js')
   const { sessionPasses } = await import('../src/pass-source.js')
   const { clearAccount } = await import('../src/account.js')
   // Every session signs in: as this computer's account, or as a saved agent.
@@ -190,7 +190,7 @@ async function join () {
     clearAccount()
     return 'This computer was signed out. Run quilt login again.'
   }
-  const dir = path.resolve(values.dir || '.')
+  let dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
   const { unsupportedRelay } = await import('../src/settings.js')
@@ -207,6 +207,14 @@ async function join () {
     if (saved.server) console.log("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Starting a new session.")
     conn = newConn()
     console.log('starting a new session')
+  }
+
+  // An agent never takes over a folder a person synced from this computer (they'd lose it
+  // from the app's Recent list and couldn't get back in): it keeps its own copy of the room.
+  if (auth.kind === 'agent' && personsFolder(dir)) {
+    const copy = agentCopyFolder(conn.room, auth.name)
+    console.log(`${dir} is a person's own copy of a session on this computer and stays theirs: syncing ${copy} instead.`)
+    dir = copy
   }
 
   const stamp = () => new Date().toLocaleTimeString()

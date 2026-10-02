@@ -136,7 +136,7 @@ test("an agent started in a person's folder works in its own copy and leaves the
   // "already being synced by another quilt process" until the agent left.
   const r = await call2('quilt_join_session', { invite })
   assert.ok(!r.isError, text(r))
-  const copy = path.join(home, 'quilt', 'quilt-pair')
+  const copy = path.join(home, 'quilt', 'quilt-pair-helper')
   assert.match(text(r), rx(`Files are synced into ${copy}`))
   // The aside names the folder as the MCP server's cwd resolves it (/private/var on macOS).
   assert.match(text(r), rx(`(${fs.realpathSync(personDir)} is a person's own copy of this session on this computer and stays theirs`))

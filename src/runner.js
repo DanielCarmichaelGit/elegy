@@ -8,12 +8,12 @@ import { Session } from './session.js'
 import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
-import { relayUrl, isHostedRelay } from './settings.js'
+import { relayUrl, isHostedRelay, getSettings } from './settings.js'
 import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
 import { listProcesses } from './procs.js'
-import { JOIN_HOST, buildInvite, parseInvite } from './ui/invite.js'
+import { JOIN_HOST, INVALID_INVITE, buildInvite, parseInvite } from './ui/invite.js'
 
 export { JOIN_HOST }
 
@@ -193,13 +193,47 @@ function ensureGitExclude (dir) {
   } catch {}
 }
 
+// ------------------------------------------------- whose folder is it? --
+// A folder is a person's unless it is an agent's own copy of a room, and that is known
+// by its name: "quilt-<room>-<agent>" (or "quilt-<room>" from older versions), which is
+// how agents' copies are always made. Who ran it last says nothing: an agent run in a
+// person's folder (an older version, a `quilt join --agent` there) must not make it the
+// agent's, or the person loses it from Recent and can't get back in.
+
+const expandHome = (p) => p === '~' ? os.homedir() : String(p).startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
+const slug = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
+
+/** True if `dir` is an agent's own copy of `room`. */
+export function isAgentCopy (dir, room) {
+  const base = path.basename(path.resolve(dir))
+  return base === `quilt-${room}` || base.startsWith(`quilt-${room}-`)
+}
+
+/** A folder a person synced from this computer (the app, or `quilt join`): any synced folder that isn't an agent's copy. */
+export function personsFolder (dir) {
+  const saved = readConfig(dir)
+  return !!saved && !isAgentCopy(dir, saved.room)
+}
+
+/**
+ * Where an agent keeps its own copy of a room: "quilt-<room>-<agent>" under this computer's
+ * join folder (the app's "Join into" setting, ~/quilt by default), so it never lands inside
+ * a person's project, and two agents on one computer never share a copy.
+ */
+export function agentCopyFolder (room, agent) {
+  const root = path.resolve(expandHome(getSettings().joinDir || '~/quilt'))
+  const dir = path.resolve(root, `quilt-${room}-${slug(agent)}`)
+  if (path.dirname(dir) !== root) throw new Error(INVALID_INVITE)
+  return dir
+}
+
 // Recently used folders, for the UI's "rejoin" list.
 const recentFile = () => path.join(quiltHome(), 'recent.json')
 
 /** A person's recent folders. An agent's own copies of rooms are its to rejoin, not the app's. */
 export function recentSessions () {
   try {
-    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => r.kind !== 'agent' && fs.existsSync(path.join(r.dir, '.quilt', 'config.json')))
+    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => !isAgentCopy(r.dir, r.room) && fs.existsSync(path.join(r.dir, '.quilt', 'config.json')))
   } catch {
     return []
   }
@@ -214,6 +248,8 @@ export function forgetRecent (dir) {
 }
 
 function remember (entry) {
+  // An agent's run in a person's folder isn't theirs to put on the list, or to rename there.
+  if (entry.kind === 'agent' && !isAgentCopy(entry.dir, entry.room)) return
   try {
     const list = recentSessions().filter((r) => r.dir !== entry.dir)
     list.unshift({ ...entry, lastUsed: Date.now() })
