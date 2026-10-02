@@ -219,3 +219,18 @@ test('POST /api/report forwards a web issue to the accounts API, and quietly dro
   assert.equal(tooBig.status, 204)
   assert.equal(apiSeen.slice(n2).filter((s) => s.url === '/v1/issues').length, 0, 'nothing new reached the fake API')
 })
+
+test('POST /api/report rate-limits per IP: eleven quick posts from one address forward at most ten', async () => {
+  const n = apiSeen.length
+  const ip = '203.0.113.9'
+  for (let i = 0; i < 11; i++) {
+    const res = await fetch(base + '/api/report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-nf-client-connection-ip': ip },
+      body: JSON.stringify({ kind: 'http404', name: `/rate-limit-${i}` })
+    })
+    assert.equal(res.status, 204)
+  }
+  const forwarded = apiSeen.slice(n).filter((s) => s.url === '/v1/issues')
+  assert.equal(forwarded.length, 10, 'the 11th post from the same address was dropped before forwarding')
+})

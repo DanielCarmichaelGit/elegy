@@ -79,3 +79,38 @@ test('a failed or slow call to the API is reported once, with the key, and ordin
   assert.equal(repId.body.events[0].name, 'GET /v1/orgs/:id/boom')
   delete process.env.QUILT_REPORT_KEY
 })
+
+test('a failing call groups by org slug and by device-link code, and a token before a query string is still replaced', async () => {
+  const { apiCall } = await import('../lib/api.js')
+  process.env.QUILT_REPORT_KEY = 'rk_web'
+  const wait = () => new Promise((r) => setTimeout(r, 50))
+
+  const n = seen.length
+  await apiCall({ accessToken: 'tok' }, 'GET', '/v1/orgs/acme/boom')
+  await wait()
+  const acme = seen.slice(n).find((s) => s.url === '/v1/issues')
+  assert.ok(acme, 'the acme boom was reported')
+  assert.equal(acme.body.events[0].name, 'GET /v1/orgs/:slug/boom')
+
+  const n2 = seen.length
+  await apiCall({ accessToken: 'tok' }, 'GET', '/v1/orgs/zeta/boom')
+  await wait()
+  const zeta = seen.slice(n2).find((s) => s.url === '/v1/issues')
+  assert.ok(zeta, 'the zeta boom was reported')
+  assert.equal(zeta.body.events[0].name, 'GET /v1/orgs/:slug/boom', 'different orgs group as one issue')
+
+  const n3 = seen.length
+  await apiCall({ accessToken: 'tok' }, 'GET', '/v1/device/link/ABCD-1234/boom')
+  await wait()
+  const code = seen.slice(n3).find((s) => s.url === '/v1/issues')
+  assert.ok(code, 'the link-code boom was reported')
+  assert.equal(code.body.events[0].name, 'GET /v1/device/link/:code/boom')
+
+  const n4 = seen.length
+  await apiCall({ accessToken: 'tok' }, 'GET', `/v1/boom/${'a'.repeat(30)}?x=1`)
+  await wait()
+  const tok = seen.slice(n4).find((s) => s.url === '/v1/issues')
+  assert.ok(tok, 'the token-then-query boom was reported')
+  assert.equal(tok.body.events[0].name, 'GET /v1/boom/:token')
+  delete process.env.QUILT_REPORT_KEY
+})

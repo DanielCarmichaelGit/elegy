@@ -6,7 +6,14 @@ import { report } from './report.js'
 // A call that fails (no answer, a 404 or a 5xx) or takes over 3 s is reported as an issue;
 // the 4xx a route answers on purpose (409 "taken", 400 "empty") is the API working.
 const SLOW_MS = 3000
-const nameOf = (method, path) => `${method} ${path.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':id').replace(/\/[A-Za-z0-9_-]{24,}(?=\/|$)/g, '/:token').split('?')[0]}`.slice(0, 80)
+// The query string goes first: a token followed by one would otherwise survive the
+// replacements below untouched. Mirrors routeName (src/api/issues.js): an org slug groups
+// under :slug (unless it's already an :id), and a device-link code groups under :code.
+const nameOf = (method, path) => `${method} ${path.split('?')[0]
+  .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ':id')
+  .replace(/\/orgs\/(?!:id\b)[^/]+/, '/orgs/:slug')
+  .replace(/\/[A-Za-z0-9_-]{24,}(?=\/|$)/g, '/:token')
+  .replace(/\/[A-Z0-9]{4}-[A-Z0-9]{4}(?=\/|$)/g, '/:code')}`.slice(0, 80)
 
 export async function apiCall (user, method, path, body) {
   // Missing config must fail loudly in production rather than silently calling "undefined/v1/..."
