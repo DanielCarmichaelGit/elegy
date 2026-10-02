@@ -30,6 +30,18 @@ test('a pass is reused until 2 minutes before it runs out, and callers share one
   assert.equal(await ps.fresh(), 'p3', 'fresh() always fetches')
 })
 
+test('newer() waits out a fetch already on its way and asks again, so the pass is issued after the call', async () => {
+  let n = 0
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const ps = new PassSource({ fetchPass: async () => { const me = ++n; if (me === 1) await gate; return { pass: `p${me}`, expiresAt: Date.now() + 600_000 } } })
+  const first = ps.fresh()
+  const newer = ps.newer()
+  release()
+  assert.deepEqual([await first, await newer], ['p1', 'p2'])
+  assert.equal(await ps.newer(), 'p3', 'with nothing on its way, it fetches')
+})
+
 test('a failed fetch is not cached', async () => {
   let fail = true
   const ps = new PassSource({ fetchPass: async () => { if (fail) throw new Error('offline'); return { pass: 'p', expiresAt: Date.now() + 600_000 } } })

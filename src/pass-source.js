@@ -57,6 +57,15 @@ export class PassSource {
     return this.pending
   }
 
+  /**
+   * A pass issued after this call. One already on its way may have been issued before
+   * something changed (the relay asking for a fresh pass after the owner changed our
+   * access): wait for it, then ask again.
+   */
+  newer () {
+    return this.pending ? this.pending.catch(() => {}).then(() => this.fresh()) : this.fresh()
+  }
+
   /** Forgets the cached pass (the relay turned it away), so the next get() fetches one. */
   forget () {
     this.current = null
