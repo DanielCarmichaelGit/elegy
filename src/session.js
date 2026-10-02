@@ -32,6 +32,7 @@ import { openMerge, updateMerge, readMerges, pruneMerges } from './merges.js'
 export { applyTextDiff }
 
 const LOCAL = Symbol('local')
+const STILL_MARKED = 'this file has conflict markers in it; finish editing it (or choose Keep mine) first'
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
@@ -666,6 +667,7 @@ export class Session extends EventEmitter {
       others: theirsBy ? [theirsBy] : [],
       kind,
       ours: binary ? null : text(ours),
+      oursDeleted: ours === null,
       base: binary ? null : text(base),
       theirsHash: theirs === undefined ? null : sha1(theirs),
       binary,
@@ -839,6 +841,7 @@ export class Session extends EventEmitter {
 
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
+      this.closeHandMerge(rel, null) // deleting a file being merged by hand settles it too
       this.doc.transact(() => {
         const was = this.files.get(rel)
         const before = was ? was.toString() : undefined
@@ -1870,7 +1873,7 @@ export class Session extends EventEmitter {
   mergeTexts (rec) {
     const dir = this.mergeDir(rec.id)
     const local = (name) => { try { return fs.readFileSync(path.join(dir, name), 'utf8') } catch { return null } }
-    const ours = rec.ours ?? (rec.local ? local('ours') : null)
+    const ours = rec.oursDeleted ? null : rec.ours ?? (rec.local ? local('ours') : null)
     const base = rec.base ?? (rec.local ? local('base') : null)
     const theirs = this.files.get(rec.path)?.toString() ?? null
     return { ours, base, theirs }
@@ -1887,6 +1890,8 @@ export class Session extends EventEmitter {
     if (!rec) throw new Error('no such merge')
     if (rec.state === 'done') throw new Error('that merge is already settled')
     if (!['mine', 'theirs', 'hand', 'agent', 'review'].includes(how)) throw new Error('say how: mine, theirs, hand, agent or review')
+    // The doc holds the markers now, so "theirs" would be marker text.
+    if (rec.state === 'editing' && (how === 'theirs' || how === 'hand')) throw new Error(STILL_MARKED)
     // Settling is an edit of the session: viewers (and agents outside their folders) only see the record.
     const refusal = this.writeRefusal(rec.path)
     if (refusal) throw new Error(refusal)
@@ -1897,29 +1902,20 @@ export class Session extends EventEmitter {
     const onlyThere = () => new Error(`${rec.by === this.name ? 'your' : `${rec.by}'s`} version of ${rec.path} is only in the merge folder on ${rec.by === this.name ? 'the computer you merged on' : 'their computer'}`)
     const { ours, base, theirs } = this.mergeTexts(rec)
     if (how === 'mine') {
-      if (rec.binary) {
+      let data = null // null: deleted while away, so keeping mine deletes it in the session too
+      if (!rec.oursDeleted) {
         // Binary versions never go in the record: only the opener's machine has ours.
-        const buf = (() => { try { return fs.readFileSync(path.join(this.mergeDir(rec.id), 'ours')) } catch { return null } })()
-        if (!buf) throw onlyThere()
-        const abs = resolveInside(this.root, rec.path)
-        fs.mkdirSync(path.dirname(abs), { recursive: true })
-        this.writeFile(rec.path, abs, buf)
-        this.merging.delete(rec.path)
-        this.ingest(rec.path)
-      } else if (ours === null) {
-        if (rec.local) throw onlyThere()
-        // Deleted while away: keeping mine deletes it in the session too.
-        const abs = resolveInside(this.root, rec.path)
-        fs.rmSync(abs, { force: true })
-        removeEmptyParents(this.root, path.dirname(abs))
-        this.ingest(rec.path)
-      } else {
-        this.applyMerged(rec.path, ours, `keeping ${rec.by === this.name ? 'my' : `${rec.by}'s`} version`)
+        data = ours
+        if (rec.binary) {
+          try { data = fs.readFileSync(path.join(this.mergeDir(rec.id), 'ours')) } catch {}
+        }
+        if (data === null) throw onlyThere()
       }
+      this.keepMine(rec.path, data)
     } else if (how === 'theirs') {
       this.tryWrite(rec.path)
     } else if (how === 'hand') {
-      if (!rec.binary && rec.local && ours === null) throw onlyThere()
+      if (!rec.binary && !rec.oursDeleted && ours === null) throw onlyThere()
       if (rec.binary || ours === null || theirs === null) throw new Error('markers only work when both sides have a text version: keep mine or keep theirs instead')
       this.applyMerged(rec.path, withMarkers(base || '', ours, theirs, { mine: rec.by, theirs: rec.others[0] || 'session' }), 'with conflict markers to edit by hand')
       return updateMerge(this.doc, this.merges, id, { state: 'editing', how: 'hand', resolvedBy: this.name }, LOCAL)
@@ -1928,6 +1924,28 @@ export class Session extends EventEmitter {
     this.log(`✅ ${rec.path}: merge settled (${how === 'mine' ? `${rec.by}'s version` : how === 'theirs' ? "the session's version" : how === 'agent' ? 'merged by an AI' : 'reviewed'})`)
     this.scheduleStatusWrite()
     return out
+  }
+
+  /**
+   * Keep mine: the disk first, then the doc, so a failed write never leaves
+   * the session with ours while the record stays open. `data` null deletes.
+   */
+  keepMine (rel, data) {
+    if (this.merging.has(rel) || this.downloading.has(rel)) throw new Error(`${rel} is still syncing; try again in a moment`)
+    const abs = resolveInside(this.root, rel)
+    if (data === null) {
+      fs.rmSync(abs, { force: true })
+      removeEmptyParents(this.root, path.dirname(abs))
+    } else {
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      this.writeFile(rel, abs, data)
+    }
+    this.writeFailed.delete(rel) // the disk now holds a version we chose, not a stale one
+    if (this.ingest(rel)) return
+    // Nothing pushed: fine if the session already has it, or a large file is on its way up.
+    const want = data === null ? undefined : Buffer.isBuffer(data) ? `bin:${sha1(data)}` : data
+    if (this.sharedKey(rel) === want || (Buffer.isBuffer(data) && this.uploading.get(rel) === sha1(data))) return
+    throw new Error(`could not share ${rel}; the merge stays open`)
   }
 
   /** A file being edited by hand lost its markers: that merge is settled. */
@@ -1947,7 +1965,7 @@ export class Session extends EventEmitter {
 ${rec.by} changed this file while away from the session; meanwhile ${other} changed it in the session. Quilt could not combine the two on its own. Please merge them:
 
 - \`${dir}/base\`: the version both started from
-- \`${dir}/ours\`: ${rec.by}'s version (offline)${rec.ours === null && !rec.local && !rec.binary ? ' — deleted' : ''}
+- \`${dir}/ours\`: ${rec.by}'s version (offline)${rec.oursDeleted ? ' — deleted' : ''}
 - \`${dir}/theirs\`: the session's version (${other})${rec.theirsHash === null ? ' — deleted' : ''}
 - \`${rec.path}\`: currently the session's version
 
@@ -1960,6 +1978,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
   prepareMergeSend (id) {
     const rec = this.mergeList().find((m) => m.id === id)
     if (!rec) throw new Error('no such merge')
+    if (rec.state === 'editing') throw new Error(STILL_MARKED)
     const dir = this.mergeDir(id)
     fs.mkdirSync(dir, { recursive: true })
     const { ours, base, theirs } = this.mergeTexts(rec)

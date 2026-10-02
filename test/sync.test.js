@@ -978,3 +978,102 @@ test('a viewer sees a merge but cannot settle it, not even as reviewed', async (
   assert.equal(B.mergeList().find((m) => m.id === rec.id).state, 'open')
   assert.equal(read(dirB, 'same.txt'), 'top\nmiddle (alice)\nbottom\n')
 })
+
+const readBuf = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel)) } catch { return null } }
+const exists = (dir, rel) => fs.existsSync(path.join(dir, rel))
+/** rejoinAfter for one binary file (rejoinAfter compares the shared text, which a binary has none of). */
+async function rejoinAfterBinary (t, p, rel, bob, alice) {
+  const before = p.A.sharedKey(rel)
+  await close(p.B)
+  bob === null ? fs.rmSync(path.join(p.dirB, rel)) : write(p.dirB, rel, bob)
+  write(p.dirA, rel, alice)
+  await waitFor(() => p.A.sharedKey(rel) !== before)
+  return rejoinAfter(t, p)
+}
+
+test('keep mine on a file deleted offline deletes it everywhere (and its empty folder)', async (t) => {
+  const p = await pair(t, { 'sub/gone.txt': 'one\ntwo\n' })
+  await waitFor(() => read(p.dirB, 'sub/gone.txt') === 'one\ntwo\n')
+  const B = await rejoinAfter(t, p, { bob: { 'sub/gone.txt': null }, alice: { 'sub/gone.txt': 'one\ntwo (alice)\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'sub/gone.txt'))
+  assert.equal(rec.oursDeleted, true)
+  assert.match(B.mergePromptFor(rec), /offline\) — deleted/)
+  assert.throws(() => B.resolveMerge(rec.id, { how: 'hand' }), /markers only work/)
+  await waitFor(() => read(p.dirB, 'sub/gone.txt') === 'one\ntwo (alice)\n') // the session's version came back
+  assert.equal(B.resolveMerge(rec.id, { how: 'mine' }).state, 'done')
+  assert.ok(!exists(p.dirB, 'sub'), 'the emptied folder goes too')
+  await waitFor(() => !exists(p.dirA, 'sub/gone.txt'))
+  assert.equal(B.sharedKey('sub/gone.txt'), undefined)
+})
+
+test('keep mine on a large text file deleted offline deletes it, though its base was too big for the record', async (t) => {
+  const big = 'line\n'.repeat(50_000) // 250 KB: over the record's 200 KB cap
+  const p = await pair(t, { 'big.txt': big })
+  await waitFor(() => read(p.dirB, 'big.txt') === big)
+  const B = await rejoinAfter(t, p, { bob: { 'big.txt': null }, alice: { 'big.txt': big + 'more\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'big.txt'))
+  assert.equal(rec.local, true)
+  assert.equal(rec.oursDeleted, true)
+  B.resolveMerge(rec.id, { how: 'mine' })
+  await waitFor(() => !exists(p.dirA, 'big.txt') && !exists(p.dirB, 'big.txt'))
+})
+
+test('keep mine on a binary writes my bytes everywhere; elsewhere it is refused, as are markers', async (t) => {
+  const p = await pair(t, { 'pic.bin': Buffer.from([0, 1, 2, 3]) })
+  await waitFor(() => readBuf(p.dirB, 'pic.bin')?.equals(Buffer.from([0, 1, 2, 3])))
+  const mine = Buffer.from([0, 9, 9, 9])
+  const B = await rejoinAfterBinary(t, p, 'pic.bin', mine, Buffer.from([0, 7, 7, 7]))
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'pic.bin'))
+  assert.equal(rec.binary, true)
+  assert.equal(rec.oursDeleted, false)
+  await waitFor(() => p.A.mergeList().some((m) => m.id === rec.id))
+  assert.throws(() => p.A.resolveMerge(rec.id, { how: 'mine' }), /bob's version of pic\.bin is only in the merge folder on their computer/)
+  assert.throws(() => B.resolveMerge(rec.id, { how: 'hand' }), /markers only work/)
+  B.resolveMerge(rec.id, { how: 'mine' })
+  await waitFor(() => readBuf(p.dirA, 'pic.bin')?.equals(mine) && readBuf(p.dirB, 'pic.bin')?.equals(mine))
+})
+
+test('keep mine on a binary deleted offline deletes it on both machines', async (t) => {
+  const p = await pair(t, { 'pic.bin': Buffer.from([0, 1, 2, 3]) })
+  await waitFor(() => readBuf(p.dirB, 'pic.bin')?.equals(Buffer.from([0, 1, 2, 3])))
+  const B = await rejoinAfterBinary(t, p, 'pic.bin', null, Buffer.from([0, 7, 7, 7]))
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'pic.bin'))
+  assert.equal(rec.binary, true)
+  assert.equal(rec.oursDeleted, true)
+  B.resolveMerge(rec.id, { how: 'mine' })
+  await waitFor(() => !exists(p.dirA, 'pic.bin') && !exists(p.dirB, 'pic.bin'))
+})
+
+test('keep theirs when the session deleted the file leaves it deleted; markers are refused', async (t) => {
+  const p = await pair(t, { 'old.txt': 'a\nb\n' })
+  await waitFor(() => read(p.dirB, 'old.txt') === 'a\nb\n')
+  const B = await rejoinAfter(t, p, { bob: { 'old.txt': 'a\nb (bob)\n' }, alice: { 'old.txt': null } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'old.txt'))
+  assert.equal(rec.theirsHash, null)
+  assert.throws(() => B.resolveMerge(rec.id, { how: 'hand' }), /markers only work/)
+  assert.equal(B.resolveMerge(rec.id, { how: 'theirs' }).state, 'done')
+  assert.ok(!exists(p.dirB, 'old.txt') && !exists(p.dirA, 'old.txt'))
+  assert.equal(read(path.join(B.mergeDir(rec.id)), 'ours'), 'a\nb (bob)\n', 'mine is still in the merge folder')
+})
+
+test('while a file is being edited by hand, keep theirs, markers again and Send to are refused; keep mine is not', async (t) => {
+  const { A, B, dirA, rec } = await conflicted(t)
+  B.resolveMerge(rec.id, { how: 'hand' })
+  await waitFor(() => A.mergeList().find((m) => m.id === rec.id)?.state === 'editing')
+  for (const s of [A, B]) {
+    assert.throws(() => s.resolveMerge(rec.id, { how: 'theirs' }), /conflict markers in it/)
+    assert.throws(() => s.resolveMerge(rec.id, { how: 'hand' }), /conflict markers in it/)
+    assert.throws(() => s.prepareMergeSend(rec.id), /conflict markers in it/)
+  }
+  assert.equal(A.resolveMerge(rec.id, { how: 'mine' }).state, 'done')
+  await waitFor(() => read(dirA, 'same.txt') === 'top\nmiddle (bob)\nbottom\n')
+})
+
+test('deleting a file being edited by hand settles its merge', async (t) => {
+  const { B, dirB, rec } = await conflicted(t)
+  B.resolveMerge(rec.id, { how: 'hand' })
+  await waitFor(() => (read(dirB, 'same.txt') || '').includes('<<<<<<< mine (bob)'))
+  fs.rmSync(path.join(dirB, 'same.txt'))
+  await waitFor(() => B.mergeList().find((m) => m.id === rec.id)?.state === 'done')
+  assert.equal(B.mergeList().find((m) => m.id === rec.id).how, 'hand')
+})

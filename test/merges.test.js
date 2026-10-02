@@ -73,3 +73,15 @@ test('an invalid record throws and writes nothing', () => {
   assert.throws(() => openMerge(doc, map, { ...fields, path: 'x'.repeat(1025) }, null), /bad merge record/)
   assert.equal(map.size, 0)
 })
+
+test('oursDeleted says ours was deleted, not just too big to share', () => {
+  const { doc, map } = fresh()
+  assert.equal(openMerge(doc, map, fields, null).oursDeleted, false)
+  const r = openMerge(doc, map, { ...fields, ours: null, oursDeleted: true }, null)
+  assert.equal(r.oursDeleted, true)
+  assert.equal(publicMerge({ ...r, oursDeleted: 'yes' }), null)
+  assert.equal(publicMerge({ ...r, ours: 'text' }), null, 'deleted ours has no text')
+  const older = { ...r }
+  delete older.oursDeleted
+  assert.equal(publicMerge(older).oursDeleted, false, 'a record without the field reads as not deleted')
+})

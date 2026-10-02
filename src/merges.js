@@ -27,10 +27,13 @@ export function publicMerge (v) {
   if (!optStr(v.claimedBy, 80) || !optStr(v.resolvedBy, 80) || !optStr(v.reason, 500)) return null
   if (v.how != null && !HOWS.includes(v.how)) return null
   if (v.doneTs != null && typeof v.doneTs !== 'number') return null
+  // Deleted offline: ours is gone, not merely too big to share (records from before this field have none).
+  if (v.oursDeleted != null && typeof v.oursDeleted !== 'boolean') return null
+  if (v.oursDeleted && v.ours != null) return null
   return {
     id: v.id, path: v.path, by: v.by, byId: v.byId ?? null, others: v.others, ts: v.ts,
     kind: v.kind, state: v.state, ours: v.ours ?? null, base: v.base ?? null, theirsHash: v.theirsHash ?? null,
-    binary: !!v.binary, local: !!v.local, claimedBy: v.claimedBy ?? null, resolvedBy: v.resolvedBy ?? null,
+    binary: !!v.binary, local: !!v.local, oursDeleted: !!v.oursDeleted, claimedBy: v.claimedBy ?? null, resolvedBy: v.resolvedBy ?? null,
     how: v.how ?? null, doneTs: v.doneTs ?? null, reason: v.reason ?? null
   }
 }
@@ -54,8 +57,8 @@ export function readMerges (map) {
   return split(map).valid
 }
 
-/** Opens a record. Text beyond the cap stays on the opener's disk only (`local`). */
-export function openMerge (doc, map, { path, by, byId = null, others = [], kind, ours = null, base = null, theirsHash = null, binary = false, claimedBy = null, reason = null }, origin) {
+/** Opens a record. Text beyond the cap stays on the opener's disk only (`local`); `oursDeleted`: the opener deleted the file. */
+export function openMerge (doc, map, { path, by, byId = null, others = [], kind, ours = null, oursDeleted = false, base = null, theirsHash = null, binary = false, claimedBy = null, reason = null }, origin) {
   if (!KINDS.includes(kind)) throw new Error('bad merge kind')
   const fits = (t) => t == null || t.length <= MAX_RECORD_TEXT
   const local = !fits(ours) || !fits(base)
@@ -63,7 +66,7 @@ export function openMerge (doc, map, { path, by, byId = null, others = [], kind,
     id: crypto.randomBytes(8).toString('hex'),
     path, by, byId, others: others.filter((n) => n && n !== by).slice(0, 20), ts: Date.now(),
     kind, state: 'open',
-    ours: fits(ours) ? ours : null, base: fits(base) ? base : null, theirsHash, binary: !!binary, local,
+    ours: fits(ours) ? ours : null, base: fits(base) ? base : null, theirsHash, binary: !!binary, local, oursDeleted: !!oursDeleted,
     claimedBy, resolvedBy: null, how: null, doneTs: null, reason
   }
   const out = publicMerge(rec)
