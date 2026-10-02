@@ -123,3 +123,61 @@ test('a removed person cannot come back with a pass issued before the removal', 
   const invited = await as('pat', EDIT_ALL, { identity, iat: Date.now() + 1 })
   assert.equal(last(invited).state, 'approved', 'the owner gave them a grant again')
 })
+
+test('someone let in as a type waits again if they come back without a room pass, until a room pass or the owner lets them in', async (t) => {
+  const { srv, r, owner, as } = await ownedRoom(t)
+  const identity = generateIdentity()
+  const sam = await as('sam', null, { identity })
+  await admin(owner, { op: 'approve', key: 'person:sam', typeId: 'builtin:edit', access: EDIT_ALL })
+  await waitFor(() => last(sam).state === 'approved')
+  assert.equal(srv.rooms.get(r).meta.members['person:sam'].granted, true)
+  sam.ws.close()
+  // A pass with no room carries no grant: the stored record doesn't let them in.
+  const bare = await connect(srv, r, { identity, pass: makePass({ identity, sub: 'sam', name: 'sam' }) })
+  assert.equal(last(bare).state, 'pending')
+  await waitFor(() => owner.members.some((m) => m.pending && m.pending.some((p) => p.key === 'person:sam')))
+  // The owner lets them in again.
+  await admin(owner, { op: 'approve', key: 'person:sam', typeId: 'builtin:view', access: { ...EDIT_ALL, files: 'view' } })
+  await waitFor(() => last(bare).state === 'approved')
+  assert.equal(last(bare).role, 'viewer')
+  bare.ws.close()
+  // A room pass with no grant (the API refused it) still finds the stored record.
+  const room = await as('sam', null, { identity })
+  assert.deepEqual([last(room).state, last(room).role], ['approved', 'viewer'])
+  room.ws.close()
+})
+
+test('someone let in by a grant needs a room pass to use the session, on the socket and over HTTP', async (t) => {
+  const { srv, r, as } = await ownedRoom(t)
+  const identity = generateIdentity()
+  const kim = await as('kim', { ...EDIT_ALL, folders: ['src'] }, { identity })
+  assert.equal(last(kim).state, 'approved')
+  kim.ws.close()
+  const bare = makePass({ identity, sub: 'kim', name: 'kim' })
+  const again = await connect(srv, r, { identity, pass: bare })
+  assert.equal(last(again).state, 'pending')
+  again.ws.close()
+  const res = await fetch(`http://127.0.0.1:${srv.port}/files/${r}`, { method: 'POST', headers: { 'x-quilt-secret': 's', 'x-quilt-pass': bare }, body: 'hi' })
+  assert.equal(res.status, 403)
+})
+
+test("the owner's set stores what both allow, never a request wider than the pass", async (t) => {
+  const { srv, r, owner, as } = await ownedRoom(t)
+  const kim = await as('kim', { ...EDIT_ALL, folders: ['src'] })
+  await admin(owner, { op: 'set', key: 'person:kim', access: { ...EDIT_ALL, talk: false } })
+  await waitFor(() => last(kim).talk === false)
+  const m = srv.rooms.get(r).meta.members['person:kim']
+  assert.deepEqual([m.role, m.scopes, m.talk], ['editor', ['src'], false], 'all folders was more than the pass allowed')
+})
+
+test('someone the owner let in before access types still comes back without a room pass', async (t) => {
+  const { srv, r, owner, as } = await ownedRoom(t)
+  const identity = generateIdentity()
+  const lee = await as('lee', null, { identity })
+  await admin(owner, { op: 'approve', key: 'person:lee', role: 'viewer' })
+  await waitFor(() => last(lee).state === 'approved')
+  lee.ws.close()
+  const back = await connect(srv, r, { identity, pass: makePass({ identity, sub: 'lee', name: 'lee' }) })
+  assert.deepEqual([last(back).state, last(back).role], ['approved', 'viewer'])
+  back.ws.close()
+})

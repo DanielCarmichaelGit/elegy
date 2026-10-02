@@ -5321,6 +5321,7 @@ For the controller, once every task above is merged to `main`. Steps marked **(u
 
 The relay keeps working for them; what changes:
 - They ask for passes without a room, so the relay treats them as before: stored members keep their role and folders, newcomers wait for the owner, the owner's approve and set work as before.
+- Someone let in as a type (by a grant or an invite, or by an owner approving them as a type) has their access in the API, and only a room pass speaks for it: on an older app, which never sends one, they wait for the owner each time they connect. An invitee on an older app who was let in as a type must update to 0.3.4.
 - An older app whose stored access (or whose grant, once they update) says no posting has its chat messages and feed entries undone by the relay, and its log says `the relay undid your change to chat: you can't post in this session`. Its chat files are refused with 403.
 - An older owner's app sees people let in by an invite or a grant appear on its member list without having approved them, and can still remove them; its `set` for such a person can't give more than their grant allows.
 - Room passes carry new fields (`room`, `iat`, `access`, `email`); `verifyPass` on older relays ignores them, so deploying the API before the relay is safe.

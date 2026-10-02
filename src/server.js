@@ -228,7 +228,7 @@ class Room {
     }
     // Members approved with a pass are kept under their account; older ones under their key.
     const id = account && this.meta.members[account] ? account : key
-    const m = this.meta.members[id]
+    const m = this.storedMember(id, pass)
     if (m) {
       if (m.name !== name || m.kind !== kind) { m.name = name; m.kind = kind; this.saveMeta() }
       return { state: 'approved', ...memberAccess(m), owner: false, id }
@@ -252,6 +252,19 @@ class Room {
     const m = this.meta.members[account]
     if (m && m.setAt && issued <= m.setAt) return narrowAccess(access, fromRelay(m))
     return access
+  }
+
+  /**
+   * The member record that may let this pass in, or null. Someone let in as a type (by a
+   * grant, or by the owner approving them as one) has their access in the API: only a pass
+   * for this room speaks for it, so without one their stored record lets nobody in, or an
+   * access type narrowed or deleted on the API would never reach the relay. Members from
+   * before access types keep coming in on their record.
+   */
+  storedMember (id, pass) {
+    const m = this.meta.members[id]
+    if (!m) return null
+    return m.granted && !(pass && pass.room === this.name) ? null : m
   }
 
   /** Keeps someone let in by their pass's grant on the member list, with that access. */
@@ -316,7 +329,7 @@ class Room {
     const account = `${pass.kind}:${pass.sub}`
     if (this.meta.owner && this.isOwner(pass.key, account)) return true
     if (this.passGrant(pass)) return true
-    return !!(this.meta.members[account] || this.meta.members[pass.key])
+    return !!(this.storedMember(account, pass) || this.storedMember(pass.key, pass))
   }
 
   /** With sign-in on: the relay access a pass has here over HTTP (null for the owner, or nobody). */
@@ -325,7 +338,7 @@ class Room {
     if (!this.controlled || (this.meta.owner && this.isOwner(pass.key, account))) return null
     const granted = this.passGrant(pass)
     if (granted) return relayAccess(granted)
-    const m = this.meta.members[account] || this.meta.members[pass.key]
+    const m = this.storedMember(account, pass) || this.storedMember(pass.key, pass)
     return m ? memberAccess(m) : null
   }
 
@@ -363,7 +376,7 @@ class Room {
       this.noteGranted(id, pass.name, pass.kind === 'agent' ? 'agent' : 'human', granted)
       return { state: 'approved', ...relayAccess(granted), owner: false, id }
     }
-    const m = this.meta.members[id]
+    const m = this.storedMember(id, pass)
     if (m) {
       if (m.name !== pass.name) { m.name = pass.name; this.saveMeta() }
       return { state: 'approved', ...memberAccess(m), owner: false, id }
@@ -574,7 +587,8 @@ class Room {
       if (!waiting.length) throw new Error('nobody with that key is waiting')
       const p = waiting[0][1]
       const access = requested ? relayAccess(requested) : { role: role || p.invitedAs, scopes: scopes || [], scopesExcept: [], talk: true }
-      this.meta.members[key] = { name: p.name, kind: p.kind, ...access, since: Date.now() }
+      // Let in as a type: their access lives in the API now (see storedMember).
+      this.meta.members[key] = { name: p.name, kind: p.kind, ...access, since: Date.now(), ...(req.typeId ? { granted: true } : {}) }
       if (this.meta.removed) delete this.meta.removed[key]
       this.saveMeta()
       this.log(`[${this.name}] ${p.name} approved as ${access.role}`)
@@ -600,14 +614,17 @@ class Room {
     if (!m) throw new Error('no such member')
     if (req.op === 'set') {
       const want = requested || { ...fromRelay(m), ...(role ? { files: role === 'viewer' ? 'view' : 'edit' } : {}), ...(scopes ? { folders: scopes } : {}) }
+      // Someone let in as a type keeps what both their record (their last pass) and the owner
+      // allow: more needs a fresh pass from the API. Older members get what the owner asks.
+      const stored = m.granted ? narrowAccess(want, fromRelay(m)) : want
       // Remembered with when, so a pass issued before now can't undo it (see passGrant).
-      Object.assign(m, relayAccess(want), { setAt: Date.now() })
+      Object.assign(m, relayAccess(stored), { setAt: Date.now() })
       this.saveMeta()
       for (const [cws, a] of this.access) {
         if (a.id !== key) continue
         // Someone let in by a grant gets what both their pass and the owner allow: the owner's
         // app can narrow access at once, but more waits for a pass from the API that allows it.
-        Object.assign(a, relayAccess(this.passGrant(cws.pass) || want))
+        Object.assign(a, relayAccess(this.passGrant(cws.pass) || stored))
         this.setAccess(cws, a)
         send(cws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refresh: true }))
       }
