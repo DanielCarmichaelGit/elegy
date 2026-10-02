@@ -224,6 +224,8 @@ export class Session extends EventEmitter {
     }
     if (a.state === 'approved' && (was ? was.talk !== false : true) && a.talk === false) this.log(`🔇 ${TALK_REFUSED}`)
     if (a.state === 'approved' && was && was.talk === false && a.talk !== false) this.log('💬 you can post in this session again')
+    // Partners see you sharing your AI chat only while it can reach them.
+    if (a.state === 'approved' && (was?.talk === false) !== (a.talk === false)) this.publishAgentState()
     if (a.refused) this.log(`🔒 the relay undid your change to ${a.refused.join(', ')}: ${a.why}`)
     this.emit('access', a)
     this.scheduleStatusWrite()
@@ -1481,6 +1483,8 @@ export class Session extends EventEmitter {
   /** Turns sharing of your AI chat on or off, leaving a marker in the feed. */
   setAgentSharing (on) {
     on = !!on
+    // Sharing your AI chat posts it to the feed: not for someone who may not post.
+    if (on && !this.mayTalk()) throw new Error(TALK_REFUSED)
     if (on === this.agentSharing) return on
     const marker = { id: `${on ? 'resumed' : 'paused'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, by: this.name, tool: null, conv: null, kind: on ? 'resumed' : 'paused', text: '', ts: Date.now() }
     if (this.mayTalk()) {
@@ -1523,7 +1527,7 @@ export class Session extends EventEmitter {
     if (!this.conn) return
     const st = this.agentState || { tool: null, status: 'idle' }
     // While paused, partners only learn that sharing is off, not whether you're working.
-    const shared = this.agentSharing ? { ...st, sharing: true, ...(this.summarizer ? { summarized: true } : {}) } : { tool: st.tool, status: 'idle', sharing: false }
+    const shared = this.agentSharing && this.mayTalk() ? { ...st, sharing: true, ...(this.summarizer ? { summarized: true } : {}) } : { tool: st.tool, status: 'idle', sharing: false }
     this.conn.awareness.setLocalStateField('agent', shared)
   }
 

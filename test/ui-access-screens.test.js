@@ -45,6 +45,11 @@ test('without posting rights the chat input is disabled and says why', () => {
   for (const bit of ['input.disabled = muted', "$('#attach-btn').disabled = muted", 'input.placeholder = NO_POSTING', 'if (mayNotPost()) return toast(NO_POSTING)']) assert.ok(s.includes(bit), bit)
 })
 
+test('without posting rights the Share my AI chat switch is disabled and says why', () => {
+  const s = ui('session.js')
+  for (const bit of ['const muted = mayNotPost()', "muted ? NO_POSTING : 'Others see", 'data-share $' + "{sharing ? 'checked' : ''} $" + "{muted ? 'disabled' : ''}"]) assert.ok(s.includes(bit), bit)
+})
+
 test('no em dashes in the app', () => {
   for (const f of ['app.js', 'session.js', 'common.js', 'app.css']) assert.ok(!ui(f).includes(EM_DASH), f)
 })

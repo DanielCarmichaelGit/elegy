@@ -54,6 +54,11 @@ test('their chat messages and feed entries are undone, and they are told why', a
   assert.deepEqual([quiet.access.why, quiet.access.refused], ["you can't post in this session", ['the feed']])
 })
 
+test('they are not shown sharing their AI chat, and cannot turn it on', () => {
+  assert.equal(quiet.conn.awareness.getLocalState().agent.sharing, false)
+  assert.throws(() => quiet.setAgentSharing(true), /can't post/)
+})
+
 test('they can still change files their access allows', async () => {
   fs.writeFileSync(path.join(quietDir, 'notes.md'), 'from Quinn\n')
   await waitFor(() => owner.files.get('notes.md')?.toString() === 'from Quinn\n')

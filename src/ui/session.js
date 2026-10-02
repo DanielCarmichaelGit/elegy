@@ -623,11 +623,13 @@ function renderPeopleMenu ({ force = false } = {}) {
   const self = personInfo(st.me.name)
   const a = st.me.agent || {}
   // Your AI chat: two plain switches instead of a button plus a checkbox.
-  const sharing = a.sharing !== false
+  // Without posting rights there's nothing to share: the feed is posting too.
+  const muted = mayNotPost()
+  const sharing = a.sharing !== false && !muted
   const shareLine = a.status === 'unavailable'
     ? `<div class="pm-card"><div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div></div>`
     : `<div class="pm-card pm-settings">
-        <label class="pm-switch"><span><b>Share my AI chat</b><small>Others see your prompts and your AI's replies.</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''}></label>
+        <label class="pm-switch ${muted ? 'off' : ''}"><span><b>Share my AI chat</b><small>${muted ? NO_POSTING : 'Others see your prompts and your AI\'s replies.'}</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''} ${muted ? 'disabled' : ''}></label>
         <label class="pm-switch ${sharing ? '' : 'off'}"><span><b>Summarize it first</b><small>Share short summaries instead of every word.</small></span><input type="checkbox" role="switch" data-summarize ${a.summarized ? 'checked' : ''} ${sharing ? '' : 'disabled'}></label>
       </div>`
   const row = (p) => {
