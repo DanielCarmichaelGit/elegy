@@ -18,7 +18,7 @@ const { startTestApi, linkDevice } = await import('./api-helpers.js')
 const { newPassKeys } = await import('../src/passes.js')
 
 const SECRET = 'relay-secret-for-ui-access-tests'
-let ui, accounts, relay, lin
+let ui, accounts, relay, lin, lin2
 before(async () => {
   const keys = newPassKeys()
   accounts = await startTestApi({ passKey: keys.privateKey, relaySecret: SECRET })
@@ -27,7 +27,7 @@ before(async () => {
   process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
   ui = await startUi({ port: 0 })
 })
-after(async () => { await lin?.stop(); await ui.close(); await relay.close(); await accounts.close() })
+after(async () => { await lin?.stop(); await lin2?.stop(); await ui.close(); await relay.close(); await accounts.close() })
 
 const api = (method, p, body) => fetch(`http://127.0.0.1:${ui.port}${p}`, {
   method,
@@ -93,5 +93,21 @@ test('the owner lets someone in as a type, narrows it, invites people, and remov
   assert.equal((await api('POST', `/api/sessions/${id}/members/remove`, { key: 'person:lim' })).status, 200)
   assert.match((await fatal).message, /removed you/)
   assert.deepEqual(await grants(room), [])
+
+  // Removing someone holds only if their grant goes too. When heyquilt.com can't delete it,
+  // the relay still removes them, and the owner is told they can get back in.
+  assert.equal((await accounts.call('PUT', `/v1/sessions/${room}/grants/person:lim`, { typeId: 'builtin:edit' }, 'mem')).status, 200)
+  lin2 = new Session({ dir: fs.mkdtempSync(path.join(home, 'lin2-')), server: process.env.QUILT_SERVER, room, secret: s.body.invite.split('#')[1], name: 'Lin', identity: device.identity, passes: personPasses({ token: device.token, api: accounts.api.url }) })
+  await lin2.start({ waitTimeoutMs: 5000 })
+  await waitFor(() => lin2.access?.state === 'approved')
+  const realDelete = accounts.store.deleteGrant
+  accounts.store.deleteGrant = async () => { throw new Error('the database is down') }
+  const fatal2 = new Promise((resolve) => lin2.once('fatal', resolve))
+  let failed
+  try { failed = await api('POST', `/api/sessions/${id}/members/remove`, { key: 'person:lim' }) } finally { accounts.store.deleteGrant = realDelete }
+  assert.equal(failed.status, 200)
+  assert.match(failed.body.warning, /^Removed, but their access is still saved on heyquilt\.com, so they can get back in/)
+  assert.match((await fatal2).message, /removed you/, 'the relay removal still happens')
+  assert.deepEqual((await grants(room)).map((g) => g.account), ['person:lim'])
   await api('POST', `/api/sessions/${id}/stop`)
 })

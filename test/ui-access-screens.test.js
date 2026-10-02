@@ -19,6 +19,10 @@ test('the approve control picks an access type, defaulting to Can edit', () => {
   assert.ok(ui('common.js').includes("api('GET', '/api/access-types')"))
 })
 
+test('removing someone shows the warning when their access could not be taken away', () => {
+  assert.ok(ui('session.js').includes("toast(r.warning || 'Removed')"))
+})
+
 test("the owner's Access section changes the type and narrows it", () => {
   const s = ui('session.js')
   for (const bit of ['class="pm-member edit pm-access"', 'name="viewOnly"', 'View only', 'name="noTalk"', 'No posting', 'name="foldersRemove"', '/members/access', '/grants']) assert.ok(s.includes(bit), bit)

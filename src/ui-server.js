@@ -431,12 +431,23 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     })
   }
 
-  /** Removes someone, and their grant, so they wait for the owner if they come back. */
+  /**
+   * Removes someone, and their grant, so they wait for the owner if they come back. The relay
+   * removes them either way; if the grant couldn't be deleted, their next pass would let them
+   * straight back in, so the owner is told.
+   */
   async function removeMember (id, key) {
     const s = owned(id)
-    if (ACCOUNT.test(String(key))) await asAccount((token) => tryApi(() => deleteGrant({ token, room: s.room, account: key })))
+    let warning = ''
+    if (ACCOUNT.test(String(key))) {
+      try {
+        warning = await asAccount((token) => tryApi(() => deleteGrant({ token, room: s.room, account: key })))
+      } catch (err) {
+        warning = err.message
+      }
+    }
     await s.removeMember(key)
-    return { ok: true }
+    return warning ? { ok: true, warning: `Removed, but their access is still saved on heyquilt.com, so they can get back in: ${warning}` } : { ok: true }
   }
 
   /** Invites someone by email or account. The email carries the session's link: the view link for a view-only type. */

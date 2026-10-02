@@ -360,7 +360,7 @@ function bindTop () {
     if (!b) return
     const f = b.closest('.pm-member')
     if (!await ask({ title: `Remove ${f.querySelector('.nm').textContent.trim()}?`, message: 'They\'ll need a new invite and your approval to come back.', ok: 'Remove', danger: true })) return
-    try { await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast('Removed') } catch (err) { toast(err.message) }
+    try { const r = await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast(r.warning || 'Removed') } catch (err) { toast(err.message) }
   })
   menu.addEventListener('click', async (e) => {
     if (e.target.closest('[data-end-session]')) {
