@@ -28,7 +28,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000 }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -231,19 +231,27 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return link
   }
 
-  // The API's own trouble, straight into the store: unknown routes, crashes (5xx) and
-  // slow requests of any status; the 4xx a route throws on purpose is only kept when
-  // it was slow, and then as `slow`. Never awaited by the request, and a failure to
-  // record is only logged — nothing here may escape and disturb an already-sent reply.
-  function recordOwn ({ method, pathname, status, startedAt, message }) {
+  // The API's own trouble, straight into the store: no-route 404s, crashes (5xx) and
+  // slow requests of any status; the 4xx a route throws on purpose (including a
+  // deliberate 404, like an expired invite or an org you've left) is only kept when
+  // it was slow, and then as `slow`, never as an error. Never awaited by the request,
+  // and a failure to record is only logged — nothing here may escape and disturb an
+  // already-sent reply.
+  function recordOwn ({ method, pathname, status, startedAt, message, noRoute }) {
     try {
       const durationMs = now() - startedAt
       const slow = durationMs > slowMs
-      if (status < 500 && status !== 404 && !slow) return
+      const crash = status >= 500
+      const http404 = status === 404 && noRoute
+      if (!crash && !http404 && !slow) return
+      // A scanner path outside /v1/ (wp-login.php, .env, …) has no route shape worth
+      // keeping per-path; group every one of those under one name instead of letting
+      // each distinct path become its own permanent issue.
+      const name = http404 && !pathname.startsWith('/v1/') ? `${method} (no route)` : routeName(method, pathname)
       const event = cleanEvent({
-        kind: status === 404 ? 'http404' : 'action',
-        name: routeName(method, pathname),
-        outcome: status >= 500 || status === 404 ? 'error' : 'slow',
+        kind: http404 ? 'http404' : 'action',
+        name,
+        outcome: crash || http404 ? 'error' : 'slow',
         status, durationMs, message
       }, { surface: 'api', appVersion: API_VERSION, now })
       Promise.resolve().then(() => store.recordEvents([event])).catch((err) => log(`issue record failed: ${err?.message || err}`))
@@ -258,10 +266,10 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     try { pathname = new URL(req.url, 'http://x').pathname } catch { pathname = '' }
     // Join links are secrets in a URL: never cache them, and ask crawlers not to index them.
     const extra = pathname.startsWith('/v1/join/') ? { 'x-robots-tag': 'noindex' } : {}
-    const send = (status, data, type = 'application/json', message = '') => {
+    const send = (status, data, type = 'application/json', message = '', noRoute = false) => {
       res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...extra, ...cors(req) })
       res.end(type === 'application/json' ? JSON.stringify(data) : data)
-      recordOwn({ method: req.method, pathname, status, startedAt, message })
+      recordOwn({ method: req.method, pathname, status, startedAt, message, noRoute })
     }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { 'cache-control': 'no-store', ...extra, ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' })
@@ -270,7 +278,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     try {
       const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
-      if (!route) throw new HttpError(404, 'not found')
+      if (!route) throw Object.assign(new HttpError(404, 'not found'), { noRoute: true })
       const body = ['POST', 'PUT'].includes(req.method) ? await readJson(req) : {}
       const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodePart))
       if (out instanceof Raw) send(out.status, out.body, out.type)
@@ -287,7 +295,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (err?.code === '23503') return send(409, { error: 'that is still in use' })
       // Supabase errors are plain objects, so fall back to their JSON.
       if (!(err instanceof HttpError)) log(`api error: ${err?.stack || err?.message || JSON.stringify(err)}`)
-      send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' }, 'application/json', err instanceof HttpError ? err.message : String(err?.message || err?.stack || JSON.stringify(err) || 'error'))
+      send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' }, 'application/json', err instanceof HttpError ? err.message : String(err?.message || err?.stack || JSON.stringify(err) || 'error'), !!err.noRoute)
     }
   })
 
@@ -296,12 +304,21 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return site && req.headers.origin === site ? { 'access-control-allow-origin': site, vary: 'origin' } : {}
   }
 
-  const prune = setInterval(() => { Promise.resolve().then(() => store.pruneEvents(now() - keepEventsMs)).catch((err) => log(`issue prune failed: ${err?.message || err}`)) }, pruneEveryMs)
+  // Events are the detail (kept 30 days); issues are the summary people read (kept
+  // 90 days, so slower-moving problems don't vanish while their events still would).
+  async function pruneNow () {
+    try { await store.pruneEvents(now() - keepEventsMs) } catch (err) { log(`issue prune failed: ${err?.message || err}`) }
+    try { await store.pruneIssues(now() - keepIssuesMs) } catch (err) { log(`issue prune failed: ${err?.message || err}`) }
+  }
+  const prune = setInterval(() => { pruneNow() }, pruneEveryMs)
   prune.unref()
+  // Also soon after start, since every deploy restarts the hourly clock.
+  const firstPrune = setTimeout(() => { pruneNow() }, pruneStartMs)
+  firstPrune.unref()
 
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size() })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); clearTimeout(firstPrune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size() })
   }))
 }
 

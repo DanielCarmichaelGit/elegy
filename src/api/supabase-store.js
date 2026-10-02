@@ -311,6 +311,10 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async pruneEvents (before) {
       await one(db.from('events').delete().lt('occurred_at', ts(before)))
       return 0
+    },
+    async pruneIssues (before) {
+      await one(db.from('issues').delete().lt('last_seen_at', ts(before)))
+      return 0
     }
   }
 }

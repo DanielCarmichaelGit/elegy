@@ -425,6 +425,13 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [id, e] of events) if (e.occurredAt < before) { events.delete(id); n++ }
       return n
     },
+    // Issues people haven't seen in a long while, so the one table meant to be read
+    // doesn't grow forever (scanners hitting unknown routes, abandoned reports, …).
+    async pruneIssues (before) {
+      let n = 0
+      for (const [key, i] of issues) if (i.lastSeenAt < before) { issues.delete(key); n++ }
+      return n
+    },
     // Test-only views (production reads the tables in the Supabase dashboard).
     listEvents () { return [...events.values()].map(copy) },
     listIssues () { return [...issues.values()].map(copy) },

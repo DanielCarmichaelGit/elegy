@@ -133,3 +133,13 @@ test('events: pruning deletes old events and keeps issues', async () => {
   assert.equal(s.listEvents().length, 1)
   assert.equal(s.listIssues().length, 1)
 })
+
+test('issues: pruning drops issues not seen since the cut-off, by lastSeenAt', async () => {
+  const s = createMemoryStore()
+  await s.recordEvents([ev({ kind: 'action', name: 'old', outcome: 'error', message: 'x' }, at('2026-08-01T00:00:00Z'))])
+  await s.recordEvents([ev({ kind: 'action', name: 'new', outcome: 'error', message: 'y' }, at('2026-10-01T00:00:00Z'))])
+  assert.equal(await s.pruneIssues(Date.parse('2026-09-01T00:00:00Z')), 1)
+  const left = s.listIssues()
+  assert.equal(left.length, 1)
+  assert.equal(left[0].name, 'new')
+})

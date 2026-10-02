@@ -70,3 +70,17 @@ test('routeName replaces ids and tokens in a path so requests group', () => {
   assert.equal(routeName('GET', '/healthz'), 'GET /healthz')
   assert.equal(routeName('GET', '/v1/' + 'x'.repeat(200)).length, 80)
 })
+
+test('routeName replaces an org slug too, so requests for different orgs group as one', () => {
+  assert.equal(routeName('GET', '/v1/orgs/acme/members'), 'GET /v1/orgs/:slug/members')
+  assert.equal(routeName('GET', '/v1/orgs/zeta/members'), 'GET /v1/orgs/:slug/members')
+})
+
+test('intOrNull clamps out-of-range and negative numbers to null, so a bad report is a 400, never a Postgres overflow', () => {
+  const now = () => Date.parse('2026-10-01T12:00:00Z')
+  assert.equal(cleanEvent({ kind: 'action', name: 'x', status: 1e12 }, { surface: 'app', now }).status, null)
+  assert.equal(cleanEvent({ kind: 'action', name: 'x', durationMs: -5 }, { surface: 'app', now }).durationMs, null)
+  assert.equal(cleanEvent({ kind: 'action', name: 'x', status: 404 }, { surface: 'app', now }).status, 404)
+  assert.equal(cleanEvent({ kind: 'action', name: 'x', status: 2_147_483_647 }, { surface: 'app', now }).status, 2_147_483_647)
+  assert.equal(cleanEvent({ kind: 'action', name: 'x', status: 2_147_483_648 }, { surface: 'app', now }).status, null)
+})

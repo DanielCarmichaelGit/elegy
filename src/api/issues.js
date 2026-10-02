@@ -54,7 +54,14 @@ const oneOf = (list, value, what) => {
   if (!list.includes(v)) throw new HttpError(400, `${what} must be one of ${list.join(', ')}`)
   return v
 }
-const intOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null)
+// Postgres's `integer` column can't hold more than this; a value outside it would turn a
+// whole batch into a 500 (22003). Clamping to null here keeps a bad report a 400, never a crash.
+const INT_MAX = 2_147_483_647
+const intOrNull = (v) => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null
+  const n = Math.round(v)
+  return n >= 0 && n <= INT_MAX ? n : null
+}
 
 /**
  * One event as the stores take it. `surface`, `appVersion`, `platform`, `userId` and
@@ -88,12 +95,15 @@ export function cleanEvent (raw, { surface, appVersion = '', platform = '', user
   return e
 }
 
-/** "GET /v1/orgs/:id/members": a request's path with the parts that vary replaced, so requests group. */
+/** "GET /v1/orgs/:slug/members": a request's path with the parts that vary replaced, so requests group. */
 export function routeName (method, pathname) {
-  const parts = String(pathname || '/').split('/').map((p) => {
+  const segs = String(pathname || '/').split('/')
+  const parts = segs.map((p, i) => {
     if (UUID.test(p)) return ':id'
     if (/^[A-Za-z0-9_-]{24,64}$/.test(p)) return ':token'
     if (/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(p)) return ':code'
+    // The slug right after /orgs/ varies per org, same as an id would; group them too.
+    if (segs[i - 1] === 'orgs') return ':slug'
     return p
   })
   return `${method} ${parts.join('/')}`.slice(0, 80)

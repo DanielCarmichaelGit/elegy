@@ -93,6 +93,16 @@ test('a bad batch is a 400 and records nothing', async () => {
   assert.equal(t.store.listEvents().length, before)
 })
 
+test('a report key header the same JS-string length but a different byte length answers 401, not a 500', async () => {
+  // REPORT_KEY is 14 characters; this header is also 14 characters (13 'a's and one 'é'),
+  // but 'é' is two bytes in UTF-8, so the buffers differ in byte length.
+  assert.equal(REPORT_KEY.length, 14)
+  const key = 'a'.repeat(13) + 'é'
+  assert.equal(key.length, 14)
+  const r = await post({ surface: 'web', events: [{ kind: 'error', name: '/x' }] }, { 'x-quilt-report-key': key })
+  assert.equal(r.status, 401)
+})
+
 test('with no report key configured, the website header is just a missing key', async () => {
   const bare = await startTestApi()
   try {
@@ -109,6 +119,33 @@ test('the API records an unknown route as a 404 event, grouped by its path shape
   assert.equal(own.length, 2)
   assert.equal(own[0].name, 'GET /v1/nothing/:id'); assert.equal(own[0].status, 404); assert.equal(own[0].outcome, 'error')
   assert.equal(t.store.listIssues().find((i) => i.name === 'GET /v1/nothing/:id').count, 2)
+})
+
+test('an unknown route outside /v1/ (a scanner) is collapsed to one name, not one issue per path', async () => {
+  await t.call('GET', '/wp-login.php')
+  await t.call('GET', '/.env')
+  await new Promise((r) => setTimeout(r, 20))
+  const own = t.store.listEvents().filter((e) => e.surface === 'api' && e.name === 'GET (no route)')
+  assert.equal(own.length, 2)
+  for (const e of own) { assert.equal(e.kind, 'http404'); assert.equal(e.outcome, 'error'); assert.equal(e.status, 404) }
+  assert.equal(t.store.listIssues().find((i) => i.name === 'GET (no route)').count, 2)
+})
+
+test('a deliberate 404 (a route answering on purpose) is not recorded, unless it was slow', async () => {
+  const before = t.store.listEvents().length
+  const r = await t.call('POST', '/v1/device/poll', { deviceCode: 'dc_unknown' })
+  assert.equal(r.status, 404)
+  await new Promise((res) => setTimeout(res, 20))
+  assert.equal(t.store.listEvents().length, before, 'a deliberate 404 is the route working as designed, not an issue')
+
+  const slow = await startTestApi({ slowMs: -1 }) // everything is "slow"
+  try {
+    const r2 = await slow.call('POST', '/v1/device/poll', { deviceCode: 'dc_unknown' })
+    assert.equal(r2.status, 404)
+    await new Promise((res) => setTimeout(res, 20))
+    const e = slow.store.listEvents().find((x) => x.surface === 'api' && x.name === 'POST /v1/device/poll')
+    assert.equal(e.outcome, 'slow'); assert.equal(e.status, 404); assert.equal(e.kind, 'action')
+  } finally { await slow.close() }
 })
 
 test('the API records a crash in a handler as a 500 event with the real message, and still answers "internal error"', async () => {
@@ -142,15 +179,28 @@ test('a request over the slow threshold is recorded as slow, and a store that fa
   } finally { await slow.close() }
 })
 
-test('old events are pruned on the API\'s timer', async () => {
-  let n = 0
-  const store = { pruneEvents: async () => { n++; return 0 } }
-  const api = await startTestApi({ pruneEveryMs: 10 })
-  // startTestApi builds its own store; swap the prune method so the timer is observable.
-  api.store.pruneEvents = store.pruneEvents
+test('old events and old issues are pruned on the API\'s timer, and once shortly after start', async () => {
+  let events = 0; let issues = 0
+  const api = await startTestApi({ pruneEveryMs: 1_000_000, pruneStartMs: 10 })
+  // startTestApi builds its own store; swap the prune methods so the timer is observable.
+  api.store.pruneEvents = async () => { events++; return 0 }
+  api.store.pruneIssues = async () => { issues++; return 0 }
   try {
     await new Promise((r) => setTimeout(r, 60))
-    assert.ok(n >= 1, 'pruneEvents ran on the timer')
+    assert.ok(events >= 1, 'pruneEvents ran on the startup timer')
+    assert.ok(issues >= 1, 'pruneIssues ran on the startup timer')
+  } finally { await api.close() }
+})
+
+test('the hourly prune timer also runs both prune methods', async () => {
+  let events = 0; let issues = 0
+  const api = await startTestApi({ pruneEveryMs: 10, pruneStartMs: 1_000_000 })
+  api.store.pruneEvents = async () => { events++; return 0 }
+  api.store.pruneIssues = async () => { issues++; return 0 }
+  try {
+    await new Promise((r) => setTimeout(r, 60))
+    assert.ok(events >= 1, 'pruneEvents ran on the hourly timer')
+    assert.ok(issues >= 1, 'pruneIssues ran on the hourly timer')
   } finally { await api.close() }
 })
 

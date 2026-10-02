@@ -142,3 +142,12 @@ test('supabase pruneEvents deletes events that occurred before the cut-off', asy
   assert.deepEqual(q.ops[0], ['delete'])
   assert.deepEqual(q.ops[1], ['lt', 'occurred_at', '2026-09-01T00:00:00.000Z'])
 })
+
+test('supabase pruneIssues deletes issues last seen before the cut-off', async () => {
+  const { client, fromCalls } = fakeRpcClient()
+  await createSupabaseStore({ client }).pruneIssues(Date.parse('2026-09-01T00:00:00Z'))
+  const q = fromCalls.at(-1)
+  assert.equal(q.table, 'issues')
+  assert.deepEqual(q.ops[0], ['delete'])
+  assert.deepEqual(q.ops[1], ['lt', 'last_seen_at', '2026-09-01T00:00:00.000Z'])
+})
