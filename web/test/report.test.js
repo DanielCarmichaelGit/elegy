@@ -20,7 +20,18 @@ test('cleanPath keeps only the path: no query, no fragment (invite links carry s
   assert.equal(cleanPath('/join/room-x?x=1#s=secret'), '/join/room-x')
   assert.equal(cleanPath('https://heyquilt.com/pricing/old#top'), '/pricing/old')
   assert.equal(cleanPath(''), '/'); assert.equal(cleanPath(null), '/'); assert.equal(cleanPath(42), '/')
-  assert.equal(cleanPath('/' + 'a'.repeat(300)).length, 200)
+  // Many short segments, none of them a token on its own, so the 200-char cap is what truncates.
+  assert.equal(cleanPath('/' + Array.from({ length: 60 }, () => 'seg').join('/')).length, 200)
+})
+
+test('cleanPath replaces a token, a uuid, and a device-link code with a stand-in, same as the API does', async () => {
+  const { cleanPath } = await import('../lib/report.js')
+  assert.equal(cleanPath('/invite/qi_' + 'a'.repeat(43)), '/invite/:token')
+  assert.equal(cleanPath('/agent/join/qj_' + 'b'.repeat(40)), '/agent/join/:token')
+  assert.equal(cleanPath('/orgs/3f2504e0-4f89-11d3-9a0c-0305e82c3301/people'), '/orgs/:id/people')
+  assert.equal(cleanPath('/' + 'x'.repeat(30)), '/:token')
+  assert.equal(cleanPath('/link?code=ABCD-1234'), '/link')
+  assert.equal(cleanPath('/device/link/ABCD-1234'), '/device/link/:code')
 })
 
 test('uaFamily names the browser family, never the whole user agent', async () => {

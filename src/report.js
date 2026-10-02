@@ -8,15 +8,28 @@ import { currentVersion } from './releases.js'
 // A path on this computer says who you are and how your disk is laid out; its last part
 // (the project folder, the app) is all a report needs. A directory segment may be a few
 // space-joined words of its own ("Program Files (x86)"), so each segment allows up to four.
-const PATH = /(?:~|[A-Za-z]:|\/(?:Users|home|private|tmp|var|opt|Applications|Volumes|root|mnt))(?:[\\/][^\s'"`:,\\/]+(?: [^\s'"`:,\\/]+){0,3})*/g
-const TOKEN = /\b(?:qd|qa|qr|dc)_[A-Za-z0-9_-]+/g
-const INVITE = /(?:https?:\/\/join\.heyquilt\.com\/[^\s'"`]+|quilt:\/\/[^\s'"`]+)/g
+// A UNC path (\\server\share\...) is a root of its own kind, same treatment.
+const PATH = /(?:~|[A-Za-z]:|\/(?:Users|home|private|tmp|var|opt|Applications|Volumes|root|mnt|srv|data|workspace)|\\\\[^\s\\]+)(?:[\\/][^\s'"`:,\\/]+(?: [^\s'"`:,\\/]+){0,3})*/g
+// Every token prefix Quilt mints: qd_ (device), qa_/qr_ (agent access/refresh), dc_ (device
+// code), qi_ (org invite), qj_ (agent join). No \b: `_` is a word character, so `\b` would miss
+// a token straight after an underscore (`_qd_...`); instead, the character right before the
+// prefix (if any) just has to not be alphanumeric, and that character is kept in the output.
+const TOKEN = /(?:^|[^A-Za-z0-9])((?:qd|qa|qr|dc|qi|qj)_[A-Za-z0-9_-]+)/g
+// join.heyquilt.com and quilt:// links; also the older/relay form of an invite link, any host,
+// where the secret lives after a `#` on a `/join/...` path.
+const INVITE = /(?:https?:\/\/join\.heyquilt\.com\/[^\s'"`]+|quilt:\/\/[^\s'"`]+|\/join\/[^\s#'"`]+#\S+)/g
+// A username:password (or token) embedded in a URL, e.g. https://x-access-token:ghp_x@github.com/.
+const CREDS = /:\/\/[^/\s:@]+:[^@\s]+@/g
+// GitHub tokens (classic and fine-grained) and JWTs (a Bearer token, including Supabase's).
+const SECRET = /\b(?:gh[pousr]_|github_pat_)\w+|eyJ[\w-]+\.[\w-]+\.[\w-]+/g
 
-/** `text` with paths cut to their last part, and tokens and invite links hidden. */
+/** `text` with paths cut to their last part, and tokens, credentials and invite links hidden. */
 export function scrub (text) {
   return String(text ?? '')
     .replace(INVITE, '[invite]')
-    .replace(TOKEN, '[secret]')
+    .replace(CREDS, '://[secret]@')
+    .replace(SECRET, '[secret]')
+    .replace(TOKEN, (m, token) => m.slice(0, m.length - token.length) + '[secret]')
     // PATH can absorb a few words of trailing prose past the path's last separator (nothing
     // stops it there) — that's harmless: .pop() returns whatever follows the last separator
     // verbatim, spaces and all, so absorbed prose comes back unchanged. The safety invariant

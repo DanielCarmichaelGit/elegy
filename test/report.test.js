@@ -19,6 +19,36 @@ test('scrub reduces paths to basenames and hides tokens and invite links', () =>
   assert.equal(scrub('a /Users/a/x failed, see /home/b/y'), 'a x failed, see y')
 })
 
+test('scrub covers every token prefix Quilt mints, even right after an underscore', () => {
+  assert.equal(scrub('invite token qi_abcDEF123 for the org'), 'invite token [secret] for the org')
+  assert.equal(scrub('agent join qj_xyz789 pasted'), 'agent join [secret] pasted')
+  // '_' is a word character, so a naive \b boundary would miss this; the character right
+  // before the prefix only has to be non-alphanumeric, and it's kept in the output.
+  assert.equal(scrub('key=_qd_abc123'), 'key=_[secret]')
+  assert.equal(scrub('qd_leading'), '[secret]')
+  // A letter right before the prefix means it's part of a longer word, not a token: no match.
+  assert.equal(scrub('xqd_not_a_token'), 'xqd_not_a_token')
+})
+
+test('scrub hides the relay/older form of an invite link, any host, where the secret follows a #', () => {
+  assert.equal(scrub('open wss://relay.heyquilt.com/join/room-9#s3cr3t now'), 'open wss://relay.heyquilt.com[invite] now')
+  assert.equal(scrub('see /join/room-1#abc for details'), 'see [invite] for details')
+})
+
+test('scrub hides credentials embedded in a URL, and GitHub tokens and JWTs anywhere', () => {
+  assert.equal(scrub('fatal: unable to access https://x-access-token:ghp_abc123@github.com/x/y.git'), 'fatal: unable to access https://[secret]@github.com/x/y.git')
+  assert.equal(scrub('clone failed for https://user:ghp_abcDEF456@github.com/org/repo'), 'clone failed for https://[secret]@github.com/org/repo')
+  assert.equal(scrub('token github_pat_11ABCDEFG0123456789 rejected'), 'token [secret] rejected')
+  assert.equal(scrub('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'), 'Authorization: Bearer [secret]')
+})
+
+test('scrub covers the Linux roots and Windows UNC shares PATH used to miss', () => {
+  assert.equal(scrub('wrote /srv/app/data/out.json'), 'wrote out.json')
+  assert.equal(scrub('reading /data/sets/train.csv'), 'reading train.csv')
+  assert.equal(scrub('synced to /workspace/proj/build'), 'synced to build')
+  assert.equal(scrub('copy to \\\\fileserver\\share\\docs\\report.pdf failed'), 'copy to report.pdf failed')
+})
+
 /** A reporter over fake time and a fake fetch that records every request. */
 function harness ({ status = 200, token = 'qd_tok', enabled = true, fail = false } = {}) {
   let t = 1_000_000
