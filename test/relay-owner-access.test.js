@@ -9,7 +9,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import { startServer } from '../src/server.js'
 import { generateIdentity, signChallenge } from '../src/identity.js'
-import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, CLOSE_DENIED, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
+import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS, CLOSE_DENIED, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
 import { PASS_KEYS, makePass } from './pass-helpers.js'
 import { PASS_TTL_MS } from '../src/passes.js'
 
@@ -99,6 +99,32 @@ test("the owner can narrow someone's access live, but never past what their pass
   // ...but a newer pass from the API, which the owner's app updated, applies.
   const fresh = await as('kim', EDIT_ALL, { identity, iat: Date.now() + 1 })
   assert.deepEqual([last(fresh).role, last(fresh).scopes, last(fresh).talk], ['editor', [], true])
+})
+
+test("a fresh pass from the same moment as the owner's change is asked for again, so more access still arrives", async (t) => {
+  const { srv, r, owner, as } = await ownedRoom(t)
+  const identity = generateIdentity()
+  const VIEW = { ...EDIT_ALL, files: 'view' }
+  const kim = await as('kim', VIEW, { identity })
+  assert.equal(last(kim).role, 'viewer')
+  // The owner's app gives Kim more on the API, then tells the relay: it narrows at once, more waits for a fresh pass.
+  await admin(owner, { op: 'set', key: 'person:kim', access: { ...EDIT_ALL, talk: false } })
+  await waitFor(() => last(kim).refresh && last(kim).talk === false)
+  const { setAt } = srv.rooms.get(r).meta.members['person:kim']
+  const pass = (iat) => makePass({ identity, sub: 'kim', name: 'kim', room: r, access: { ...EDIT_ALL, talk: false }, iat })
+  // Issued in the same millisecond as the change, so the relay can't tell it saw the change: it asks again.
+  const seen = kim.access.length
+  kim.ws.send(jsonMessage(MSG_PASS, { pass: pass(setAt) }))
+  await waitFor(() => kim.access.length > seen)
+  assert.deepEqual([last(kim).role, last(kim).refresh], ['viewer', true])
+  // The next one is newer than the change, and brings the rest.
+  kim.ws.send(jsonMessage(MSG_PASS, { pass: pass(setAt + 1) }))
+  await waitFor(() => last(kim).role === 'editor')
+  assert.equal(last(kim).talk, false)
+  // Coming back with a pass from before the change asks for a newer one at once, too.
+  kim.ws.close()
+  const back = await as('kim', EDIT_ALL, { identity, iat: setAt - 1000 })
+  assert.deepEqual([last(back).talk, last(back).refresh], [false, true])
 })
 
 test('someone the owner let in before access types can still be given more', async (t) => {

@@ -265,6 +265,21 @@ class Room {
   }
 
   /**
+   * True when this pass was issued no later than the owner's last change to its holder,
+   * and that change cut what it grants. A pass from the same millisecond as the change
+   * (or from a clock a little behind) may already carry it, but the relay can't tell, so
+   * the app is asked for a newer one: otherwise more access waits for the next refresh.
+   */
+  passPredatesChange (pass) {
+    if (!pass || pass.room !== this.name) return false
+    const access = cleanAccess(pass.access)
+    const m = this.meta.members[`${pass.kind}:${pass.sub}`]
+    if (!access || !m || !m.setAt) return false
+    const issued = typeof pass.iat === 'number' ? pass.iat : pass.exp - PASS_TTL_MS
+    return issued <= m.setAt && !sameAccess(access, narrowAccess(access, fromRelay(m)))
+  }
+
+  /**
    * The member record that may let this pass in, or null. Someone let in as a type (by a
    * grant, or by the owner approving them as one) has their access in the API: only a pass
    * for this room speaks for it, so without one their stored record lets nobody in, or an
@@ -303,11 +318,16 @@ class Room {
       return
     }
     const a = this.access.get(ws)
-    if (!a || a.owner || sameAccess(fromRelay(a), granted)) return
+    if (!a || a.owner) return
+    const refresh = this.passPredatesChange(ws.pass) ? { refresh: true } : {}
+    if (sameAccess(fromRelay(a), granted)) {
+      if (refresh.refresh) send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), ...refresh }))
+      return
+    }
     this.noteGranted(id, a.name, a.kind, granted)
     Object.assign(a, relayAccess(granted))
     this.setAccess(ws, a)
-    send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), ...refresh }))
     this.broadcastMembers()
   }
 
@@ -902,7 +922,9 @@ class Room {
       // give people access there: tell it now rather than within the minute.
       if (a.owner) this.presence.tick().catch(() => {})
     }
-    send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    // Back with a pass from before the owner's last change: a newer one may allow more.
+    const refresh = !a.owner && this.passPredatesChange(ws.pass) ? { refresh: true } : {}
+    send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), ...refresh }))
     this.join(ws, a.name)
     this.broadcastMembers()
   }
