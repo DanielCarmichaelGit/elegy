@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 globalThis.location = { search: '' }
 globalThis.sessionStorage = { getItem () { return null }, setItem () {} }
 globalThis.history = { replaceState () {} }
+globalThis.window = { addEventListener () {} } // common.js installs the error reporter at load
 
 const { renderBoard } = await import('../src/ui/board.js')
 

@@ -143,6 +143,7 @@ async function apiCmd () {
   const port = Number(values.port || env.PORT || 8787)
   const api = await startApi({
     port, host, store, verifyUser, mailer, passKey,
+    reportKey: env.QUILT_REPORT_KEY || '',
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
