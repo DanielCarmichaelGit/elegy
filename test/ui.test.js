@@ -12,7 +12,11 @@ const { startServer } = await import('../src/server.js')
 const { startTestApi, linkDevice } = await import('./api-helpers.js')
 const { newPassKeys } = await import('../src/passes.js')
 const { loadIdentity } = await import('../src/identity.js')
-const { saveAccount } = await import('../src/account.js')
+const { saveAccount, readAccount } = await import('../src/account.js')
+const { Session } = await import('../src/session.js')
+const { decodeInvite } = await import('../src/runner.js')
+const { personPasses } = await import('../src/pass-source.js')
+const { openMerge } = await import('../src/merges.js')
 let ui, base, relay, accounts
 let shutdowns = 0
 
@@ -128,6 +132,49 @@ test('task board: add, move, rename, delete', async () => {
   assert.deepEqual(removed.body.tasks.map((t) => t.title), ['Pricing page'], 'only the deleted task is gone')
   const empty = await api('POST', `/api/sessions/${id}/tasks`, { title: '   ' })
   assert.equal(empty.status, 400)
+  await api('POST', `/api/sessions/${id}/stop`)
+})
+
+test('merges: listed, resolved, and a send to an unknown app is refused', async () => {
+  const dir = path.join(home, 'merge-proj')
+  fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'hello')
+  const created = await api('POST', '/api/sessions', { mode: 'create', dir, tool: 'Claude Code' })
+  assert.equal(created.status, 200, JSON.stringify(created.body))
+  const id = created.body.id
+
+  // A record is made directly on the shared doc, the way an offline merge conflict would
+  // arrive — from a second connection signed into the same account (another of this
+  // person's computers), which the session recognizes as its owner too and lets straight in.
+  const conn = decodeInvite(created.body.invite)
+  const account = readAccount()
+  const second = new Session({
+    dir: path.join(home, 'merge-proj-2'), server: conn.server, room: conn.room, secret: conn.secret,
+    name: 'Mo', passes: personPasses({ token: account.token })
+  })
+  await second.start({ waitTimeoutMs: 5000 })
+  const rec = openMerge(second.doc, second.merges, {
+    path: 'a.txt', by: 'Mo', others: ['another computer'], kind: 'conflict', ours: 'mine\n', base: 'hello', theirsHash: 'x', binary: false
+  }, null)
+
+  let merges
+  for (let i = 0; i < 50; i++) {
+    merges = await api('GET', `/api/sessions/${id}/merges`)
+    if (merges.body.merges.some((m) => m.id === rec.id)) break
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  assert.ok(merges.body.merges.some((m) => m.id === rec.id && m.path === 'a.txt'), JSON.stringify(merges.body))
+
+  const resolved = await api('POST', `/api/sessions/${id}/merges/resolve`, { id: rec.id, how: 'theirs' })
+  assert.equal(resolved.status, 200, JSON.stringify(resolved.body))
+  assert.equal(resolved.body.state, 'done')
+
+  // No app named 'nope' exists, so nothing is launched; the route refuses with a 4xx.
+  const sent = await api('POST', `/api/sessions/${id}/merges/send`, { id: rec.id, app: 'nope' })
+  assert.ok(sent.status >= 400 && sent.status < 500, JSON.stringify(sent.body))
+  assert.ok(sent.body.error)
+
+  await second.stop()
   await api('POST', `/api/sessions/${id}/stop`)
 })
 

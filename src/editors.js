@@ -153,31 +153,52 @@ export async function copyToClipboard (text) {
   })
 }
 
+const resumeLink = (id) => (process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', `claude://resume?session=${id}`]] : ['open', [`claude://resume?session=${id}`]])
+
 async function openInClaude (dir, opts) {
+  const runFn = opts.run || run
+  const copyFn = opts.copy || copyToClipboard
   const [file, args] = openCommand('claude', dir, opts) // checks it's installed; the folder link is the fallback
   const cli = claudeCli(opts)
+  // The folder link (and, with a prompt, the clipboard) — everything else falls back to this.
+  const fallback = async () => {
+    const copied = opts.prompt ? await copyFn(opts.prompt) : false
+    await runFn(file, args)
+    return copied
+  }
   if (cli) {
     const id = crypto.randomUUID()
+    if (opts.prompt) {
+      // A headless merge can take minutes: don't hold the caller open for it. Resume once it
+      // finishes; fall back to the clipboard and the folder if the run (or the resume) fails.
+      runFn(...claudePromptCommand(cli, dir, id, opts.prompt))
+        .then(() => runFn(...resumeLink(id)))
+        .then(() => opts.onDone?.({ ok: true }))
+        .catch(async (error) => {
+          let copied = false
+          try { copied = await fallback() } catch {} // nothing more to fall back to
+          opts.onDone?.({ ok: false, copied, error: error.message })
+        })
+      return { copied: false, started: true }
+    }
     try {
-      if (opts.prompt) await run(...claudePromptCommand(cli, dir, id, opts.prompt))
-      else await run(...claudeSessionCommand(cli, dir, id))
-      const link = `claude://resume?session=${id}`
-      await run(...(process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', link]] : ['open', [link]]))
-      return { copied: false }
-    } catch {} // fall back to the folder link (and the clipboard, when there's a prompt)
+      await runFn(...claudeSessionCommand(cli, dir, id))
+      await runFn(...resumeLink(id))
+      return { copied: false, started: false }
+    } catch {} // fall back to the folder link
   }
-  const copied = opts.prompt ? await copyToClipboard(opts.prompt) : false
-  await run(file, args)
-  return { copied }
+  return { copied: await fallback(), started: false }
 }
 
 export async function openIn (id, dir, opts = {}) {
   dir = path.resolve(dir)
   try {
     if (id === 'claude') return await openInClaude(dir, opts)
-    const copied = opts.prompt ? await copyToClipboard(opts.prompt) : false
-    await run(...openCommand(id, dir, opts))
-    return { copied }
+    const runFn = opts.run || run
+    const copyFn = opts.copy || copyToClipboard
+    const copied = opts.prompt ? await copyFn(opts.prompt) : false
+    await runFn(...openCommand(id, dir, opts))
+    return { copied, started: false }
   } catch (err) {
     throw new Error(`Could not open it: ${err.message}`)
   }
