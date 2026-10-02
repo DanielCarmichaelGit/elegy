@@ -15,6 +15,7 @@ import { makeAgentAuth } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
 import { relayRoutes } from './routes/relay.js'
+import { sessionRoutes } from './routes/sessions.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -83,6 +84,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const p = await store.profile(d.userId)
     return { sub: d.userId, kind: 'person', name: ((p && p.name) || 'Quilt user').slice(0, 64), key: d.publicKey }
   }
+  /** The person calling: the website's sign-in (a Supabase JWT), or a linked computer's qd_ token. */
+  async function caller (req) {
+    if (bearer(req).startsWith('qd_')) return { userId: (await device(req)).userId }
+    return user(req)
+  }
+
   const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
 
   /** A person's profile and sign-in email, which the app keeps in account.json. */
@@ -206,8 +213,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx))
+  const ctx = { store, user, caller, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
