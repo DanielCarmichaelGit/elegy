@@ -25,6 +25,9 @@ import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
+import { merge3 } from './merge3.js'
+import { aiMerge, findMergeCli } from './merge-ai.js'
+import { openMerge, readMerges, pruneMerges } from './merges.js'
 
 export { applyTextDiff }
 
@@ -97,6 +100,9 @@ export class Session extends EventEmitter {
     // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
     this.inboxTracker = new Inbox()
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
+    this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
+    this.merging = new Set() // paths held out of normal sync until their offline merge has run
+    this.mergeCliMissing = false // logged once per session
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
 
     this.ig = loadIgnore(this.root)
@@ -188,10 +194,16 @@ export class Session extends EventEmitter {
     this.setupPresence()
 
     if (hadState) {
-      // We've synced this folder before: fold in anything edited while we were
-      // away, then let the CRDT merge it with whatever the others did.
-      this.reconcileOffline()
+      // We've synced this folder before: hold what was edited while we were
+      // away, let the relay tell us what the others did, then merge the two.
+      const offline = this.captureOffline()
       this.goLive()
+      if (offline.entries.length) this.log(`${offline.entries.length} file(s) changed while you were away; merging once the relay has synced…`)
+      this.conn.waitForSync().then(() => this.mergeOffline(offline)).catch((err) => {
+        // Never synced (the relay refused us): nothing can be merged, so nothing stays held.
+        for (const e of offline.entries) this.merging.delete(e.rel)
+        this.emit('debug', `offline merge did not run: ${err && err.message}`)
+      })
     } else {
       this.log('waiting for relay…')
       const sync = this.conn.waitForSync()
@@ -352,6 +364,7 @@ export class Session extends EventEmitter {
       }
       this.emit('status-changed')
     })
+    this.merges.observe(() => { this.scheduleStatusWrite(); this.emit('merges', this.mergeList()) })
     this.agentFeed.observe((ev) => {
       const added = []
       for (const item of ev.changes.added) for (const e of item.content.getContent()) if (e && e.id) added.push(e)
@@ -408,10 +421,19 @@ export class Session extends EventEmitter {
     return isSafeRelPath(rel) && !isIgnored(this.ig, rel)
   }
 
-  reconcileOffline () {
+  /**
+   * Back in a folder we synced before: note every file edited while away as
+   * { rel, base, ours } (base: the shared version we last had; ours: what's
+   * on disk; a key is text, "bin:<sha1>", or null for "gone") and keep those
+   * paths out of normal sync until mergeOffline has merged them against what
+   * the session did meanwhile. Nothing is pushed here.
+   */
+  captureOffline () {
     const onDisk = new Set(walk(this.root, this.ig))
     const downloads = []
     const take = [] // shared versions that never reached the folder: written now, not pushed back
+    const entries = []
+    const hold = (rel, base, ours) => { this.merging.add(rel); entries.push({ rel, base, ours }) }
     for (const rel of this.sharedPaths()) {
       if (!this.syncable(rel)) continue
       const known = this.sharedKey(rel)
@@ -433,23 +455,177 @@ export class Session extends EventEmitter {
       if (onDisk.has(rel)) continue
       // Not in the folder: deleted while offline, unless it was never written (the write failed) and is still due.
       if (this.known && !this.known.has(rel)) take.push(rel)
-      else this.ingest(rel)
+      else hold(rel, known, null)
     }
     for (const rel of onDisk) {
       const was = this.known && this.known.get(rel)
-      if (was && this.sharedKey(rel) !== undefined) {
-        const disk = this.readDisk(rel)
-        if (disk && disk.key !== undefined && disk.key !== this.sharedKey(rel) && sha1(disk.key) === was) {
-          // The folder still has the version we last wrote, so the room moved
-          // on without the change reaching the disk: take it, don't undo it.
-          take.push(rel)
-          continue
+      const shared = this.sharedKey(rel)
+      const disk = this.readDisk(rel)
+      if (was && shared !== undefined && disk && disk.key !== undefined && disk.key !== shared && sha1(disk.key) === was) {
+        // The folder still has the version we last wrote, so the room moved
+        // on without the change reaching the disk: take it, don't undo it.
+        // (It's what we last wrote, so replacing it keeps no conflict copy.)
+        this.lastKnown.set(rel, disk.key)
+        take.push(rel)
+        continue
+      }
+      if (!disk || disk.skip || disk.tooLarge) continue
+      if (disk.key === shared) { this.lastKnown.set(rel, disk.key); continue }
+      hold(rel, shared, disk.key)
+    }
+    return { entries, take, downloads }
+  }
+
+  /** Runs once the relay has synced: merges every captured path against the session's version. */
+  async mergeOffline ({ entries, take, downloads }) {
+    if (this.stopped) { for (const e of entries) this.merging.delete(e.rel); return } // the next start captures them again
+    const counts = { pushed: 0, merged: 0, ai: 0, conflict: 0 }
+    const queue = entries.slice()
+    const worker = async () => {
+      while (queue.length && !this.stopped) {
+        const e = queue.shift()
+        try {
+          const r = await this.mergeOne(e)
+          if (r) counts[r]++
+        } catch (err) {
+          this.merging.delete(e.rel)
+          this.log(`could not merge ${e.rel}: ${err.message}`)
         }
       }
-      this.ingest(rel)
     }
+    await Promise.all([worker(), worker()])
+    for (const e of entries) this.merging.delete(e.rel)
+    if (this.stopped) return
+    // After the merges: a file deleted offline may sit where one of these needs a folder.
     for (const rel of take) this.tryWrite(rel)
     for (const rel of downloads) this.downloadLarge(rel, this.blobs.get(rel))
+    pruneMerges(this.doc, this.merges, LOCAL)
+    const parts = []
+    if (counts.pushed) parts.push(`${counts.pushed} shared`)
+    if (counts.merged) parts.push(`${counts.merged} merged`)
+    if (counts.ai) parts.push(`${counts.ai} merged by AI (have a look)`)
+    if (counts.conflict) parts.push(`${counts.conflict} need${counts.conflict === 1 ? 's' : ''} merging`)
+    if (parts.length) this.log(`${counts.conflict ? '⚠️ ' : '✅ '}your offline changes: ${parts.join(', ')}`)
+    this.emit('merges', this.mergeList())
+    this.scheduleStatusWrite()
+  }
+
+  /** This machine's public key, for merge records (Connection loads it when the session wasn't given one). */
+  myKey () { return (this.identity || this.conn?.identity)?.publicKey || null }
+
+  /** Merges one captured path. Returns what happened, or null when nothing needed doing. */
+  async mergeOne ({ rel, base }) {
+    const release = () => this.merging.delete(rel)
+    const disk = this.readDisk(rel)
+    if (disk && (disk.skip || disk.tooLarge)) { release(); return null }
+    const ours = disk ? disk.key : null // re-read: it may have changed again before the relay synced
+    const theirs = this.sharedKey(rel)
+    const theirsBy = this.lastEditorOf(rel)
+    if (theirs === base) { release(); return this.ingest(rel) ? 'pushed' : null } // nobody else touched it
+    if (ours === theirs || (ours === null && theirs === undefined)) {
+      release()
+      if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
+      return null
+    }
+    if (ours === base) { release(); this.tryWrite(rel); return null } // only they changed it
+    const claim = this.claimFor(rel)
+    const binary = [base, ours, theirs].some((k) => typeof k === 'string' && k.startsWith('bin:'))
+    if (claim && claim.by !== this.name) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'claimed', claimedBy: claim.by, binary })
+    if (binary || ours === null || theirs === undefined) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', binary })
+    const { text, conflicts } = merge3(base || '', ours, theirs)
+    if (!conflicts.length) {
+      this.applyMerged(rel, text, `with ${theirsBy || 'the session'}'s changes`)
+      release()
+      return 'merged'
+    }
+    const cli = findMergeCli()
+    if (!cli && !this.mergeCliMissing) {
+      this.mergeCliMissing = true
+      this.log('overlapping changes go straight to merge conflicts: no AI tool (claude, codex or cursor-agent) is installed to merge with')
+    }
+    const ai = await aiMerge({ path: rel, base: base || '', ours, theirs, mine: this.name, theirsBy, cli })
+    // Stopped while the AI ran: leave the disk and the doc alone; the next start merges it again.
+    if (this.stopped) { release(); return null }
+    if (ai.text) {
+      // The AI can take a while: if the file changed again meanwhile, keep that copy before replacing it.
+      const now = this.readDisk(rel)
+      if (now && now.key !== undefined && now.key !== ours) this.keepConflict(rel, now)
+      this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`)
+      const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [theirsBy] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false }, LOCAL)
+      this.writeMergeFiles(rec.id, { base, ours, theirs })
+      release()
+      return 'ai'
+    }
+    return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', reason: ai.refused, binary: false })
+  }
+
+  /** Writes a merged text to the shared doc and the disk as one edit of ours. */
+  applyMerged (rel, text, detail) {
+    const abs = resolveInside(this.root, rel)
+    this.doc.transact(() => {
+      this.blobs.delete(rel)
+      let ytext = this.files.get(rel)
+      if (!ytext) { ytext = new Y.Text(); this.files.set(rel, ytext) }
+      const before = ytext.toString()
+      applyTextDiff(ytext, text)
+      this.recordActivity(rel, 'merged', detail, { before, after: text }) // the chronology keeps the merge's diff
+    }, LOCAL)
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    this.writeFile(rel, abs, text)
+    this.lastKnown.set(rel, text)
+    this.setOnDisk(rel, null)
+    this.noteMyEdit(rel)
+    this.log(`🧵 merged ${rel} ${detail}`)
+  }
+
+  /**
+   * The two sides cannot be combined on their own: the session's version
+   * stays on disk and in the doc, ours is kept in the record and under
+   * .quilt/merges/<id>/, and everyone sees the record until someone settles it.
+   */
+  openConflict ({ rel, base, ours, theirs, theirsBy, disk, kind, reason = null, claimedBy = null, binary }) {
+    const text = (k) => (typeof k === 'string' && !k.startsWith('bin:') ? k : null)
+    const rec = openMerge(this.doc, this.merges, {
+      path: rel,
+      by: this.name,
+      byId: this.myKey(),
+      others: theirsBy ? [theirsBy] : [],
+      kind,
+      ours: binary ? null : text(ours),
+      base: binary ? null : text(base),
+      theirsHash: theirs === undefined ? null : sha1(theirs),
+      binary,
+      claimedBy,
+      reason: reason ? String(reason).slice(0, 500) : null // a longer one would make the record invalid
+    }, LOCAL)
+    this.writeMergeFiles(rec.id, { base, ours, theirs, disk })
+    // The session's version goes back on disk (or the file goes, if the session
+    // deleted it). lastKnown is set to ours first so writeOut doesn't also copy
+    // it to .quilt/conflicts: the merge folder already has it.
+    this.merging.delete(rel)
+    if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
+    this.tryWrite(rel)
+    const who = claimedBy ? `${claimedBy} has it claimed` : theirsBy ? `${theirsBy} changed it too` : 'it changed in the session too'
+    this.log(`⚠️  ${rel} needs merging: ${who}${reason ? ` (${reason})` : ''}. Your version is kept; see Merges in the app.`)
+    this.emit('file-changed', { path: rel, by: theirsBy || 'partner' })
+    return 'conflict'
+  }
+
+  /** Keeps the three versions of a merge on this machine, for Send to… and for files too big for the record. */
+  writeMergeFiles (id, { base, ours, theirs, disk = null }) {
+    if (!id) return
+    const dir = this.mergeDir(id)
+    fs.mkdirSync(dir, { recursive: true })
+    const put = (name, key, buf) => {
+      if (buf) { fs.writeFileSync(path.join(dir, name), buf); return }
+      if (typeof key === 'string' && !key.startsWith('bin:')) fs.writeFileSync(path.join(dir, name), key)
+    }
+    put('base', base)
+    put('ours', ours, disk && disk.binary ? disk.buf : null)
+    if (typeof theirs === 'string' && theirs.startsWith('bin:')) {
+      const shared = this.blobs.get(this.mergeList().find((m) => m.id === id)?.path)
+      if (shared && shared.data) fs.writeFileSync(path.join(dir, 'theirs'), Buffer.from(shared.data, 'base64'))
+    } else put('theirs', theirs)
   }
 
   reconcileFirstJoin () {
@@ -555,6 +731,7 @@ export class Session extends EventEmitter {
   /** Pushes the on-disk state of a path into the shared doc. Returns true if anything changed. */
   ingest (rel) {
     if (!this.syncable(rel)) return false
+    if (this.merging.has(rel)) return false // its offline merge hasn't run yet; see mergeOffline
     if (this.downloading.has(rel)) return false // our copy is being replaced by a download
     if (this.writeFailed.has(rel)) return false // the shared version never reached the disk: what's there is no edit of ours
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
@@ -796,6 +973,7 @@ export class Session extends EventEmitter {
 
   writeOut (rel) {
     if (!this.syncable(rel)) return
+    if (this.merging.has(rel)) return // mergeOffline writes this path once it has merged it
     let abs
     try { abs = resolveInside(this.root, rel) } catch (err) { this.log(err.message); return }
     const shared = this.sharedKey(rel)
@@ -1606,6 +1784,13 @@ export class Session extends EventEmitter {
     return owner
   }
 
+  // ------------------------------------------------------------ merges --
+
+  mergeList () { return readMerges(this.merges) }
+
+  /** Where this machine keeps a merge's base, ours and theirs (and PROMPT.md for Send to…). */
+  mergeDir (id) { return path.join(this.stateDir, 'merges', id) }
+
   // ------------------------------------------------------------ AI feed --
 
   /**
@@ -1871,6 +2056,7 @@ export class Session extends EventEmitter {
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
       tasks: this.taskList(),
+      merges: this.mergeList(),
       activity: this.activity.toArray().slice(-30),
       changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10) })),
       chat: this.messages({ limit: 20, markRead: false }),

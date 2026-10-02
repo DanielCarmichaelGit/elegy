@@ -55,6 +55,31 @@ async function pair (t, seed = {}) {
   return { A, B, dirA, dirB, room }
 }
 
+// A merge "AI" for tests: QUILT_MERGE_CMD runs this script, which answers
+// CONFLICT unless MERGE_FAKE_ANSWER names a file whose content to return.
+const FAKE_MERGE = path.join(tmp('merge-cli'), 'fake-merge.mjs')
+fs.writeFileSync(FAKE_MERGE, `
+import fs from 'node:fs'
+const file = process.env.MERGE_FAKE_ANSWER
+let input = ''
+process.stdin.on('data', (d) => { input += d })
+process.stdin.on('end', () => {
+  if (process.env.MERGE_FAKE_LOG) fs.appendFileSync(process.env.MERGE_FAKE_LOG, input + '\\n----\\n')
+  if (!file) { process.stdout.write('CONFLICT: the test says no\\n'); return }
+  process.stdout.write('\`\`\`\\n' + fs.readFileSync(file, 'utf8') + '\`\`\`\\n')
+})
+`)
+process.env.QUILT_MERGE_CMD = `${process.execPath} ${FAKE_MERGE}`
+
+/** Bob leaves, both sides edit, bob returns. Returns bob's new session. */
+async function rejoinAfter (t, { A, B, dirA, dirB, room }, { bob = {}, alice = {} } = {}) {
+  await close(B)
+  for (const [rel, text] of Object.entries(bob)) text === null ? fs.rmSync(path.join(dirB, rel)) : write(dirB, rel, text)
+  for (const [rel, text] of Object.entries(alice)) text === null ? fs.rmSync(path.join(dirA, rel)) : write(dirA, rel, text)
+  for (const rel of Object.keys(alice)) await waitFor(() => A.sharedKey(rel) === (alice[rel] === null ? undefined : alice[rel]))
+  return open(t, dirB, 'bob', { room })
+}
+
 before(async () => {
   // Every test opens a room of its own, more than the relay lets one address start per hour.
   srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, maxNewRoomsPerHour: 0 })
@@ -353,25 +378,124 @@ test('relay rejects file access with the wrong secret', async (t) => {
   assert.equal(res.status, 401)
 })
 
-test('offline edits merge when a client comes back', async (t) => {
-  let { A, B, dirA, dirB, room } = await pair(t)
+test('offline edits to different lines merge when a client comes back', async (t) => {
+  const p = await pair(t)
+  const { A, dirA, dirB } = p
   write(dirA, 'offline.txt', 'top\nmiddle\nbottom\n')
   await waitFor(() => read(dirB, 'offline.txt') === 'top\nmiddle\nbottom\n')
-  await close(B)
+  await close(p.B)
   const note = path.join(tmp('note'), 'while-away.txt')
   fs.writeFileSync(note, 'sent while bob was offline')
   const sentAway = await A.sendFile(note, { to: 'bob' })
   write(dirB, 'offline.txt', 'top (bob offline)\nmiddle\nbottom\n')
   write(dirB, 'bob-only.txt', 'made on a plane\n')
   write(dirA, 'offline.txt', 'top\nmiddle\nbottom (alice)\n')
-  // Alice's edit is in the shared doc before bob returns, so both sides really diverged.
   await waitFor(() => A.files.get('offline.txt').toString() === 'top\nmiddle\nbottom (alice)\n')
-  B = await open(t, dirB, 'bob', { room })
+  const B = await open(t, dirB, 'bob', { room: p.room })
   const expected = 'top (bob offline)\nmiddle\nbottom (alice)\n'
   await waitFor(() => read(dirA, 'offline.txt') === expected && read(dirB, 'offline.txt') === expected)
   await waitFor(() => read(dirA, 'bob-only.txt') === 'made on a plane\n')
+  assert.deepEqual(B.mergeList(), [], 'a clean merge opens no record')
   const got = await waitFor(() => B.messages({ markRead: false }).find((m) => m.id === sentAway.id)?.file.localPath)
   assert.equal(read(dirB, got), 'sent while bob was offline')
+})
+
+test('offline edits to the same lines open a merge conflict and keep the session version', async (t) => {
+  const p = await pair(t, { 'same.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'same.txt') === 'top\nmiddle\nbottom\n')
+  const B = await rejoinAfter(t, p, { bob: { 'same.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'same.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'same.txt'))
+  assert.equal(rec.kind, 'conflict')
+  assert.equal(rec.state, 'open')
+  assert.equal(rec.by, 'bob')
+  assert.deepEqual(rec.others, ['alice'])
+  assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n')
+  assert.equal(rec.base, 'top\nmiddle\nbottom\n')
+  assert.match(rec.reason, /the test says no/)
+  assert.equal(read(p.dirB, 'same.txt'), 'top\nmiddle (alice)\nbottom\n', "the session's version is on bob's disk")
+  assert.equal(read(p.dirA, 'same.txt'), 'top\nmiddle (alice)\nbottom\n', 'alice is not disturbed')
+  assert.equal(read(path.join(p.dirB, '.quilt', 'merges', rec.id), 'ours'), 'top\nmiddle (bob)\nbottom\n')
+  await waitFor(() => p.A.mergeList().some((m) => m.id === rec.id)) // alice sees the record too
+})
+
+test('the AI merges overlapping edits when it can, and the result is listed for review', async (t) => {
+  const p = await pair(t, { 'ai.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'ai.txt') === 'top\nmiddle\nbottom\n')
+  const answer = path.join(tmp('answer'), 'merged.txt')
+  fs.writeFileSync(answer, 'top\nmiddle (bob and alice)\nbottom\n')
+  const log = path.join(tmp('log'), 'calls.txt')
+  process.env.MERGE_FAKE_ANSWER = answer
+  process.env.MERGE_FAKE_LOG = log
+  t.after(() => { delete process.env.MERGE_FAKE_ANSWER; delete process.env.MERGE_FAKE_LOG })
+  const B = await rejoinAfter(t, p, { bob: { 'ai.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'ai.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  await waitFor(() => read(p.dirA, 'ai.txt') === 'top\nmiddle (bob and alice)\nbottom\n' && read(p.dirB, 'ai.txt') === 'top\nmiddle (bob and alice)\nbottom\n')
+  const rec = B.mergeList().find((m) => m.path === 'ai.txt')
+  assert.equal(rec.kind, 'ai')
+  assert.equal(rec.state, 'open')
+  const prompt = fs.readFileSync(log, 'utf8')
+  assert.match(prompt, /middle \(bob\)/)
+  assert.match(prompt, /middle \(alice\)/)
+  assert.match(prompt, /alice/)
+})
+
+test('a file deleted offline but changed in the session is a conflict, and stays', async (t) => {
+  const p = await pair(t, { 'gone.txt': 'keep me\n' })
+  await waitFor(() => read(p.dirB, 'gone.txt') === 'keep me\n')
+  const B = await rejoinAfter(t, p, { bob: { 'gone.txt': null }, alice: { 'gone.txt': 'keep me, edited\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'gone.txt'))
+  assert.equal(rec.kind, 'conflict')
+  assert.equal(rec.ours, null)
+  assert.equal(read(p.dirB, 'gone.txt'), 'keep me, edited\n')
+  assert.equal(read(p.dirA, 'gone.txt'), 'keep me, edited\n')
+})
+
+test('a file changed offline but deleted in the session is a conflict; ours waits in .quilt/merges', async (t) => {
+  const p = await pair(t, { 'bye.txt': 'original\n' })
+  await waitFor(() => read(p.dirB, 'bye.txt') === 'original\n')
+  const B = await rejoinAfter(t, p, { bob: { 'bye.txt': 'original, plus bob\n' }, alice: { 'bye.txt': null } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'bye.txt'))
+  assert.equal(rec.ours, 'original, plus bob\n')
+  assert.equal(rec.theirsHash, null)
+  assert.equal(read(p.dirB, 'bye.txt'), null, 'the session deleted it, so it is gone until someone chooses it')
+  assert.equal(read(path.join(p.dirB, '.quilt', 'merges', rec.id), 'ours'), 'original, plus bob\n')
+})
+
+test('a binary changed on both sides is a conflict without asking the AI', async (t) => {
+  const bin = (n) => Buffer.from([0, 1, 2, n, 0, 255])
+  const p = await pair(t)
+  fs.writeFileSync(path.join(p.dirA, 'pic.bin'), bin(3))
+  await waitFor(() => fs.existsSync(path.join(p.dirB, 'pic.bin')))
+  await close(p.B)
+  fs.writeFileSync(path.join(p.dirB, 'pic.bin'), bin(4))
+  fs.writeFileSync(path.join(p.dirA, 'pic.bin'), bin(5))
+  await waitFor(() => p.A.blobs.get('pic.bin')?.hash !== undefined && Buffer.from(p.A.blobs.get('pic.bin').data, 'base64').equals(bin(5)))
+  const B = await open(t, p.dirB, 'bob', { room: p.room })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'pic.bin'))
+  assert.equal(rec.binary, true)
+  assert.equal(rec.ours, null)
+  assert.ok(fs.readFileSync(path.join(p.dirB, 'pic.bin')).equals(bin(5)))
+  assert.ok(fs.readFileSync(path.join(p.dirB, '.quilt', 'merges', rec.id, 'ours')).equals(bin(4)))
+})
+
+test('offline edits to a file someone else claimed wait as a claimed merge', async (t) => {
+  const p = await pair(t, { 'locked.txt': 'original\n' })
+  await waitFor(() => read(p.dirB, 'locked.txt') === 'original\n')
+  await p.A.claim('locked.txt', 'mine for now')
+  await waitFor(() => p.B.claimFor('locked.txt'))
+  const B = await rejoinAfter(t, p, { bob: { 'locked.txt': 'original\nbob added this\n' }, alice: { 'locked.txt': 'original, alice\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'locked.txt'))
+  assert.equal(rec.kind, 'claimed')
+  assert.equal(rec.claimedBy, 'alice')
+  assert.equal(read(p.dirB, 'locked.txt'), 'original, alice\n')
+  assert.equal(fs.existsSync(path.join(p.dirB, '.quilt', 'rejected')), false, 'not dumped in rejected any more')
+})
+
+test('a file only bob changed offline is pushed, not merged', async (t) => {
+  const p = await pair(t, { 'solo.txt': 'one\n' })
+  await waitFor(() => read(p.dirB, 'solo.txt') === 'one\n')
+  const B = await rejoinAfter(t, p, { bob: { 'solo.txt': 'one\ntwo\n' } })
+  await waitFor(() => read(p.dirA, 'solo.txt') === 'one\ntwo\n')
+  assert.deepEqual(B.mergeList(), [])
 })
 
 test('first join backs up conflicting local files and takes the session version', async (t) => {
@@ -507,6 +631,7 @@ test('on rejoin, a shared change that never reached the disk is taken, not pushe
   await waitFor(() => read(dirA, 'after.txt') === 'bob')
   assert.equal(A.sharedKey('stale.txt'), 'v2\n')
   assert.equal(read(dirA, 'stale.txt'), 'v2\n')
+  assert.equal(fs.existsSync(path.join(dirB, '.quilt', 'conflicts')), false, 'the stale copy is not kept as a conflict')
 })
 
 test('on rejoin, a shared file that could not be written is written, not deleted from the room', async (t) => {
