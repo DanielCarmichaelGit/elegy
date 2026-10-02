@@ -11,7 +11,7 @@ nothing else is.
 
 ## 0.3.5 — 2026-10-02
 
-Access types, and invites that let people straight in.
+Access types and invites that let people straight in, agents that wake up when you mention them or hand them a task, and a chronology of every change.
 
 - **Access types.** Decide once what someone may do, then reuse it: edit or view, which folders, and whether they may chat and post to the feed. Every account has **Can edit** and **View only**; make your own on heyquilt.com under **Access types**.
 - **Let people in as a type.** When someone asks to join, pick their access type and click **Let in**. Later, the people menu (under **Who can get in**) changes their type, or narrows it for this session only: view only, folders taken away, or no posting. It never gives more than the type.
@@ -19,19 +19,19 @@ Access types, and invites that let people straight in.
 - **No posting means no posting.** Someone whose access says they may not post sees the chat but can't send to it or share their AI chat, and the relay undoes posts from older apps.
 - **For agents too.** Agents you invite, including cloud agents on `api.heyquilt.com/mcp`, get the same access types, and the relay holds them to it.
 - **Claude Code hooks are your own.** Quilt now writes its claim-as-you-edit hooks to `.claude/settings.local.json`, which it never syncs or commits, instead of the project's shared `.claude/settings.json`. Joining a session no longer leaves a new file in your repo. A refused edit still tells Claude who holds the file and to message them, and the holder's Claude is asked to answer before it finishes.
-
-## 0.3.4 — 2026-10-02
-
-Agents prove a ticket works and see what changed first, two AIs can no longer overwrite each other, sessions are named, and Quilt keeps track of what goes wrong.
-
-- **Sessions are named.** A new session takes its folder's name. Its owner can rename it with **Rename session…** in the session menu, and everyone sees the new name, in the app and on heyquilt.com.
-- **Your sessions on heyquilt.com.** The dashboard lists the sessions you've been in, your time in each, and the people and agents you worked with, with your time together.
 - **A chronology of every change.** Quilt now keeps who changed which file, when, what changed (a diff) and which task it was for, for your edits and for hosted agents' alike. Agents read it with the `quilt_history` tool (by file, folder, glob, person, task or time, with diffs on request); you can run `quilt history` in a terminal.
 - **Picking up a ticket briefs the agent.** Moving a task to In progress now answers with the task's files, the recent changes to them, who holds claims on them, the grok → plan → build → test workflow and this project's own checks.
 - **Done needs evidence.** An agent moving a task to Done through Quilt's tools must say what it ran and what it saw; "tested" is refused. The evidence shows on the card and in `quilt_tasks`, and is cleared if the task is reopened. Moving cards in the app is unchanged.
 - **Your project's own checks.** `quilt setup` adds a "Verifying a change" section to AGENTS.md for you to fill in (run the suite, launch the app, the things tests do not catch). Agents get it when they pick up a ticket and when a Done is refused.
 - **Agents wake up when they are needed.** Mention an agent in chat (`@Larry …`), send it a direct message, or hand it a task on the board, and it is told: every tool reads what is waiting with the new `quilt_inbox` tool, Claude Code's hooks show it while Claude works and before it finishes, and Claude Code started with Quilt as a channel (`claude --dangerously-load-development-channels server:quilt`) gets each one as a turn of its own, with nobody typing a prompt.
 - **Agents are told to update.** Every Quilt MCP knows the newest release. An agent whose Quilt is behind sees "You must update your app" in every answer, and `quilt_check_update` answers for any version it names (hosted agents send theirs as the `x-quilt-image` header).
+
+## 0.3.4 — 2026-10-02
+
+Two AIs can no longer overwrite each other, sessions are named, and Quilt keeps track of what goes wrong.
+
+- **Sessions are named.** A new session takes its folder's name. Its owner can rename it with **Rename session…** in the session menu, and everyone sees the new name, in the app and on heyquilt.com.
+- **Your sessions on heyquilt.com.** The dashboard lists the sessions you've been in, your time in each, and the people and agents you worked with, with your time together.
 - **Quilt notices problems.** The app tells Quilt which actions you take (not what you read), whether they worked and how long they took, with the error message when something fails, your app version and OS. Never your files, your chats or your links. Turn it off in Settings under **Send problem reports to Quilt**.
 - **Two AIs can't edit the same file at once.** In Claude Code, Quilt now claims a file for you the moment your AI edits it and releases the claim when it finishes, so nobody has to remember `quilt_claim`. If a collaborator holds the file, the edit is refused before it happens, and your AI is told to message them with what it wanted to change. Their AI sees the message while it works and is asked to answer before it finishes. The hooks live in the project's `.claude/settings.json`, added when a session starts, so everyone follows the same rule.
 
