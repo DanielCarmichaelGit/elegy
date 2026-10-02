@@ -89,13 +89,22 @@ class Room {
     this.meta = {}
     this.bytes = 0
     this.full = false
+    this.unsavable = false // a disk error stopped a save: the room is read-only (see diskError)
     if (dataDir) {
-      if (fs.existsSync(this.docFile)) {
-        const buf = fs.readFileSync(this.docFile)
-        Y.applyUpdate(this.doc, buf)
-        this.bytes = buf.length
+      // A room whose files can't be read (cut off by a crash, or a disk error) is refused,
+      // not treated as new: that would overwrite it, or let the sweep delete it.
+      try {
+        if (fs.existsSync(this.docFile)) {
+          const buf = fs.readFileSync(this.docFile)
+          Y.applyUpdate(this.doc, buf)
+          this.bytes = buf.length
+        }
+        if (fs.existsSync(this.metaFile)) this.meta = JSON.parse(fs.readFileSync(this.metaFile, 'utf8'))
+      } catch (err) {
+        this.awareness.destroy()
+        this.doc.destroy()
+        throw Object.assign(new Error(`could not read the session's data: ${err.message}`), { unreadable: true })
       }
-      if (fs.existsSync(this.metaFile)) this.meta = JSON.parse(fs.readFileSync(this.metaFile, 'utf8'))
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
@@ -147,13 +156,15 @@ class Room {
   /**
    * First client to open a room sets its secrets; later clients must match one.
    * Returns 'editor' or 'viewer' (what the secret invites you as), 'bad-secret'
-   * or 'need-key' (creating rooms needs the relay key).
+   * or 'need-key' (creating rooms needs the relay key). `publicKey` is the
+   * creator's: in a controlled room, only they can become its owner.
    */
-  authorize (secret, key, viewSecret = '') {
+  authorize (secret, key, viewSecret = '', publicKey = '') {
     if (!this.meta.secretHash) {
       if (this.cfg.relayKey && !sameSecret(hash(key || ''), hash(this.cfg.relayKey))) return 'need-key'
       this.meta.secretHash = hash(secret || '').toString('hex')
       if (viewSecret) this.meta.viewSecretHash = hash(viewSecret).toString('hex')
+      if (publicKey) this.meta.creator = publicKey
       this.meta.createdAt = Date.now()
       this.touch()
       return 'editor'
@@ -170,7 +181,13 @@ class Room {
    */
   accessFor (key, name, kind, invitedAs, account = '') {
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false }
-    if (!this.meta.owner) { this.meta.owner = key; this.saveMeta() } // the room's creator signs in first
+    if (!this.meta.owner) {
+      // The room's creator becomes its owner when they sign in, and nobody else, however much
+      // earlier they get here: until then invitees wait. (Rooms made before creators were
+      // recorded, with nobody signed in yet, go to the first person invited to edit.)
+      const creator = this.meta.creator
+      if (creator ? key === creator : invitedAs === 'editor') { this.meta.owner = key; this.saveMeta() }
+    }
     if (account) this.noteKey(account, key)
     if (this.isOwner(key, account)) {
       if (account) {
@@ -483,8 +500,23 @@ class Room {
   }
 
   saveMeta () {
-    if (this.ended) return
-    if (this.metaFile) fs.writeFileSync(this.metaFile, JSON.stringify(this.meta))
+    if (this.ended || !this.metaFile) return
+    // Written whole, then renamed: a crash mid-write leaves the old file, never a cut-off one.
+    try {
+      const tmp = this.metaFile + '.tmp'
+      fs.writeFileSync(tmp, JSON.stringify(this.meta))
+      fs.renameSync(tmp, this.metaFile)
+    } catch (err) { this.diskError(err) }
+  }
+
+  /**
+   * A save failed (the disk is full, or not writable). The relay stays up and the
+   * room stays readable, but takes no new changes rather than losing them quietly.
+   */
+  diskError (err) {
+    if (!this.unsavable) this.log(`[${this.name}] could not save the session (${err.message}); it is read-only until the relay's disk is fixed and it is reloaded`)
+    this.unsavable = true
+    this.full = true
   }
 
   scheduleSave () {
@@ -499,9 +531,11 @@ class Room {
     if (!this.docFile || !this.exists) return
     const state = Y.encodeStateAsUpdate(this.doc)
     this.bytes = state.length
-    const tmp = this.docFile + '.tmp'
-    fs.writeFileSync(tmp, state)
-    fs.renameSync(tmp, this.docFile)
+    try {
+      const tmp = this.docFile + '.tmp'
+      fs.writeFileSync(tmp, state)
+      fs.renameSync(tmp, this.docFile)
+    } catch (err) { this.diskError(err) }
   }
 
   /**
@@ -728,12 +762,24 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     return true
   }
 
-  /** The room, loading it if needed; null if it's too big to load. */
+  const unreadable = new Set() // stored rooms whose files could not be read, until they can
+  /** Why getRoom gave null: the HTTP status and message to refuse with. */
+  const refused = (name) => unreadable.has(name) ? [503, UNREADABLE] : [413, TOO_BIG]
+
+  /** The room, loading it if needed; null if it's too big to load, or its files can't be read. */
   const getRoom = (name) => {
     let room = rooms.get(name)
     if (!room) {
       if (tooBigToLoad(name)) return null
-      room = new Room(name, dataDir, cfg, log)
+      try {
+        room = new Room(name, dataDir, cfg, log)
+      } catch (err) {
+        if (!err.unreadable) throw err
+        // Logged once, not on every retry; tried again each time, in case the operator repaired it.
+        if (!unreadable.has(name)) { unreadable.add(name); log(`[${name}] ${err.message}; refusing it, and leaving its files alone`) }
+        return null
+      }
+      unreadable.delete(name)
       rooms.set(name, room)
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
@@ -757,7 +803,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         // A tombstone keeps the room refused for good, instead of letting a new one start under the same name.
         if (dataDir) {
           const now = Date.now()
-          fs.writeFileSync(path.join(dataDir, `${name}.json`), JSON.stringify({ ended: true, endedAt: now, lastActive: now }))
+          try {
+            fs.writeFileSync(path.join(dataDir, `${name}.json`), JSON.stringify({ ended: true, endedAt: now, lastActive: now }))
+          } catch (err) { log(`[${name}] could not write its tombstone: ${err.message}`) }
         }
         log(`[${name}] ended by its owner`)
       }
@@ -803,11 +851,13 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const storedBytes = (room) => Object.values(room.meta.blobs || {}).reduce((n, b) => n + (b.size || 0), 0)
   /** Deletes everything a room left on the relay and in storage. */
   const removeRoomData = (name) => {
-    if (dataDir) {
-      fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
-      fs.rmSync(path.join(dataDir, `${name}.json`), { force: true })
-    }
-    fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+    try {
+      if (dataDir) {
+        fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
+        fs.rmSync(path.join(dataDir, `${name}.json`), { force: true })
+      }
+      fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
+    } catch (err) { log(`[${name}] could not delete its files: ${err.message}`) }
     store.removeRoom(name).catch((err) => log(`[${name}] could not delete stored files: ${err.message}`))
   }
   /** Deletes stored files nothing points at any more (a day's grace for uploads in flight, or apps still offline). */
@@ -858,7 +908,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
         if (roomEnded(roomName)) return text(410, ENDED_MESSAGE)
         const room = getRoom(roomName)
-        if (!room) return text(413, TOO_BIG)
+        if (!room) return text(...refused(roomName))
         if (!room.exists || room.authorize(String(secret || ''), '') !== 'editor') { dropIfUnused(room); return text(403, 'wrong room secret') }
         if (!room.conns.size) room.onEmpty && room.onEmpty()
         const k = tokenKey(token)
@@ -879,7 +929,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       let room = null
       if (link) {
         room = getRoom(link.room)
-        if (!room) return text(413, TOO_BIG)
+        if (!room) return text(...refused(link.room))
         if (!room.exists) { dropIfUnused(room); room = null } else {
           link.aiSeenAt = Date.now()
           saveLinks()
@@ -909,7 +959,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (!pass) return text(401, SIGN_IN)
       const starter = starterOf(pass, req)
       const room = getRoom(name)
-      if (!room) return text(413, TOO_BIG)
+      if (!room) return text(...refused(name))
       const creating = !room.exists
       if (creating && !canCreate(starter)) { dropIfUnused(room); return text(429, TOO_MANY) }
       const auth = room.authorize(req.headers['x-quilt-secret'] || '', req.headers['x-quilt-key'] || '')
@@ -953,7 +1003,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!pass) return text(401, SIGN_IN)
     const starter = starterOf(pass, req)
     const room = getRoom(name)
-    if (!room) return text(413, TOO_BIG)
+    if (!room) return text(...refused(name))
     const creating = !room.exists
     if (creating && !canCreate(starter)) { dropIfUnused(room); return text(429, TOO_MANY) }
     const auth = room.authorize(req.headers['x-quilt-secret'] || req.headers['x-cowove-secret'] || '', req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || '')
@@ -988,28 +1038,35 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     } catch {
       return reject(socket, 400, 'Bad room name')
     }
-    const secret = url.searchParams.get('secret') || ''
+    // Secrets come in headers, which proxies don't log; the query string is only still read
+    // for clients from before 0.3.2, and goes away in the release after. Never log req.url.
+    const header = (n) => (req.headers[n] === undefined ? '' : String(req.headers[n]))
+    const secret = header('x-quilt-secret') || url.searchParams.get('secret') || ''
     const publicKey = url.searchParams.get('key') || ''
-    const relayKey = url.searchParams.get('relayKey') || req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || ''
-    const viewSecret = url.searchParams.get('viewSecret') || ''
+    const relayKey = header('x-quilt-key') || header('x-cowove-key') || url.searchParams.get('relayKey') || ''
+    const viewSecret = header('x-quilt-view-secret') || url.searchParams.get('viewSecret') || ''
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
     // With sign-in on, nobody gets further without a pass, and who they are comes from it.
-    const pass = passKey ? verifyPass(url.searchParams.get('pass') || '', passKey) : null
+    const pass = passKey ? verifyPass(header('x-quilt-pass') || url.searchParams.get('pass') || '', passKey) : null
     if (passKey && (!pass || pass.key !== publicKey)) return reject(socket, 401, SIGN_IN)
     const person = pass ? pass.name : (url.searchParams.get('name') || '').trim()
     const kind = pass ? (pass.kind === 'agent' ? 'agent' : 'human') : (url.searchParams.get('kind') === 'agent' ? 'agent' : 'human')
     // People and agents come from different id spaces, so the kind is part of who they are.
     const account = pass ? `${pass.kind}:${pass.sub}` : ''
+    // Checked before the room is touched: a room's creator is recorded by this key (see authorize).
+    if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
+    const key = parsePublicKey(publicKey)
+    if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (roomEnded(name)) return reject(socket, 410, ENDED_MESSAGE)
     const ip = clientIp(req)
     const starter = pass ? account : ip
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
-    if (!room) return reject(socket, 413, TOO_BIG)
+    if (!room) return reject(socket, ...refused(name))
     const features = String(url.searchParams.get('features') || '').split(',')
     const creating = !room.exists
     if (creating && !canCreate(starter)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
-    const auth = room.authorize(secret, relayKey, viewSecret)
+    const auth = room.authorize(secret, relayKey, viewSecret, publicKey)
     if (creating && auth !== 'need-key' && auth !== 'bad-secret') noteCreated(starter)
     if (auth === 'need-key' || auth === 'bad-secret') {
       dropIfUnused(room)
@@ -1020,9 +1077,6 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (!room.conns.size && room.onEmpty) room.onEmpty() // don't keep it in memory for nobody
       return reject(socket, 400, NEEDS_UPDATE)
     }
-    if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
-    const key = parsePublicKey(publicKey)
-    if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!pass && !room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
     wss.handleUpgrade(req, socket, head, (ws) => {
       // A frame over maxPayload or a reset mid-frame is this socket's problem, not
@@ -1065,10 +1119,15 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       const name = f.slice(0, -5)
       if (!ROOM_RE.test(name)) continue
       if (rooms.has(name)) continue
+      let meta
       try {
-        const meta = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))
-        if ((meta.lastActive || meta.createdAt || 0) > cutoff) continue
-      } catch {}
+        meta = JSON.parse(fs.readFileSync(path.join(dataDir, f), 'utf8'))
+      } catch (err) {
+        // Never delete what can't be read: it may be a session cut off mid-write, for the operator to repair.
+        log(`[${name}] could not read its metadata (${err.message}); leaving it alone`)
+        continue
+      }
+      if ((meta.lastActive || meta.createdAt || 0) > cutoff) continue
       removeRoomData(name)
       removed++
     }
@@ -1122,10 +1181,13 @@ function readJson (req, limit, done) {
 }
 
 function receiveFile (req, dir, room, done) {
-  fs.mkdirSync(dir, { recursive: true })
   const id = crypto.randomBytes(16).toString('hex')
   const file = path.join(dir, id)
-  const out = fs.createWriteStream(file)
+  let out
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    out = fs.createWriteStream(file)
+  } catch { req.resume(); return done(Object.assign(new Error('could not save the file'), { code: 500 })) }
   const limit = Math.min(MAX_SHARED_FILE_BYTES, room)
   let size = 0
   let failed = false
@@ -1213,6 +1275,7 @@ function receiveBlob (req, file, limit, done) {
 }
 
 const TOO_BIG = 'Session over the size limit'
+const UNREADABLE = "This session's data can't be read on the relay right now"
 const ENDED_MESSAGE = 'The owner ended this session'
 const NEEDS_UPDATE = 'This session needs a newer version of Quilt. Update Quilt, then join again.'
 const SIGN_IN = 'Update Quilt and sign in to continue'

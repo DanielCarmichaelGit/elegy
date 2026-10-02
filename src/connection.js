@@ -18,7 +18,7 @@ const ROOM_FULL_MESSAGE = 'This session is over the relay\'s size limit, so new 
 
 const REQUEST_TIMEOUT_MS = 10000
 const IDENTITY_CHANGED = "This computer's Quilt identity changed. Sign out and sign in again."
-// Never quote the relay URL in errors: it carries the room secret and the session pass.
+// Never quote the relay URL in errors: it names the room, and older relays may log it.
 const BAD_ADDRESS = "Couldn't connect to the relay: the address isn't valid."
 // A pass that lapses this soon after connecting wasn't really valid: after a few in a
 // row, the clock is the likely culprit, and reconnecting won't help.
@@ -46,15 +46,16 @@ export class Connection extends EventEmitter {
   constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files', passes = null, passRefreshMs = PASS_REFRESH_MS }) {
     super()
     if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
-    // `key` (the relay key) is only needed to create a room on a relay that requires one.
-    const q = new URLSearchParams({ secret: secret || '', name, key: identity.publicKey, kind })
-    if (key) q.set('relayKey', key)
-    if (viewSecret) q.set('viewSecret', viewSecret)
+    // Secrets travel in headers, never in the URL: proxies log URLs, and Fly's did (issue 011).
+    // Only who we are stays in the query string. `key` (the relay key) is only needed to
+    // create a room on a relay that requires one.
+    const q = new URLSearchParams({ name, key: identity.publicKey, kind })
     if (features) q.set('features', features)
+    this.headers = { 'x-quilt-secret': secret || '' }
+    if (key) this.headers['x-quilt-key'] = key
+    if (viewSecret) this.headers['x-quilt-view-secret'] = viewSecret
     this.access = null // what the relay says we may do: { state, role, scopes, owner, controlled }
-    this.base = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}`
-    this.query = q
-    this.url = `${this.base}?${q}`
+    this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
     this.passes = passes
     this.passRefreshMs = passRefreshMs
     this.passTimer = null
@@ -87,7 +88,7 @@ export class Connection extends EventEmitter {
 
   connect () {
     if (this.closed) return
-    if (!this.passes) return this.open(this.url)
+    if (!this.passes) return this.open(this.headers)
     const getting = this.passStale ? this.passes.fresh() : this.passes.get()
     getting.then((pass) => {
       if (this.closed) return
@@ -100,10 +101,8 @@ export class Connection extends EventEmitter {
         this.emit('fatal', new Error(IDENTITY_CHANGED))
         return this.close()
       }
-      const q = new URLSearchParams(this.query)
-      q.set('pass', pass)
       this.emit('pass', this.passes.payload)
-      this.open(`${this.base}?${q}`)
+      this.open({ ...this.headers, 'x-quilt-pass': pass })
     }, (err) => {
       if (this.closed) return
       if (err.signedOut) {
@@ -116,10 +115,11 @@ export class Connection extends EventEmitter {
     })
   }
 
-  open (url) {
+  /** Opens the relay connection, sending the secrets (and the pass) as `headers`. */
+  open (headers) {
     let ws
     try {
-      ws = new WebSocket(url)
+      ws = new WebSocket(this.url, { headers })
     } catch {
       // Later, so whoever made this connection is listening (and never with ws's error, which quotes the URL).
       setImmediate(() => {
@@ -164,10 +164,13 @@ export class Connection extends EventEmitter {
       } else if (res.statusCode === 410) {
         this.emit('fatal', Object.assign(new Error(reason), { ended: true }))
         this.close()
-      } else if (res.statusCode === 429) {
-        this.emit('warn', 'relay says there are too many connections from this network; retrying')
       } else {
-        this.emit('warn', `relay responded ${reason}`)
+        // Not final (429, or a proxy's 502/503 while the relay restarts): end the handshake
+        // ourselves so `close` fires and the reconnect with backoff runs. With a listener on
+        // this event, ws leaves the request open otherwise, and nothing would ever retry.
+        this.emit('warn', res.statusCode === 429 ? 'relay says there are too many connections from this network; retrying' : `relay responded ${reason}; retrying`)
+        ws.retrying = true
+        ws.terminate()
       }
     })
 
