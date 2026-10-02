@@ -11,10 +11,12 @@ nothing else is.
 
 ## 0.3.3 — 2026-10-02
 
-Sessions have names, and heyquilt.com shows where you've been.
+Named sessions, your sessions on heyquilt.com, and Settings from inside a session.
 
 - **Sessions are named.** A new session takes its folder's name. Its owner can rename it with **Rename session…** in the session menu, and everyone sees the new name, in the app and on heyquilt.com.
 - **Your sessions on heyquilt.com.** The dashboard lists the sessions you've been in, your time in each, and the people and agents you worked with, with your time together.
+- **Settings without leaving your session.** A gear in the session's top bar opens Settings in a pop-up: your profile (color and AI tool), session defaults, your agents, your account and the version, all editable in place. Saving keeps the pop-up open; the sidebar's profile card follows.
+- **Update Quilt from About.** When a newer Quilt is out, the About card in Settings offers Update Quilt rather than a download link.
 
 ## 0.3.2 — 2026-10-02
 

@@ -122,7 +122,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
   const configFile = path.join(dir, '.quilt', 'config.json')
   // It holds the room secret: written privately and atomically (see private-file.js).
-  writePrivateJson(configFile, { ...conn, name, tool, inviteServer: inviteServer || undefined, shareAgent, summarize })
+  writePrivateJson(configFile, { ...conn, name, tool, kind, inviteServer: inviteServer || undefined, shareAgent, summarize })
   // Keeps the saved name in step with the pass's (the rest of the file may have changed since).
   const saveName = (name) => {
     try { writePrivateJson(configFile, { ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }) } catch {}
@@ -150,7 +150,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   if (session.name !== name) saveName(session.name)
   session.on('identity', ({ name }) => saveName(name))
   const control = await startControl(session, { invite, viewInvite, joined })
-  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool })
+  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind })
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.
   const readers = agentFeed
@@ -196,9 +196,10 @@ function ensureGitExclude (dir) {
 // Recently used folders, for the UI's "rejoin" list.
 const recentFile = () => path.join(quiltHome(), 'recent.json')
 
+/** A person's recent folders. An agent's own copies of rooms are its to rejoin, not the app's. */
 export function recentSessions () {
   try {
-    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => fs.existsSync(path.join(r.dir, '.quilt', 'config.json')))
+    return JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => r.kind !== 'agent' && fs.existsSync(path.join(r.dir, '.quilt', 'config.json')))
   } catch {
     return []
   }

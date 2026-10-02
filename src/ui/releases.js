@@ -50,7 +50,7 @@ async function startUpdate () {
 }
 
 /** The button that gets the newer Quilt: installs it in the desktop app, downloads it elsewhere. */
-function updateControl () {
+export function updateControl () {
   const r = state.release
   const download = `<a class="btn sm primary" href="${esc(r.downloadUrl)}" target="_blank" rel="noopener">${I.down}<span>Download</span></a>`
   if (!desktop()) return `<span class="update-ctl">${download}</span>`
