@@ -125,6 +125,34 @@ edit is the moment to ask for a folder. An editor demoted to view keeps
 their folder but syncing to it stops, and the app says so. See role
 handling in `src/session.js` (`access.role === 'viewer'`).
 
+**Security:** three attackers, two of them beatable.
+- *The viewer themself:* anything the app can show, the viewer can take
+  (screenshot, camera, or patching the Electron renderer to dump room
+  state). Encrypting content "whenever it's not on screen" doesn't change
+  that, because the viewer owns the machine doing the decrypting. Don't
+  promise "viewers can't leak"; make leaking slow, artifact-free and
+  attributable:
+  - Nothing on disk, ever: room state in memory only, renderer disk cache
+    off for file content, nothing in localStorage or logs.
+  - Watermark the view: the viewer's name and email faintly tiled over
+    rendered content, so screenshots carry it.
+  - Audit per file: the relay records which files each viewer opened; the
+    owner can see the list.
+  - No bulk path: viewers fetch one file on demand, throttled. No
+    download-all or export, so dumping a tree is slow and shows in the log.
+  - Scopes for viewers: owners limit a viewer to a folder or two, as edit
+    scopes already do.
+  - Soft blocks: no text selection, copy or context menu for viewers.
+    Easy to bypass; stops the casual case.
+- *A removed member or an old link:* rotate the room key on removal so a
+  kept secret opens nothing new; view tokens short-lived and tied to a
+  signed-in account.
+- *The relay, Fly, or a breach of either:* end-to-end encryption, as large
+  files already do (per-file keys wrapped under a key from the room
+  secret, relay holds ciphertext). Extending it to the text tree makes the
+  relay a dumb store with clients doing the merging, and the hosted MCP
+  and agents would hold a key like any client. A separate, larger project.
+
 ## Toasts stay while hovered, and can be copied
 **Status:** Idea
 **Unlocks:** A toast with something you need (an error, a path, an invite
