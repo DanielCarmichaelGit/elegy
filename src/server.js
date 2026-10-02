@@ -145,7 +145,8 @@ class Room {
       const changed = added.concat(updated, removed)
       if (origin && this.conns.has(origin)) {
         const ids = this.conns.get(origin)
-        for (const id of added) ids.add(id)
+        // Updated too: a client back from a drop speaks for the same id over a new connection.
+        for (const id of added.concat(updated)) ids.add(id)
         for (const id of removed) ids.delete(id)
       }
       const msg = awarenessMessage(this.awareness, changed)
@@ -503,6 +504,12 @@ class Room {
   }
 
   /** Presence may only describe the sender, under their verified name. */
+  samePerson (a, b) {
+    const x = this.access.get(a)
+    const y = this.access.get(b)
+    return !!(x && y && x.key === y.key && x.name === y.name)
+  }
+
   presenceAllowed (ws, update) {
     const name = this.names.get(ws)
     const dec = decoding.createDecoder(update)
@@ -511,7 +518,14 @@ class Room {
       const id = decoding.readVarUint(dec)
       decoding.readVarUint(dec) // clock
       const state = JSON.parse(decoding.readVarString(dec))
-      for (const [other, ids] of this.conns) if (other !== ws && ids.has(id)) return false
+      for (const [other, ids] of this.conns) {
+        if (other === ws || !ids.has(id)) continue
+        // The same person over a new connection: they're back from a drop the relay hasn't
+        // noticed yet (its heartbeat takes up to a minute). The old connection is dead; let
+        // it go now, or they'd stay unseen until it does.
+        if (this.samePerson(other, ws)) { ids.delete(id); other.terminate(); continue }
+        return false
+      }
       if (state !== null && state.name !== name) return false
     }
     return true
@@ -694,7 +708,12 @@ class Room {
       this.guard.trackedOrigins.delete(ws)
       this.broadcastMembers()
     }
-    if (ids && ids.size) awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null)
+    if (ids && ids.size) {
+      awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null)
+      // Forget their clocks too: back after a drop, a client sends the same state at the
+      // same clock, which would be ignored until its next renewal.
+      for (const id of ids) this.awareness.meta.delete(id)
+    }
     if (this.conns.size === 0) {
       this.save()
       this.touch()
