@@ -30,7 +30,7 @@ import {
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
-import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange } from './session-access.js'
+import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
 import { patternsOverlap } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
@@ -129,10 +129,15 @@ class Room {
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
-    // Undoes file changes from people who may not make them (viewers, and
-    // agents outside their folders). Only their connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys], { trackedOrigins: new Set(), captureTimeout: 0 })
+    this.chat = this.doc.getArray('chat')
+    this.feed = this.doc.getArray('agentFeed')
+    // Undoes changes from people who may not make them: file changes from viewers and from
+    // people outside their folders, and posts from people who may not post. Only their
+    // connections are tracked.
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
+    this.recorded = null // the change the guard recorded last, for checkChange
+    this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.recorded = stackItem })
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
@@ -312,6 +317,16 @@ class Room {
     return !!(this.meta.members[account] || this.meta.members[pass.key])
   }
 
+  /** With sign-in on: the relay access a pass has here over HTTP (null for the owner, or nobody). */
+  httpAccess (pass) {
+    const account = `${pass.kind}:${pass.sub}`
+    if (!this.controlled || (this.meta.owner && this.isOwner(pass.key, account))) return null
+    const granted = this.passGrant(pass)
+    if (granted) return relayAccess(granted)
+    const m = this.meta.members[account] || this.meta.members[pass.key]
+    return m ? memberAccess(m) : null
+  }
+
   /** The id the member list shows the owner under. */
   get ownerId () { return this.meta.ownerSub || this.meta.owner }
 
@@ -387,7 +402,12 @@ class Room {
     const a = this.access.get(ws)
     const touched = new Set()
     const refused = []
+    const posts = [] // chat and the feed, for people who may not post
     for (const [type, events] of tr.changedParentTypes) {
+      if (type === this.chat || type === this.feed) {
+        if (a?.talk === false) posts.push(type === this.chat ? 'chat' : 'the feed')
+        continue
+      }
       if (type === this.fileKeys) {
         // Keys to stored files: viewers may not touch them, and others may
         // only add new ones, so nobody can lock people out of stored files.
@@ -408,24 +428,38 @@ class Room {
         }
       }
     }
-    refused.push(...[...touched].filter((rel) => !this.mayWrite(a, rel)))
-    if (!refused.length) { queueMicrotask(() => this.guard.clear()); return true }
+    refused.push(...[...touched].filter((rel) => !this.mayWrite(a, rel)), ...posts)
+    // The guard recorded this change just before this 'update' (its stack-item-added): only
+    // that one is kept or undone, never another change that arrived in the same moment.
+    const item = this.recorded
+    this.recorded = null
+    if (!refused.length) { this.forget(item); return true }
     this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
     queueMicrotask(() => {
       // Send the change and its undo as one update: nobody sees the change,
       // and nobody is left missing part of this person's history.
+      const others = this.guard.undoStack.filter((x) => x !== item)
+      this.guard.undoStack = item ? [item] : []
       this.undoing = []
       try { this.guard.undo() } finally {
+        this.guard.undoStack = others
+        this.guard.redoStack = []
         const merged = Y.mergeUpdates([update, ...this.undoing])
         this.undoing = null
         const msg = updateMessage(merged)
         for (const other of this.conns.keys()) send(other, msg)
       }
-      this.guard.clear()
-      const why = a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
+      const why = posts.length === refused.length ? TALK_WHY
+        : a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
       send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refused: refused.slice(0, 20), why }))
     })
     return false
+  }
+
+  /** An allowed change: the guard never needs to undo it. */
+  forget (item) {
+    const i = item ? this.guard.undoStack.indexOf(item) : -1
+    if (i >= 0) this.guard.undoStack.splice(i, 1)
   }
 
   /** Can this connection's app handle the session as it is now? */
@@ -881,6 +915,7 @@ class Room {
   }
 }
 
+const TALK_WHY = "you can't post in this session"
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
 
 /** A saved member's access, in the relay's shape (members saved before access types may talk and have no exceptions). */
@@ -1244,6 +1279,11 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) {
+      // A chat file is a post: someone who may not post may not send one.
+      if (passKey && room.httpAccess(pass)?.talk === false) {
+        if (!room.conns.size && room.onEmpty) room.onEmpty()
+        return text(403, TALK_REFUSED)
+      }
       // Chat files and stored large files share one quota.
       const used = dirSize(dir) + storedBytes(room)
       const incoming = Number(req.headers['content-length'] || 0)
