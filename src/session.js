@@ -530,7 +530,7 @@ export class Session extends EventEmitter {
         } catch (err) {
           this.merging.delete(e.rel)
           this.log(`could not merge ${e.rel}: ${err.message}`)
-          this.setAside(e.rel)
+          if (this.setAside(e.rel)) held.delete(e.rel) // ours is in .quilt/conflicts: nothing left to merge
           counts.conflict++
         }
         this.saveHeldBases([...held.values()])
@@ -560,6 +560,7 @@ export class Session extends EventEmitter {
   /**
    * A merge that failed part way: ours goes to .quilt/conflicts and the
    * session's version onto the disk, so a later edit never pushes ours raw.
+   * True when it did both.
    */
   setAside (rel) {
     try {
@@ -568,9 +569,10 @@ export class Session extends EventEmitter {
         this.keepConflict(rel, disk)
         this.lastKnown.set(rel, disk.key) // already kept: writeOut needn't copy it again
       }
-      this.tryWrite(rel)
+      return this.tryWrite(rel)
     } catch (err) {
       this.log(`could not put the session's version of ${rel} back: ${err.message}`)
+      return false
     }
   }
 
@@ -585,7 +587,10 @@ export class Session extends EventEmitter {
     const ours = disk ? disk.key : null // re-read: it may have changed again before the relay synced
     const theirs = this.sharedKey(rel)
     const theirsBy = this.lastEditorOf(rel)
-    if (theirs === base) { release(); return this.ingest(rel) ? 'pushed' : null } // nobody else touched it
+    // Claimed by someone else meanwhile: a record, even if they haven't changed it yet (ingest would reject it).
+    const claim = this.claimFor(rel)
+    const claimedByOther = claim && claim.by !== this.name
+    if (theirs === base && !claimedByOther) { release(); return this.ingest(rel) ? 'pushed' : null } // nobody else touched it
     if (ours === theirs || (ours === null && theirs === undefined)) {
       release()
       if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
@@ -598,9 +603,8 @@ export class Session extends EventEmitter {
       this.tryWrite(rel)
       return null
     }
-    const claim = this.claimFor(rel)
     const binary = [base, ours, theirs].some((k) => typeof k === 'string' && k.startsWith('bin:'))
-    if (claim && claim.by !== this.name) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'claimed', claimedBy: claim.by, binary })
+    if (claimedByOther) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'claimed', claimedBy: claim.by, binary })
     if (binary || ours === null || theirs === undefined) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', binary })
     const { text, conflicts } = merge3(base || '', ours, theirs)
     if (!conflicts.length) {
@@ -625,7 +629,13 @@ export class Session extends EventEmitter {
       if (onDisk && onDisk.key !== undefined && onDisk.key !== ours) this.keepConflict(rel, onDisk)
       // The record first, so an applied AI merge always has one to review.
       const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [theirsBy] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false }, LOCAL)
-      this.writeMergeFiles(rec.id, { base, ours, theirs })
+      // The local copies are for Send to… and review; the record already has
+      // ours (an "ai" record is never local), so a failed write mustn't stop the merge it describes.
+      try {
+        this.writeMergeFiles(rec.id, { base, ours, theirs })
+      } catch (err) {
+        this.log(`could not keep the versions of ${rel} under .quilt/merges: ${err.message}`)
+      }
       this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`)
       release()
       return 'ai'

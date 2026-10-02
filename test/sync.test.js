@@ -441,6 +441,23 @@ test('the AI merges overlapping edits when it can, and the result is listed for 
   assert.match(prompt, /alice/)
 })
 
+test('an AI merge is still applied when its local copies cannot be written, so its record is true', async (t) => {
+  const p = await pair(t, { 'aidisk.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'aidisk.txt') === 'top\nmiddle\nbottom\n')
+  const answer = path.join(tmp('answer'), 'merged.txt')
+  fs.writeFileSync(answer, 'top\nmiddle (bob and alice)\nbottom\n')
+  process.env.MERGE_FAKE_ANSWER = answer
+  const real = Session.prototype.writeMergeFiles
+  Session.prototype.writeMergeFiles = function () { throw new Error('disk full (test)') }
+  t.after(() => { delete process.env.MERGE_FAKE_ANSWER; Session.prototype.writeMergeFiles = real })
+  const B = await rejoinAfter(t, p, { bob: { 'aidisk.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'aidisk.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  await waitFor(() => read(p.dirA, 'aidisk.txt') === 'top\nmiddle (bob and alice)\nbottom\n' && read(p.dirB, 'aidisk.txt') === 'top\nmiddle (bob and alice)\nbottom\n')
+  const rec = B.mergeList().find((m) => m.path === 'aidisk.txt')
+  assert.equal(rec.kind, 'ai')
+  assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n', 'the record still has the offline version for review')
+  assert.equal(fs.existsSync(path.join(p.dirB, '.quilt', 'conflicts')), false, 'not set aside as a failed merge')
+})
+
 test('a merge interrupted by quitting keeps its base, and the next start merges from it', async (t) => {
   const p = await pair(t, { 'quit.txt': 'top\nmiddle\nbottom\n' })
   await waitFor(() => read(p.dirB, 'quit.txt') === 'top\nmiddle\nbottom\n')
@@ -494,7 +511,7 @@ test('a large file the session deleted while away is not downloaded, and nothing
   await new Promise((resolve) => setImmediate(resolve)) // an unhandled rejection would surface here
 })
 
-test('a merge that fails part way keeps ours in conflicts, puts the session version back, and keeps its base', async (t) => {
+test('a merge that fails part way keeps ours in conflicts, puts the session version back, and forgets its base', async (t) => {
   const p = await pair(t, { 'boom.txt': 'top\nmiddle\nbottom\n' })
   await waitFor(() => read(p.dirB, 'boom.txt') === 'top\nmiddle\nbottom\n')
   const real = Session.prototype.writeMergeFiles
@@ -505,7 +522,8 @@ test('a merge that fails part way keeps ours in conflicts, puts the session vers
   const conflicts = path.join(p.dirB, '.quilt', 'conflicts')
   const kept = fs.readdirSync(conflicts).map((d) => read(path.join(conflicts, d), 'boom.txt'))
   assert.deepEqual(kept, ['top\nmiddle (bob)\nbottom\n'])
-  assert.deepEqual(JSON.parse(read(path.join(p.dirB, '.quilt'), 'merging.json')), { 'boom.txt': 'top\nmiddle\nbottom\n' })
+  // Set aside, it no longer waits to be merged: no stale base is left for the next start.
+  assert.equal(read(path.join(p.dirB, '.quilt'), 'merging.json'), null)
   assert.equal(read(p.dirA, 'boom.txt'), 'top\nmiddle (alice)\nbottom\n', "bob's version was not pushed")
   assert.equal(B.merging.size, 0)
 })
@@ -520,6 +538,21 @@ test('a file claimed while bob was away becomes a claimed merge', async (t) => {
   assert.equal(rec.kind, 'claimed')
   assert.equal(rec.claimedBy, 'alice')
   assert.equal(read(p.dirB, 'later.txt'), 'original, alice\n')
+})
+
+test('a file claimed while bob was away, but not changed, still becomes a claimed merge', async (t) => {
+  const p = await pair(t, { 'quiet.txt': 'original\n' })
+  await waitFor(() => read(p.dirB, 'quiet.txt') === 'original\n')
+  await close(p.B)
+  await p.A.claim('quiet.txt', 'about to work on it')
+  const B = await rejoinAfter(t, p, { bob: { 'quiet.txt': 'original\nbob\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'quiet.txt'))
+  assert.equal(rec.kind, 'claimed')
+  assert.equal(rec.claimedBy, 'alice')
+  assert.equal(rec.ours, 'original\nbob\n')
+  assert.equal(read(p.dirB, 'quiet.txt'), 'original\n')
+  assert.equal(read(p.dirA, 'quiet.txt'), 'original\n')
+  assert.equal(fs.existsSync(path.join(p.dirB, '.quilt', 'rejected')), false, 'not dumped in rejected')
 })
 
 test('a file deleted offline but changed in the session is a conflict, and stays', async (t) => {
