@@ -20,8 +20,10 @@ import { accessTypeRoutes } from './routes/access-types.js'
 import { grantRoutes } from './routes/grants.js'
 import { sessionInviteRoutes } from './routes/session-invites.js'
 import { HOSTED_RELAY } from '../settings.js'
+import { roomAccess } from './access.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
+const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 // An approved link the app never collects stops working this long after its code expires.
 const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
@@ -105,6 +107,23 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   }
 
   const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
+
+  /**
+   * A signed pass for `holder`. For a room, it also carries the room, when it was issued
+   * (the relay won't let an older pass undo a removal), what its holder may do there
+   * (see access.js), and a person's confirmed email.
+   */
+  async function mintPass (holder, room) {
+    const iat = now()
+    const exp = iat + PASS_TTL_MS
+    const payload = { v: PASS_VERSION, ...holder, exp }
+    if (room) {
+      const mail = holder.kind === 'person' ? await store.userEmail(holder.sub) : null
+      const email = mail?.confirmed ? String(mail.email || '').toLowerCase() : ''
+      Object.assign(payload, { room, iat, access: await roomAccess(store, room, `${holder.kind}:${holder.sub}`, email) }, email ? { email } : {})
+    }
+    return { pass: signPass(payload, passKey), expiresAt: exp }
+  }
 
   /** A person's profile and sign-in email, which the app keeps in account.json. */
   async function profileWithEmail (userId) {
@@ -203,12 +222,13 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     }],
 
     // A pass lets its holder into sessions on the relay for 10 minutes (see src/passes.js).
-    ['POST', /^\/v1\/passes$/, async (req) => {
+    // With { room }, it is for that room only and carries what its holder may do there.
+    ['POST', /^\/v1\/passes$/, async (req, body) => {
       needPassKey()
       const holder = await passHolder(req)
       limitPasses(hashToken(bearer(req)))
-      const exp = now() + PASS_TTL_MS
-      return { pass: signPass({ v: PASS_VERSION, ...holder, exp }, passKey), expiresAt: exp }
+      if (body.room !== undefined && !ROOM.test(String(body.room))) throw new HttpError(400, 'room must be a session name')
+      return mintPass(holder, body.room)
     }],
 
     // The relay's QUILT_PASS_PUBLIC_KEY. Public: it only checks passes.
