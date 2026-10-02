@@ -273,15 +273,20 @@ export class Session extends EventEmitter {
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
         for (const msg of item.content.getContent()) {
-          if (!msg || !this.canSee(msg)) continue
-          this.emit('message', this.describeMessage(msg))
-          if (tr.origin === LOCAL || msg.by === this.name) continue
-          this.log(`💬 ${formatMessage(msg)}`)
-          if (msg.file) {
-            this.fetchFile(msg).then(
-              (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
-              (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: quilt get ${msg.id})`)
-            )
+          // A malformed message (a modified client can push anything) is skipped, never fatal to the rest.
+          try {
+            if (!this.canSee(msg)) continue
+            this.emit('message', this.describeMessage(msg))
+            if (tr.origin === LOCAL || msg.by === this.name) continue
+            this.log(`💬 ${formatMessage(msg)}`)
+            if (msg.file) {
+              this.fetchFile(msg).then(
+                (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
+                (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: quilt get ${msg.id})`)
+              )
+            }
+          } catch (err) {
+            this.emit('debug', `skipping a bad chat message: ${err.message}`)
           }
         }
       }
@@ -1237,11 +1242,16 @@ export class Session extends EventEmitter {
 
   /** Downloads a message's attachment (to .quilt/inbox/ by default). */
   async fetchFile (msgOrId, dest) {
-    const msg = typeof msgOrId === 'string' ? this.chat.toArray().find((m) => m.id === msgOrId || (m.file && m.file.id === msgOrId)) : msgOrId
+    const msg = typeof msgOrId === 'string' ? this.chat.toArray().find((m) => validMessage(m) && (m.id === msgOrId || (m.file && m.file.id === msgOrId))) : msgOrId
     if (!msg || !msg.file || !this.canSee(msg)) throw new Error('no such file')
     const target = dest ? path.resolve(dest) : this.inboxPath(msg)
     const finalPath = fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, safeName(msg.file.name)) : target
-    const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${msg.file.id}`, {
+    if (!dest) {
+      // Belt and braces: the id and name are sanitised, so this can't escape the inbox; never let it anyway.
+      const inside = path.relative(path.join(this.stateDir, 'inbox'), finalPath)
+      if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) throw new Error('refusing to save a file outside the inbox')
+    }
+    const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${encodeURIComponent(msg.file.id)}`, {
       headers: await this.relayHeaders()
     })
     if (!res.ok) throw new Error(`download failed: ${await res.text()}`)
@@ -1269,8 +1279,9 @@ export class Session extends EventEmitter {
     return this.server.replace(/^ws/, 'http').replace(/\/+$/, '')
   }
 
+  /** Whether a message is meant for me: a well-formed one that is public, mine, or addressed to me. */
   canSee (msg) {
-    return !msg.to || msg.to === this.name || msg.by === this.name
+    return validMessage(msg) && (!msg.to || msg.to === this.name || msg.by === this.name)
   }
 
   peerNames () {
@@ -1279,7 +1290,7 @@ export class Session extends EventEmitter {
 
   describeMessage (msg) {
     const out = { ...msg, unread: msg.by !== this.name && !this.readIds().has(msg.id) }
-    if (msg.file) {
+    if (msg.file && validMessage(msg)) {
       const local = this.inboxPath(msg)
       out.file = { ...msg.file, localPath: fs.existsSync(local) ? path.relative(this.root, local) : null }
     }
@@ -1288,7 +1299,7 @@ export class Session extends EventEmitter {
 
   /** Messages visible to me, oldest first. */
   messages ({ limit = 50, unreadOnly = false, markRead = true, withName = null } = {}) {
-    let list = this.chat.toArray().filter((m) => m && m.id && this.canSee(m))
+    let list = this.chat.toArray().filter((m) => this.canSee(m))
     if (withName) list = list.filter((m) => m.by === withName || m.to === withName)
     let out = list.map((m) => this.describeMessage(m))
     if (unreadOnly) out = out.filter((m) => m.unread)
@@ -1299,7 +1310,7 @@ export class Session extends EventEmitter {
 
   unreadCount () {
     const read = this.readIds()
-    return this.chat.toArray().filter((m) => m && m.id && this.canSee(m) && m.by !== this.name && !read.has(m.id)).length
+    return this.chat.toArray().filter((m) => this.canSee(m) && m.by !== this.name && !read.has(m.id)).length
   }
 
   readIds () {
@@ -1623,6 +1634,20 @@ async function alreadyStored (res) {
   if (res.status === 409) return true
   const body = await res.text().catch(() => '')
   return /exists|duplicate/i.test(body)
+}
+
+// Message and file ids as quilt makes them (8 and 16 random bytes in hex).
+const HEX_ID = /^[0-9a-f]{8,64}$/i
+
+/**
+ * A chat message a well-behaved client made: its id, and its file's id, are
+ * hex, so they're safe in a file name and in a URL. Anything else (a
+ * modified client can push any object) is skipped everywhere.
+ */
+function validMessage (m) {
+  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !HEX_ID.test(m.id)) return false
+  if (m.file == null) return true
+  return typeof m.file === 'object' && typeof m.file.id === 'string' && HEX_ID.test(m.file.id)
 }
 
 function safeName (name) {
