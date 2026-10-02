@@ -33,6 +33,7 @@ Usage:
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
   quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
   quilt mcp                                           Run the MCP server (used by AI tools)
+  quilt hook                                          Claude Code hook (installed by quilt setup; reads the event on stdin)
 
 Join options:
   --agent <name>      Join as a Quilt agent saved with \`quilt agent join\` (default: your account)
@@ -58,6 +59,7 @@ async function main () {
     case 'join': return join()
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
+    case 'hook': process.exitCode = await (await import('../src/hooks.js')).runHook(); return
     case 'status': return status()
     case 'say': return say()
     case 'send': return sendFile()

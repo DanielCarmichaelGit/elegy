@@ -268,7 +268,7 @@ test('API: start a session from GitHub, then commit and open a PR', async () => 
 
   let st = await api('GET', `/api/sessions/${id}/git`)
   assert.equal(st.body.branch, 'feature/api')
-  assert.deepEqual(st.body.changed, [], '.quilt/ is kept out of git')
+  assert.deepEqual(st.body.changed, [{ path: '.claude/settings.json', status: 'new' }], '.quilt/ is kept out of git; the Claude Code hooks are meant to be committed')
 
   write(s.body.dir, 'api.txt', 'hi\n')
   assert.equal((await api('POST', `/api/sessions/${id}/git/commit`, { message: '' })).status, 400)
