@@ -504,6 +504,16 @@ function settingsHtml () {
     </div>
   </form>
 
+  <section class="card settings-sec" id="about-sec">
+    <div class="sec-intro"><h2>About Quilt</h2><p>${state.release?.outOfDate ? `Quilt ${esc(state.release.latest.version)} is out.` : 'The version on this computer.'}</p></div>
+    <div class="sec-body">
+      <div class="kv"><span>Version</span><span>${esc(state.release?.version || '…')}${state.release?.outOfDate ? ` <span class="pill warn">update available</span>` : state.release ? ' <span class="pill">up to date</span>' : ''}</span></div>
+      <div class="sec-actions"><span class="hint">Everything that changed, release by release.</span><span class="row">
+        ${state.release?.outOfDate ? `<a class="btn primary" href="${esc(state.release.downloadUrl)}" target="_blank" rel="noopener">${I.down}<span>Download ${esc(state.release.latest.version)}</span></a>` : ''}
+        <button class="btn" type="button" data-release-notes>${I.sparkle}<span>What's new</span></button></span></div>
+    </div>
+  </section>
+
   <section class="card settings-sec">
     <div class="sec-intro"><h2>This computer</h2><p>Where Quilt keeps things.</p></div>
     <div class="sec-body">

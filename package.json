@@ -13,7 +13,8 @@
     "app": "electron .",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
-    "icons": "electron desktop/make-icons.cjs"
+    "icons": "electron desktop/make-icons.cjs",
+    "release": "node scripts/release.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -42,7 +43,8 @@
   "files": [
     "bin",
     "src",
-    "assets"
+    "assets",
+    "RELEASES.md"
   ],
   "main": "desktop/main.js",
   "build": {
@@ -60,7 +62,8 @@
       "desktop/main.js",
       "desktop/preload.cjs",
       "desktop/icons/*.png",
-      "package.json"
+      "package.json",
+      "RELEASES.md"
     ],
     "asar": false,
     "protocols": [

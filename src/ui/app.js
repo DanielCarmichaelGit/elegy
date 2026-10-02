@@ -5,6 +5,7 @@ import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
 import { renderSignIn } from './signin.js'
+import { checkRelease, openReleaseNotes } from './releases.js'
 
 // ---------------------------------------------------------------- boot --
 const SIGNED_OUT = 'This computer was signed out. Sign in again.'
@@ -37,7 +38,9 @@ async function boot () {
     if (!state.events) connectEvents()
     render()
     // Invite links that opened the desktop app wait until you're signed in.
-    if (!boot.invites) { boot.invites = true; window.quiltDesktop?.onInvite(openInviteLink) }
+    if (!boot.invites) { boot.invites = true; window.quiltDesktop?.onInvite(openInviteLink); window.quiltDesktop?.onReleaseNotes?.(openReleaseNotes) }
+    // Is a newer Quilt out, and has this version's "what's new" been shown? Never blocks the app.
+    checkRelease()
   } catch (err) {
     clearTimeout(waiting)
     if (!err.signedOut) renderLocked(err.message)

@@ -18,6 +18,7 @@ import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe
 import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { loadIdentity } from './identity.js'
+import { currentVersion, localReleases, latestRelease, compareVersions, downloadUrl, seenVersion, markSeen } from './releases.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
@@ -85,7 +86,8 @@ const STATIC = {
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
-  '/git.js': ['git.js', 'text/javascript; charset=utf-8']
+  '/git.js': ['git.js', 'text/javascript; charset=utf-8'],
+  '/releases.js': ['releases.js', 'text/javascript; charset=utf-8']
 }
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
@@ -375,6 +377,20 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     },
     'POST /api/sessions/:id/sharing': (b, id) => ({ on: get(id).setAgentSharing(b.on !== false) }),
     'POST /api/recent/forget': (b) => { forgetRecent(path.resolve(expandHome(String(b.dir || '')))); return { recent: recentList() } },
+    // Release notes and the update check. The newest local notes are "unseen" until the app shows them.
+    'GET /api/version': async () => {
+      const version = currentVersion()
+      const latest = await latestRelease()
+      return {
+        version,
+        releases: localReleases(),
+        unseen: compareVersions(seenVersion(), version) < 0,
+        latest,
+        outOfDate: !!latest && compareVersions(latest.version, version) > 0,
+        downloadUrl: downloadUrl()
+      }
+    },
+    'POST /api/version/seen': () => { markSeen(currentVersion()); return { ok: true } },
     'GET /api/settings': () => profile(),
     'POST /api/settings': (b) => updateProfile(b),
     'GET /api/github/status': () => gitops.ghStatus(),

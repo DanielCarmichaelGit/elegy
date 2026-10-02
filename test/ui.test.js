@@ -259,3 +259,33 @@ test('the owner can end a session for everyone from the app', async () => {
   const state = await api('GET', '/api/state')
   assert.equal(state.body.sessions.filter((s) => s.id === id).length, 0, 'stopped locally')
 })
+
+test('GET /api/version: this version, its notes, and whether GitHub has a newer build', async () => {
+  const http = await import('node:http')
+  const { currentVersion } = await import('../src/releases.js')
+  const gh = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ tag_name: 'v99.0.0', html_url: 'https://github.com/x/releases/tag/v99.0.0', published_at: '2027-01-01T00:00:00Z', body: "**What's new in 99.0.0**\n\nEverything.\n\n- **Teleports.**\n\n**Downloads**\n- x" }))
+  })
+  await new Promise((r) => gh.listen(0, '127.0.0.1', r))
+  process.env.QUILT_RELEASES_URL = `http://127.0.0.1:${gh.address().port}/latest`
+  try {
+    const r = await api('GET', '/api/version')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.version, currentVersion())
+    assert.equal(r.body.releases[0].version, currentVersion())
+    assert.ok(r.body.releases[0].items.length > 0)
+    assert.equal(r.body.unseen, true, 'notes for this version have not been shown yet')
+    assert.equal(r.body.outOfDate, true)
+    assert.deepEqual(r.body.latest, { version: '99.0.0', url: 'https://github.com/x/releases/tag/v99.0.0', date: '2027-01-01', summary: 'Everything.', items: ['**Teleports.**'] })
+    assert.match(r.body.downloadUrl, /^https:\/\/github\.com\/DanielCarmichaelGit\/heyquilt\/releases\/latest/)
+
+    const seen = await api('POST', '/api/version/seen')
+    assert.deepEqual(seen.body, { ok: true })
+    const again = await api('GET', '/api/version')
+    assert.equal(again.body.unseen, false)
+  } finally {
+    delete process.env.QUILT_RELEASES_URL
+    gh.close()
+  }
+})
