@@ -201,6 +201,24 @@ test('renaming to the same name again saves nothing new and reports nothing new'
   assert.deepEqual(api.events.filter((e) => e.type === 'name').map((e) => e.name), ['quilt-site'])
 })
 
+test('a room takes at most one rename every 2 seconds; its first name and repeats of the current name are never refused', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  assert.equal((await admin(o, { op: 'name', name: 'quilt-site' })).ok, true, 'a new session is named after its folder')
+  assert.equal((await admin(o, { op: 'name', name: 'first' })).ok, true, 'and its owner may rename it straight away')
+  const refused = await admin(o, { op: 'name', name: 'second' })
+  assert.deepEqual(refused, { id: refused.id, ok: false, error: 'Renaming too fast; try again in a moment' })
+  assert.equal(srv.rooms.get(r).meta.name, 'first', 'a refused rename saves nothing')
+  assert.equal((await admin(o, { op: 'name', name: 'first' })).ok, true, 'repeating the current name changes nothing')
+  srv.rooms.get(r).lastRenameAt -= 2000 // as if 2 seconds had passed
+  assert.equal((await admin(o, { op: 'name', name: 'second' })).ok, true)
+  await srv.presence.flush()
+  // The earlier names were still waiting to be sent: each newer one took their place.
+  assert.deepEqual(api.events.filter((e) => e.type === 'name').map((e) => e.name), ['second'])
+})
+
 test('end to end: two accounts in one session see each other on their dashboards', async (t) => {
   const accounts = await startTestApi({ relaySecret: SECRET })
   t.after(() => accounts.close())

@@ -41,6 +41,8 @@ const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
 // A hosted agent counts as online this long after its last tool call.
 const HOSTED_ONLINE_MS = 3 * 60 * 1000
+// A room's renames: each one saves the room and queues a presence report, so they're rationed.
+const RENAME_MS = 2000
 const MAX_PATTERN = 500
 const MAX_SCOPES = 20
 const ROLES = ['editor', 'viewer']
@@ -134,6 +136,7 @@ class Room {
     this.saveTimer = null
     this.unloadTimer = null
     this.presence = null // a PresenceReporter when the relay reports presence (set by startServer)
+    this.lastRenameAt = 0 // when the owner last renamed the session (RENAME_MS)
 
     this.doc.on('update', (update, origin, doc, tr) => {
       if (origin === this.guard && this.undoing) { this.undoing.push(update); return } // sent merged, below
@@ -436,6 +439,12 @@ class Room {
       // Re-sending the same name (the app does this on every launch) should write nothing
       // and report nothing: only an actual rename is news.
       if (name !== this.meta.name) {
+        // A new session's first name (its folder's, sent as it starts) isn't a rename: the
+        // owner may rename it straight away.
+        if (this.meta.name) {
+          if (Date.now() - this.lastRenameAt < RENAME_MS) throw new Error('Renaming too fast; try again in a moment')
+          this.lastRenameAt = Date.now()
+        }
         this.meta.name = name
         this.saveMeta()
         if (this.presence) this.presence.rename({ room: this.name, name })

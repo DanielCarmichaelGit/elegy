@@ -59,6 +59,7 @@ test('a new session is named after its folder, and its owner renames it in the a
   assert.equal((await onDashboard(room)).name, 'Pricing page', "the relay's report carries the name")
 
   // Now heyquilt.com knows the session, and the rename goes there directly.
+  relay.rooms.get(room).lastRenameAt -= 2000 // the relay takes one rename every 2 seconds
   assert.equal((await api('POST', `/api/sessions/${id}/rename`, { name: 'Launch' })).status, 200)
   assert.equal((await onDashboard(room)).name, 'Launch')
   await api('POST', `/api/sessions/${id}/stop`)
