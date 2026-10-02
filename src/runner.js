@@ -65,7 +65,7 @@ export function runningElsewhere (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {}, passes = null, identity = null }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {}, passes = null, identity = null, startName = '' }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -98,7 +98,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   }
   ensureGitExclude(dir)
 
-  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent, identity, passes })
+  const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent, identity, passes, startName })
   const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
   if (summarize) session.summarizer = summarizer()
   if (onLog) session.on('log', onLog)

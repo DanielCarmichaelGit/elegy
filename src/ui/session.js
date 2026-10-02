@@ -75,6 +75,7 @@ export function mountSession (id) {
       <div class="overflow">
         <button class="btn sm ghost icon" id="more-btn" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false">${I.more}</button>
         <div class="popover more-menu" id="more-menu" role="menu" hidden>
+          <button class="pop-item" role="menuitem" id="rename-btn" hidden>Rename session…</button>
           <button class="pop-item" role="menuitem" id="ask-commit">Ask for a commit…</button>
           <button class="pop-item" role="menuitem" id="leave-btn">Leave this session</button>
           <button class="pop-item" role="menuitem" data-shutdown>Shut down Quilt</button>
@@ -258,6 +259,7 @@ function bindTop () {
   $('#invite-btn').onclick = () => openInvite(current)
   bindOpenIn()
   $('#ask-commit').onclick = askForCommit
+  $('#rename-btn').onclick = renameSession
   $('#commit-chip').onclick = () => {
     if (sum().git) $('#git-btn')?.click()
     else toast($('#commit-chip').title)
@@ -399,6 +401,7 @@ function renderTop () {
   if (!$('#people-menu').hidden) renderPeopleMenu()
   renderAccess()
   renderCommitChip()
+  $('#rename-btn').hidden = !st.access?.owner
   $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
 }
 
@@ -485,6 +488,14 @@ function bindAccess () {
     const f = e.target.closest('form')
     try { await api('POST', `/api/sessions/${current}/members/deny`, { key: f.dataset.key }); toast('Denied') } catch (err) { toast(err.message) }
   })
+}
+
+/** Owner only: renames the session for everyone in it, and on heyquilt.com. */
+async function renameSession () {
+  const s = sum()
+  const name = await ask({ title: 'Rename this session', message: 'Everyone in it sees the new name, here and on heyquilt.com.', ok: 'Rename', input: { label: 'Name', value: s.status.sessionName || basename(s.dir) } })
+  if (!name) return
+  try { await api('POST', `/api/sessions/${current}/rename`, { name }); toast('Renamed') } catch (err) { toast(err.message) }
 }
 
 /** Owner controls for everyone who has been let in, shown in the people menu. */

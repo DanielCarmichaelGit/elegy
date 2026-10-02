@@ -109,7 +109,7 @@ export function ask ({ title, message = '', ok = 'OK', danger = false, input = n
     back.innerHTML = `<form class="card modal" role="dialog" aria-modal="true" aria-labelledby="ask-title" autocomplete="off">
       <h3 id="ask-title">${esc(title)}</h3>
       ${message ? `<p class="lead">${esc(message)}</p>` : ''}
-      ${input ? `<div class="field"><label for="ask-input">${esc(input.label || '')}</label><input class="input" id="ask-input" placeholder="${esc(input.placeholder || '')}"></div>` : ''}
+      ${input ? `<div class="field"><label for="ask-input">${esc(input.label || '')}</label><input class="input" id="ask-input" placeholder="${esc(input.placeholder || '')}" value="${esc(input.value || '')}"></div>` : ''}
       <div class="actions"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(ok)}</button></div>
     </form>`
     document.body.appendChild(back)

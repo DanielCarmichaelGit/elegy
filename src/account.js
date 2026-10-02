@@ -110,6 +110,14 @@ export async function fetchMe ({ token, api = apiUrl(), fetch: fetchImpl = globa
 }
 
 /**
+ * The owner renames a session on heyquilt.com: { session: { room, name } }. Throws with
+ * .status: 404 until the relay has reported the session, 403 for anyone but the owner.
+ */
+export async function renameSession ({ token, room, name, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  return call(fetchImpl, api, 'PUT', `/v1/me/sessions/${encodeURIComponent(room)}`, { name }, token)
+}
+
+/**
  * Forgets this computer's sign-in right away, then tries to revoke the token on the
  * server (best effort: it may be revoked already, or Quilt unreachable or slow). The
  * file goes first so a stuck or slow server can never make `quilt logout` hang.

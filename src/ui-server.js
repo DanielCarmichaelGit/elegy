@@ -14,7 +14,8 @@ import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './setting
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession } from './account.js'
+import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { loadIdentity } from './identity.js'
@@ -275,6 +276,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
         prefer: prefer === 'local' ? 'local' : 'remote',
         inviteServer,
         passes: sessionPasses,
+        // A new session is named after its folder (the owner can rename it later).
+        startName: mode === 'create' ? cleanSessionName([...path.basename(dir)].slice(0, SESSION_NAME_MAX).join('')) || '' : '',
         onLog: log,
         onFatal: async (err) => {
           log(`stopped: ${err.message}`)
@@ -320,6 +323,25 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     const r = runs.get(id)
     if (!r) throw httpError(404, 'That session is not running.')
     return r.run.session
+  }
+
+  /**
+   * The owner renames a session: on the relay, so everyone in it sees the new name, then on
+   * heyquilt.com. Until the relay has reported a new session there (within a minute) the
+   * website answers 404, and the relay's own report carries the new name instead.
+   */
+  async function rename (id, raw) {
+    const s = get(id)
+    if (!s.isOwner) throw httpError(403, 'Only the session owner can rename it.')
+    const name = cleanSessionName(raw)
+    if (!name) throw httpError(400, BAD_SESSION_NAME)
+    await s.rename(name)
+    try {
+      await renameSession({ token: readAccount()?.token, room: s.room, name })
+    } catch (err) {
+      if (err.status !== 404) throw httpError(502, `Renamed here, but heyquilt.com didn't take it: ${err.message}`)
+    }
+    return { name }
   }
 
   /** The session's folder, if this app may run git in it. */
@@ -386,6 +408,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': async (b, id) => (await get(id).removeMember(b.key), { ok: true }),
+    'POST /api/sessions/:id/rename': (b, id) => rename(id, b.name),
     'POST /api/sessions/:id/end': async (b, id) => { await get(id).endForEveryone(); await stop(id); return { ok: true } },
     'POST /api/sessions/:id/summarize': (b, id) => {
       const r = runs.get(id)
