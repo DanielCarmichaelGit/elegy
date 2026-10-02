@@ -12,6 +12,7 @@ import { Session } from '../src/session.js'
 import { startControl } from '../src/control.js'
 import { installHooks } from '../src/setup.js'
 import { HOOK_COMMAND, releaseLeftoverHookClaims, hookState } from '../src/hooks.js'
+import { openMerge } from '../src/merges.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-hooks-${n}-`))
@@ -79,6 +80,17 @@ test('session start tells Claude the rule and who is here', async () => {
   assert.match(ctx, /room pair/)
   assert.match(ctx, /with sam/)
   assert.match(ctx, /claims each file for you/)
+})
+
+test('session start mentions an open merge and nudges toward quilt_merges', async () => {
+  openMerge(dana.doc, dana.merges, {
+    path: 'src/needs-merge.js', by: 'sam', others: ['dana'], kind: 'conflict', ours: 'mine\n', base: 'base\n', theirsHash: 'abc', binary: false
+  }, null)
+  const r = await hook({ hook_event_name: 'SessionStart', source: 'startup' })
+  const ctx = r.json.hookSpecificOutput.additionalContext
+  assert.match(ctx, /src\/needs-merge\.js/)
+  assert.match(ctx, /quilt_merges/)
+  assert.match(ctx, /quilt_resolve_merge/)
 })
 
 test('editing an unclaimed file claims it for me and lets the edit through', async () => {

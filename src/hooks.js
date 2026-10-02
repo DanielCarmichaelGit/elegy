@@ -56,14 +56,30 @@ async function sessionStart (api, state) {
   const { seq } = await api('POST', '/inbox', { after: 0 }).catch(() => ({ seq: 0 }))
   state.update((s) => { s.after = seq || 0 })
   const who = st.peers.length ? st.peers.map((p) => p.name + (p.kind === 'agent' ? ' (AI agent)' : '')).join(', ') : 'nobody else yet'
-  const text = [
+  const parts = [
     `This folder is in a live Quilt session (room ${st.room}) with ${who}. Files can change underneath you at any time; re-read a file right before editing it.`,
     'Quilt claims each file for you the moment you edit it, and releases those claims when you finish. ' +
     'If a file is claimed by someone else, your edit is refused: do not retry or work around it. ' +
     'Send them a direct message with quilt_message saying what you wanted to change and asking for help, then carry on with other work.',
     'Messages from collaborators, mentions of you and tasks handed to you are shown to you as you work; answer with quilt_message and take a task with quilt_move_task.'
-  ].join('\n')
-  return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } } }
+  ]
+  const merges = mergesContext(st.merges)
+  if (merges) parts.push(merges)
+  return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: parts.join('\n') } } }
+}
+
+/** One short paragraph naming the files still open for merging, or null when there are none. */
+function mergesContext (merges) {
+  const open = (merges || []).filter((m) => m.state !== 'done')
+  if (!open.length) return null
+  const describe = (m) => {
+    const action = m.oursDeleted ? 'deleted it offline' : 'changed it offline'
+    const other = (m.others && m.others[0]) || m.claimedBy
+    return `\`${m.path}\` (${m.by} ${action}${other ? `, ${other} in the session` : ''})`
+  }
+  const shown = open.slice(0, 5).map(describe).join(', ')
+  const more = open.length > 5 ? `, and ${open.length - 5} more` : ''
+  return `${open.length} file(s) need merging: ${shown}${more}. Run quilt_merges before editing those files; settle one with quilt_resolve_merge.`
 }
 
 async function preEdit (event, d, api, state) {
