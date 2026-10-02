@@ -138,7 +138,7 @@ test("an agent started in a person's folder works in its own copy and leaves the
   assert.ok(!r.isError, text(r))
   const copy = path.join(home, 'quilt', 'quilt-pair')
   assert.match(text(r), rx(`Files are synced into ${copy}`))
-  // The server names its working folder as the OS reports it (macOS: /private/var/..., not /var/...).
+  // The aside names the folder as the MCP server's cwd resolves it (/private/var on macOS).
   assert.match(text(r), rx(`(${fs.realpathSync(personDir)} is a person's own copy of this session on this computer and stays theirs`))
   await waitFor(() => fs.existsSync(path.join(copy, 'src', 'app.js')))
   assert.equal(JSON.parse(fs.readFileSync(path.join(copy, '.quilt', 'config.json'), 'utf8')).kind, 'agent')
