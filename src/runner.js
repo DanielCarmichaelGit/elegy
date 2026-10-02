@@ -155,11 +155,6 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const control = await startControl(session, { invite, viewInvite, joined })
   remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind })
 
-  // Claude Code claims files as it edits them (src/hooks.js). The hooks live in the shared
-  // .claude/settings.json so everyone in the session follows the same rule.
-  try { if (installHooks(dir)) session.log('🪝 added Quilt\'s Claude Code hooks to .claude/settings.json: files are claimed as they are edited') } catch {}
-  releaseLeftoverHookClaims(session).then((n) => { if (n) session.log(`🔓 released ${n} claim(s) left by an earlier AI session`) }).catch(() => {})
-
   // Claude Code claims files as it edits them (src/hooks.js). The hooks go in this person's own
   // settings file; everyone's session writes its own, so the rule holds for everyone in the room.
   try { if (installHooks(dir)) session.log(`🪝 added Quilt's Claude Code hooks to ${HOOKS_FILE}: files are claimed as they are edited`) } catch {}

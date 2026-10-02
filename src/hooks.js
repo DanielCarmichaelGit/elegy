@@ -17,7 +17,7 @@ import { describeEvent } from './inbox.js'
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const TIMEOUT_MS = 5000
 
-/** Settings for .claude/settings.json: every hook runs `quilt hook`. */
+/** Settings for .claude/settings.local.json: every hook runs `quilt hook`. */
 export const HOOK_COMMAND = 'quilt hook'
 export function hookSettings () {
   const run = { type: 'command', command: HOOK_COMMAND, timeout: 10 }
