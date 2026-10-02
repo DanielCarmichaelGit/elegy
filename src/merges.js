@@ -66,11 +66,13 @@ export function openMerge (doc, map, { path, by, byId = null, others = [], kind,
     ours: fits(ours) ? ours : null, base: fits(base) ? base : null, theirsHash, binary: !!binary, local,
     claimedBy, resolvedBy: null, how: null, doneTs: null, reason
   }
+  const out = publicMerge(rec)
+  if (!out) throw new Error('bad merge record') // never write what readers would drop as junk
   doc.transact(() => {
     for (const key of split(map).junk) map.delete(key)
     map.set(rec.id, rec)
   }, origin)
-  return publicMerge(rec)
+  return out
 }
 
 /** Changes state, how, resolvedBy or reason. Setting state to done stamps doneTs. */

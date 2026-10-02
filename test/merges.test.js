@@ -67,3 +67,9 @@ test('open records come first; done ones are pruned by age and count', () => {
   assert.ok(readMerges(map).length <= MAX_MERGES)
   assert.ok(readMerges(map).some((m) => m.id === open.id), 'open records are never pruned')
 })
+
+test('an invalid record throws and writes nothing', () => {
+  const { doc, map } = fresh()
+  assert.throws(() => openMerge(doc, map, { ...fields, path: 'x'.repeat(1025) }, null), /bad merge record/)
+  assert.equal(map.size, 0)
+})

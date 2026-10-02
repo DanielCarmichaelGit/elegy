@@ -56,7 +56,8 @@ async function pair (t, seed = {}) {
 }
 
 // A merge "AI" for tests: QUILT_MERGE_CMD runs this script, which answers
-// CONFLICT unless MERGE_FAKE_ANSWER names a file whose content to return.
+// CONFLICT unless MERGE_FAKE_ANSWER names a file whose content to return
+// (after MERGE_FAKE_DELAY_MS, if set).
 const FAKE_MERGE = path.join(tmp('merge-cli'), 'fake-merge.mjs')
 fs.writeFileSync(FAKE_MERGE, `
 import fs from 'node:fs'
@@ -65,8 +66,10 @@ let input = ''
 process.stdin.on('data', (d) => { input += d })
 process.stdin.on('end', () => {
   if (process.env.MERGE_FAKE_LOG) fs.appendFileSync(process.env.MERGE_FAKE_LOG, input + '\\n----\\n')
-  if (!file) { process.stdout.write('CONFLICT: the test says no\\n'); return }
-  process.stdout.write('\`\`\`\\n' + fs.readFileSync(file, 'utf8') + '\`\`\`\\n')
+  setTimeout(() => {
+    if (!file) { process.stdout.write('CONFLICT: the test says no\\n'); return }
+    process.stdout.write('\`\`\`\\n' + fs.readFileSync(file, 'utf8') + '\`\`\`\\n')
+  }, Number(process.env.MERGE_FAKE_DELAY_MS) || 0)
 })
 `)
 process.env.QUILT_MERGE_CMD = `${process.execPath} ${FAKE_MERGE}`
@@ -436,6 +439,28 @@ test('the AI merges overlapping edits when it can, and the result is listed for 
   assert.match(prompt, /middle \(bob\)/)
   assert.match(prompt, /middle \(alice\)/)
   assert.match(prompt, /alice/)
+})
+
+test('a merge interrupted by quitting keeps its base, and the next start merges from it', async (t) => {
+  const p = await pair(t, { 'quit.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'quit.txt') === 'top\nmiddle\nbottom\n')
+  const log = path.join(tmp('log'), 'calls.txt')
+  process.env.MERGE_FAKE_LOG = log
+  process.env.MERGE_FAKE_DELAY_MS = '1500'
+  t.after(() => { delete process.env.MERGE_FAKE_LOG; delete process.env.MERGE_FAKE_DELAY_MS })
+  const B1 = await rejoinAfter(t, p, { bob: { 'quit.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'quit.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  // The relay has synced and the AI is thinking: bob quits now.
+  await waitFor(() => fs.existsSync(log))
+  await close(B1)
+  const held = JSON.parse(read(path.join(p.dirB, '.quilt'), 'merging.json'))
+  assert.deepEqual(held, { 'quit.txt': 'top\nmiddle\nbottom\n' })
+  delete process.env.MERGE_FAKE_DELAY_MS
+  const B2 = await open(t, p.dirB, 'bob', { room: p.room })
+  const rec = await waitFor(() => B2.mergeList().find((m) => m.path === 'quit.txt'))
+  assert.equal(rec.base, 'top\nmiddle\nbottom\n', 'the base from before, not the session version the saved doc took')
+  assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n')
+  assert.equal(read(p.dirA, 'quit.txt'), 'top\nmiddle (alice)\nbottom\n', "bob's edit was not pushed raw over alice's")
+  await waitFor(() => read(path.join(p.dirB, '.quilt'), 'merging.json') === null)
 })
 
 test('a file deleted offline but changed in the session is a conflict, and stays', async (t) => {

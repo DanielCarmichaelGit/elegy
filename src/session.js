@@ -433,7 +433,15 @@ export class Session extends EventEmitter {
     const downloads = []
     const take = [] // shared versions that never reached the folder: written now, not pushed back
     const entries = []
-    const hold = (rel, base, ours) => { this.merging.add(rel); entries.push({ rel, base, ours }) }
+    // A merge that was interrupted (quit or crash after the relay synced) left
+    // its bases behind: the saved doc may already hold the session's version,
+    // so it is no base any more.
+    const prior = this.readHeldBases()
+    const hold = (rel, base, ours) => {
+      if (prior.has(rel)) base = prior.get(rel)
+      this.merging.add(rel)
+      entries.push({ rel, base, ours })
+    }
     for (const rel of this.sharedPaths()) {
       if (!this.syncable(rel)) continue
       const known = this.sharedKey(rel)
@@ -473,7 +481,33 @@ export class Session extends EventEmitter {
       if (disk.key === shared) { this.lastKnown.set(rel, disk.key); continue }
       hold(rel, shared, disk.key)
     }
+    this.saveHeldBases(entries)
     return { entries, take, downloads }
+  }
+
+  get heldBasesFile () { return path.join(this.stateDir, 'merging.json') }
+
+  /** rel -> base (undefined: the session didn't have the file) left by an unfinished offline merge. */
+  readHeldBases () {
+    const out = new Map()
+    let saved
+    try { saved = JSON.parse(fs.readFileSync(this.heldBasesFile, 'utf8')) } catch { return out }
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return out
+    for (const [rel, base] of Object.entries(saved)) {
+      if (base === null) out.set(rel, undefined)
+      else if (typeof base === 'string') out.set(rel, base)
+    }
+    return out
+  }
+
+  /** Keeps the bases of the held paths until they are merged, so a quit or crash in between can't lose them. */
+  saveHeldBases (entries) {
+    try {
+      if (!entries.length) { fs.rmSync(this.heldBasesFile, { force: true }); return }
+      writePrivateJson(this.heldBasesFile, Object.fromEntries(entries.map((e) => [e.rel, e.base ?? null])))
+    } catch (err) {
+      this.log(`could not save the offline merge's bases: ${err.message}`)
+    }
   }
 
   /** Runs once the relay has synced: merges every captured path against the session's version. */
@@ -495,8 +529,10 @@ export class Session extends EventEmitter {
     }
     await Promise.all([worker(), worker()])
     for (const e of entries) this.merging.delete(e.rel)
-    if (this.stopped) return
-    // After the merges: a file deleted offline may sit where one of these needs a folder.
+    if (this.stopped) return // merging.json stays: the next start merges what's left from the same bases
+    this.saveHeldBases([])
+    // After the merges, not before: a take write can create a folder where a
+    // file deleted offline was, and that deletion must be shared first.
     for (const rel of take) this.tryWrite(rel)
     for (const rel of downloads) this.downloadLarge(rel, this.blobs.get(rel))
     pruneMerges(this.doc, this.merges, LOCAL)
@@ -527,7 +563,13 @@ export class Session extends EventEmitter {
       if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
       return null
     }
-    if (ours === base) { release(); this.tryWrite(rel); return null } // only they changed it
+    if (ours === base) {
+      // Only they changed it. (lastKnown may hold a newer doc's text when the base came from merging.json.)
+      release()
+      if (ours !== null) this.lastKnown.set(rel, ours)
+      this.tryWrite(rel)
+      return null
+    }
     const claim = this.claimFor(rel)
     const binary = [base, ours, theirs].some((k) => typeof k === 'string' && k.startsWith('bin:'))
     if (claim && claim.by !== this.name) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'claimed', claimedBy: claim.by, binary })
