@@ -423,35 +423,44 @@ class Room {
    */
   checkChange (ws, update, tr) {
     const a = this.access.get(ws)
-    const touched = new Set()
+    const touched = new Map() // path -> the types (files, blobs) it changed in
     const refused = []
     const posts = [] // chat and the feed, for people who may not post
+    // Only the parts of the change that were refused are undone: one update can carry
+    // allowed and refused changes together (an edit and a post in one transaction).
+    const undo = new Set()
     for (const [type, events] of tr.changedParentTypes) {
       if (type === this.chat || type === this.feed) {
-        if (a?.talk === false) posts.push(type === this.chat ? 'chat' : 'the feed')
+        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : 'the feed'); undo.add(type) }
         continue
       }
       if (type === this.fileKeys) {
         // Keys to stored files: viewers may not touch them, and others may
         // only add new ones, so nobody can lock people out of stored files.
         for (const e of events) {
-          if (e.target !== type) { refused.push('a file key'); continue }
-          for (const [id, c] of e.changes.keys) if (a?.role === 'viewer' || c.action !== 'add') refused.push(`file key ${id}`)
+          if (e.target !== type) { refused.push('a file key'); undo.add(type); continue }
+          for (const [id, c] of e.changes.keys) if (a?.role === 'viewer' || c.action !== 'add') { refused.push(`file key ${id}`); undo.add(type) }
         }
         continue
       }
       if (type !== this.files && type !== this.blobs) continue
+      const touch = (rel) => touched.set(rel, [...(touched.get(rel) || []), type])
       for (const e of events) {
-        if (e.target === type) for (const k of e.changes.keys.keys()) touched.add(k)
+        if (e.target === type) for (const k of e.changes.keys.keys()) touch(k)
         else {
           // A change inside a file's text: walk up to the entry in files.
           let t = e.target
           while (t && t._item && t._item.parent !== type) t = t._item.parent
-          if (t && t._item && t._item.parentSub) touched.add(t._item.parentSub)
+          if (t && t._item && t._item.parentSub) touch(t._item.parentSub)
         }
       }
     }
-    refused.push(...[...touched].filter((rel) => !this.mayWrite(a, rel)), ...posts)
+    for (const [rel, types] of touched) {
+      if (this.mayWrite(a, rel)) continue
+      refused.push(rel)
+      for (const t of types) undo.add(t)
+    }
+    refused.push(...posts)
     // The guard recorded this change just before this 'update' (its stack-item-added): only
     // that one is kept or undone, never another change that arrived in the same moment.
     const item = this.recorded
@@ -462,9 +471,12 @@ class Room {
       // Send the change and its undo as one update: nobody sees the change,
       // and nobody is left missing part of this person's history.
       const others = this.guard.undoStack.filter((x) => x !== item)
+      const scope = this.guard.scope
       this.guard.undoStack = item ? [item] : []
+      this.guard.scope = scope.filter((t) => undo.has(t))
       this.undoing = []
       try { this.guard.undo() } finally {
+        this.guard.scope = scope
         this.guard.undoStack = others
         this.guard.redoStack = []
         const merged = Y.mergeUpdates([update, ...this.undoing])
@@ -472,7 +484,8 @@ class Room {
         const msg = updateMessage(merged)
         for (const other of this.conns.keys()) send(other, msg)
       }
-      const why = posts.length === refused.length ? TALK_WHY
+      const why = posts.length === refused.length
+        ? TALK_WHY
         : a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
       send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refused: refused.slice(0, 20), why }))
     })

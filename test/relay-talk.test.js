@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
@@ -69,4 +70,44 @@ test('a file sent in chat is refused', async () => {
   assert.deepEqual([res.status, await res.text()], [403, "You can't post in this session."])
   const ownerPass = makePass({ identity: owner.identity, name: 'Olive', sub: 'olive' })
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/files/${room}`, { method: 'POST', headers: { 'x-quilt-secret': 'e', 'x-quilt-pass': ownerPass }, body: 'hi' })).status, 201)
+})
+
+// Decision 11: several changes from one connection can arrive in a single network read.
+// They're applied here straight into the relay's doc, one after another in the same tick,
+// with the connection as their origin, just as the relay applies messages from one read.
+test('changes that arrive together: only the refused ones are undone', async () => {
+  const rm = srv.rooms.get(room)
+  const ws = [...rm.access].find(([, a]) => a.name === 'Quinn')[0]
+  const fork = new Y.Doc()
+  Y.applyUpdate(fork, Y.encodeStateAsUpdate(rm.doc))
+  const change = (fn) => { const sv = Y.encodeStateVector(fork); fork.transact(fn); return Y.encodeStateAsUpdate(fork, sv) }
+  const post = (id) => () => fork.getArray('chat').push([{ id, by: 'Quinn', to: null, text: id, ts: Date.now() }])
+  const mine = (arr, id) => arr.toArray().some((x) => x && x.id === id)
+  const edit = (text) => () => fork.getMap('files').get('README.md').insert(0, text)
+
+  // Two refused changes.
+  const a = change(post('a1'))
+  const b = change(() => fork.getArray('agentFeed').push([{ id: 'b1', by: 'Quinn', kind: 'prompt', text: 'b', ts: Date.now() }]))
+  Y.applyUpdate(rm.doc, a, ws)
+  Y.applyUpdate(rm.doc, b, ws)
+  await waitFor(() => !mine(rm.chat, 'a1') && !mine(rm.feed, 'b1'))
+  assert.equal(rm.guard.undoStack.length, 0)
+
+  // One refused and one allowed, as two updates.
+  Y.applyUpdate(rm.doc, change(post('c1')), ws)
+  Y.applyUpdate(rm.doc, change(edit('one ')), ws)
+  await waitFor(() => owner.files.get('README.md')?.toString().startsWith('one '))
+  await wait(50)
+  assert.equal(mine(rm.chat, 'c1'), false)
+  assert.equal(rm.files.get('README.md').toString().startsWith('one '), true, 'the allowed edit stays')
+  assert.equal(rm.guard.undoStack.length, 0)
+
+  // One refused and one allowed, combined into one update.
+  Y.applyUpdate(rm.doc, change(() => { post('d1')(); edit('two ')() }), ws)
+  await waitFor(() => owner.files.get('README.md')?.toString().startsWith('two '))
+  await wait(50)
+  assert.equal(mine(rm.chat, 'd1'), false, 'the post is undone')
+  assert.equal(mine(owner.chat, 'd1'), false)
+  assert.equal(rm.files.get('README.md').toString().startsWith('two one '), true, 'the allowed edit stays')
+  assert.equal(rm.guard.undoStack.length, 0)
 })
