@@ -225,6 +225,21 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .tabs a:hover { color: var(--text); }
 .list-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border); }
 .list-row:first-of-type { border-top: 0; }
+/* ---- Dashboard: your sessions (overview and /dashboard/sessions/<room>) ---- */
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
+.big-number { font-size: 28px; font-weight: 600; }
+.session-name { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.session-name a { color: var(--text); text-decoration: none; }
+.session-name a:hover { text-decoration: underline; }
+.icon-btn { height: 28px; width: 28px; padding: 0; }
+.rename-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 15px; }
+.avatars { display: inline-flex; align-items: center; }
+.avatar { position: relative; width: 30px; height: 30px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--qm-c); border: 2px solid var(--panel); margin-left: -6px; }
+.avatars .avatar:first-child { margin-left: 0; }
+.avatar.agent { background: var(--qm-d); }
+.avatar.more { background: var(--panel-2); color: var(--muted); }
+.avatar-badge { position: absolute; right: -4px; bottom: -4px; width: 15px; height: 15px; border-radius: 50%; background: var(--text); color: var(--bg); display: grid; place-items: center; }
+
 /* forms on full-width pages: keep the fields a readable width, not the page */
 .fields-narrow { max-width: 560px; }
 .overview-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
