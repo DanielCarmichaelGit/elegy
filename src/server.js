@@ -46,6 +46,8 @@ const HOSTED_ONLINE_MS = 3 * 60 * 1000
 const RENAME_MS = 2000
 const MAX_PATTERN = 500
 const MAX_SCOPES = 20
+// Removed accounts remembered per room, so an older pass's grant can't bring them back.
+const MAX_REMOVED = 200
 const ROLES = ['editor', 'viewer']
 const MB = 1024 * 1024
 const DAY = 24 * 60 * 60 * 1000
@@ -553,20 +555,28 @@ class Room {
       ? req.scopes.map((s) => String(s).trim().replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean).slice(0, MAX_SCOPES)
       : null
     if (scopes && scopes.some((s) => s.length > MAX_PATTERN || s.split('/').includes('..'))) throw new Error('bad folder')
+    // Apps with access types send the access itself ({ files, folders, foldersExcept, talk }),
+    // and the type it came from (typeId), which the relay doesn't need: the API keeps grants.
+    const requested = req.access === undefined ? null : cleanAccess(req.access)
+    if (req.access !== undefined && !requested) throw new Error('bad access')
     if (key === this.meta.owner || key === this.meta.ownerSub) throw new Error('the owner always has full access')
     // `key` is the id from the member or pending list. One account may be waiting on several computers.
     const waiting = [...this.pending].filter(([, p]) => p.id === key)
     if (req.op === 'approve') {
       if (!waiting.length) throw new Error('nobody with that key is waiting')
       const p = waiting[0][1]
-      this.meta.members[key] = { name: p.name, kind: p.kind, role: role || p.invitedAs, scopes: scopes || [], since: Date.now() }
+      const access = requested ? relayAccess(requested) : { role: role || p.invitedAs, scopes: scopes || [], scopesExcept: [], talk: true }
+      this.meta.members[key] = { name: p.name, kind: p.kind, ...access, since: Date.now() }
+      if (this.meta.removed) delete this.meta.removed[key]
       this.saveMeta()
-      this.log(`[${this.name}] ${p.name} approved as ${this.meta.members[key].role}`)
+      this.log(`[${this.name}] ${p.name} approved as ${access.role}`)
       for (const [pws, w] of waiting) {
         this.pending.delete(pws)
         // A hosted agent has no connection to let in: it finds out on its next tool call.
         if (pws.hosted) continue
-        this.enter(pws, { key: w.key, id: key, name: w.name, kind: w.kind, role: this.meta.members[key].role, scopes: this.meta.members[key].scopes, owner: false })
+        this.enter(pws, { key: w.key, id: key, name: w.name, kind: w.kind, ...access, owner: false })
+        // Their app fetches a fresh pass now, so the grant the owner's app just wrote applies.
+        send(pws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(this.access.get(pws)), refresh: true }))
       }
       return { ok: true }
     }
@@ -581,15 +591,17 @@ class Room {
     const m = this.meta.members[key]
     if (!m) throw new Error('no such member')
     if (req.op === 'set') {
-      if (role) m.role = role
-      if (scopes) m.scopes = scopes
+      const want = requested || { ...fromRelay(m), ...(role ? { files: role === 'viewer' ? 'view' : 'edit' } : {}), ...(scopes ? { folders: scopes } : {}) }
+      // Remembered with when, so a pass issued before now can't undo it (see passGrant).
+      Object.assign(m, relayAccess(want), { setAt: Date.now() })
       this.saveMeta()
       for (const [cws, a] of this.access) {
         if (a.id !== key) continue
-        a.role = m.role
-        a.scopes = m.scopes
+        // Someone let in by a grant gets what both their pass and the owner allow: the owner's
+        // app can narrow access at once, but more waits for a pass from the API that allows it.
+        Object.assign(a, relayAccess(this.passGrant(cws.pass) || want))
         this.setAccess(cws, a)
-        send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+        send(cws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refresh: true }))
       }
       return { ok: true }
     }
@@ -597,6 +609,9 @@ class Room {
       // An account goes with any older entries for keys it has used here, so it can't get back in by key.
       const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
       for (const id of gone) delete this.meta.members[id]
+      // A pass issued before now can't bring them back by its grant (see passGrant).
+      const removed = Object.entries({ ...(this.meta.removed || {}), [key]: Date.now() })
+      this.meta.removed = Object.fromEntries(removed.slice(-MAX_REMOVED))
       this.saveMeta()
       for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
       for (const id of gone) this.hostedSeen.delete(id)
