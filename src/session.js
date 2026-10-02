@@ -414,7 +414,7 @@ export class Session extends EventEmitter {
       if (disk && disk.skip) {
         // A folder where the room has a file: moved into the backup, like a differing file is copied there.
         let st = null
-        try { resolveInside(this.root, rel); st = fs.lstatSync(path.join(this.root, ...rel.split('/'))) } catch {}
+        if (!disk.outside) try { st = fs.lstatSync(path.join(this.root, ...rel.split('/'))) } catch {}
         if (!st || !st.isDirectory()) continue // a link or special file: left alone, as the live sync leaves it
         this.moveToBackup(rel, backupDir)
         for (const p of onDisk) if (p.startsWith(rel + '/')) onDisk.delete(p)
@@ -452,8 +452,14 @@ export class Session extends EventEmitter {
     return undefined
   }
 
+  /**
+   * What the folder holds at rel: text, a binary buffer, nothing (null), or a
+   * reason not to use it. `outside`: a parent is a link leading out of the
+   * project, so the file is never read (it may be anyone's).
+   */
   readDisk (rel) {
-    const abs = path.join(this.root, ...rel.split('/'))
+    let abs
+    try { abs = resolveInside(this.root, rel) } catch { return { skip: true, outside: true } }
     let st
     try { st = fs.lstatSync(abs) } catch { return null }
     if (!st.isFile()) return { skip: true }
