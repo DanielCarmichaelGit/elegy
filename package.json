@@ -2,13 +2,17 @@
   "name": "heyquilt",
   "version": "0.3.5",
   "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
+  "author": {
+    "name": "Daniel Carmichael",
+    "url": "https://heyquilt.com"
+  },
   "type": "module",
   "bin": {
     "quilt": "bin/quilt.js",
     "cowove": "bin/quilt.js"
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
     "serve": "node bin/quilt.js serve",
     "app": "electron .",
     "dist:mac": "electron-builder --mac",
@@ -67,7 +71,7 @@
       "package.json",
       "RELEASES.md"
     ],
-    "asar": false,
+    "asar": true,
     "protocols": [
       {
         "name": "quilt invite",

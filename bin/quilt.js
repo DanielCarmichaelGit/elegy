@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import '../src/quiet-warnings.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
