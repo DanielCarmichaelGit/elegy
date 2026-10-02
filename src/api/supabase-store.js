@@ -213,7 +213,12 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async deleteGrant (room, account) {
       return (await one(db.from('session_grants').delete().eq('room', room).eq('account', account).select('account'))).length > 0
     },
-    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt }) {
+    // One open invite per address or account (a unique index; a second one is a 23505). That
+    // key's expired, unused invites go first, so they never block a new one.
+    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, at = Date.now() }) {
+      email = email && email.toLowerCase()
+      await one(db.from('session_invites').delete().eq('room', room).eq(email ? 'email' : 'account', email || account)
+        .is('used_at', null).is('cancelled_at', null).lte('expires_at', ts(at)))
       return rowFrom(await one(db.from('session_invites')
         .insert({ room, email: email && email.toLowerCase(), account, account_name: accountName, type_id: typeId, invited_by: invitedBy, expires_at: ts(expiresAt) })
         .select(SESSION_INVITE).single()))
@@ -222,6 +227,13 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return (await one(db.from('session_invites').select(SESSION_INVITE).eq('room', room).order('created_at', { ascending: false }).limit(50))).map(rowFrom)
     },
     async sessionInviteById (room, id) { return rowFrom(await one(db.from('session_invites').select(SESSION_INVITE).eq('room', room).eq('id', id).maybeSingle())) },
+    // The open (unused, not cancelled, not expired) invite for an address or account, but `exceptId`.
+    async openSessionInvite (room, { email = null, account = null }, at, exceptId = null) {
+      let q = db.from('session_invites').select(SESSION_INVITE).eq('room', room).eq(email ? 'email' : 'account', email || account)
+        .is('used_at', null).is('cancelled_at', null).gt('expires_at', ts(at))
+      if (exceptId) q = q.neq('id', exceptId)
+      return rowFrom((await one(q.limit(1)))[0] || null)
+    },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelSessionInvite (id) {
       const rows = await one(db.from('session_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).select('id'))

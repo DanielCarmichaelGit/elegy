@@ -58,9 +58,20 @@ test('grants upsert on (room, account), and an email invite is claimed by one fu
 test('session invites keep a lowercase email and never a link', async () => {
   const { client, calls } = fakeClient(() => ({ id: 'i1', room: 'r1', email: 'lin@acme.com', account: null, account_name: '', type_id: 'builtin:edit', invited_by: 'person:u1', created_at: '2026-10-02T00:00:00Z', expires_at: '2026-10-09T00:00:00Z', used_at: null, used_by: null, cancelled_at: null }))
   const s = createSupabaseStore({ client })
-  const i = await s.createSessionInvite({ room: 'r1', email: 'Lin@Acme.com', typeId: 'builtin:edit', invitedBy: 'person:u1', expiresAt: Date.parse('2026-10-09T00:00:00Z') })
-  assert.deepEqual(calls[0].ops[0], ['insert', { room: 'r1', email: 'lin@acme.com', account: null, account_name: '', type_id: 'builtin:edit', invited_by: 'person:u1', expires_at: '2026-10-09T00:00:00.000Z' }])
+  const i = await s.createSessionInvite({ room: 'r1', email: 'Lin@Acme.com', typeId: 'builtin:edit', invitedBy: 'person:u1', expiresAt: Date.parse('2026-10-09T00:00:00Z'), at: Date.parse('2026-10-02T00:00:00Z') })
+  // That address's expired, unused invite goes first, so the unique index lets the new one in.
+  assert.deepEqual(calls[0].ops, [['delete'], ['eq', 'room', 'r1'], ['eq', 'email', 'lin@acme.com'], ['is', 'used_at', null], ['is', 'cancelled_at', null], ['lte', 'expires_at', '2026-10-02T00:00:00.000Z']])
+  assert.deepEqual(calls[1].ops[0], ['insert', { room: 'r1', email: 'lin@acme.com', account: null, account_name: '', type_id: 'builtin:edit', invited_by: 'person:u1', expires_at: '2026-10-09T00:00:00.000Z' }])
   assert.deepEqual([i.typeId, i.expiresAt, i.usedAt], ['builtin:edit', Date.parse('2026-10-09T00:00:00Z'), null])
+})
+
+test("an address or account's open invite is one query, not a page of the list", async () => {
+  const row = { id: 'i1', room: 'r1', email: null, account: 'person:lin', account_name: 'Lin', type_id: 'builtin:edit', invited_by: 'person:u1', created_at: '2026-10-02T00:00:00Z', expires_at: '2026-10-09T00:00:00Z', used_at: null, used_by: null, cancelled_at: null }
+  const { client, calls } = fakeClient(() => [row])
+  const s = createSupabaseStore({ client })
+  const i = await s.openSessionInvite('r1', { account: 'person:lin' }, Date.parse('2026-10-03T00:00:00Z'), 'i0')
+  assert.equal(i.account, 'person:lin')
+  assert.deepEqual(calls[0].ops.slice(1), [['eq', 'room', 'r1'], ['eq', 'account', 'person:lin'], ['is', 'used_at', null], ['is', 'cancelled_at', null], ['gt', 'expires_at', '2026-10-03T00:00:00.000Z'], ['neq', 'id', 'i0'], ['limit', 1]])
 })
 
 test('deleting a user removes its access before its activity, before the auth user', async () => {

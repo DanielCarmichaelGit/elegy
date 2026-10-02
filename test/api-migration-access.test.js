@@ -40,3 +40,10 @@ test('deleting a type falls back to View only, and an email invite moves its gra
   assert.match(s, /expires_at > p_now/)
   assert.match(s, /delete from public\.session_grants where room = p_room and account = 'email:' \|\| p_email;/)
 })
+
+test('one open invite per address or account, kept by the database; invites are indexed by account', () => {
+  const s = sql()
+  assert.ok(s.includes('create unique index session_invites_open_email on public.session_invites (room, email) where used_at is null and cancelled_at is null;'))
+  assert.ok(s.includes('create unique index session_invites_open_account on public.session_invites (room, account) where used_at is null and cancelled_at is null;'))
+  assert.ok(s.includes('create index session_invites_account on public.session_invites (account);'))
+})

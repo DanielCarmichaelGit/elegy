@@ -305,9 +305,14 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async deleteGrant (room, account) { return grants.delete(grantKey(room, account)) },
 
     // Session invites: the link is never kept.
-    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt }) {
+    // Mirrors the unique indexes on open invites, and clearing that key's expired ones first.
+    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, at = now() }) {
       if (!relaySessions.has(room)) throw fkViolation('session', 'does not exist')
       if ((email == null) === (account == null)) throw checkViolation('an invite is for an email or an account')
+      email = email && email.toLowerCase()
+      const same = (i) => i.room === room && (email ? i.email === email : i.account === account) && !i.usedAt && !i.cancelledAt
+      for (const [id, i] of sessionInvites) if (same(i) && i.expiresAt <= at) sessionInvites.delete(id)
+      if (all(sessionInvites, same).length) throw duplicate('an open invite')
       const row = { id: uuid(), room, email: email && email.toLowerCase(), account, accountName, typeId, invitedBy, createdAt: now(), expiresAt, usedAt: null, usedBy: null, cancelledAt: null }
       sessionInvites.set(row.id, row); return copy(row)
     },
@@ -315,6 +320,10 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return all(sessionInvites, (i) => i.room === room).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(copy)
     },
     async sessionInviteById (room, id) { const i = sessionInvites.get(id); return i && i.room === room ? copy(i) : null },
+    async openSessionInvite (room, { email = null, account = null }, at, exceptId = null) {
+      const found = all(sessionInvites, (i) => i.room === room && i.id !== exceptId && (email ? i.email === email : i.account === account) && inviteOpenAt(i, at))
+      return copy(found[0] || null)
+    },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelSessionInvite (id) {
       const i = sessionInvites.get(id)

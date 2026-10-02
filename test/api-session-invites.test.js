@@ -108,3 +108,45 @@ test('a failed email keeps the invite and says what to do', async () => {
   } finally { t.sent.push = send }
   assert.equal((await t.call('GET', `/v1/sessions/${room}/invites`, null, 'mem')).body.invites.length, 1)
 })
+
+test('an open invite is found however many invites the session has', async () => {
+  const room = await session()
+  assert.equal((await invite(room, { to: { email: 'pat@example.com' } })).status, 200)
+  // 50 newer invites (straight into the store: the route limits how fast the owner sends).
+  for (let i = 0; i < 50; i++) await t.store.createSessionInvite({ room, email: `p${i}@example.com`, typeId: 'builtin:edit', invitedBy: 'person:mem', expiresAt: clock + DAY, at: clock })
+  const again = await invite(room, { to: { email: 'pat@example.com' } })
+  assert.deepEqual([again.status, again.body.error], [409, 'That address already has an open invite. Cancel it first.'])
+})
+
+test('the database refuses a second open invite, which reads as the usual message', async () => {
+  const room = await session()
+  assert.equal((await invite(room, { to: { email: 'pat@example.com' } })).status, 200)
+  await assert.rejects(t.store.createSessionInvite({ room, email: 'pat@example.com', typeId: 'builtin:edit', invitedBy: 'person:mem', expiresAt: clock + DAY, at: clock }), (err) => err.code === '23505')
+  // Two requests at once both pass the check; the second insert loses.
+  const real = t.store.openSessionInvite
+  t.store.openSessionInvite = async () => null
+  try {
+    const raced = await invite(room, { to: { email: 'pat@example.com' }, typeId: 'builtin:view' })
+    assert.deepEqual([raced.status, raced.body.error], [409, 'That address already has an open invite. Cancel it first.'])
+  } finally { t.store.openSessionInvite = real }
+  assert.deepEqual(await grants(room), [['email:pat@example.com', 'Can edit']], 'the losing request changed nothing')
+})
+
+test('an expired invite does not block a new one', async () => {
+  const room = await session()
+  assert.equal((await invite(room, { to: { email: 'pat@example.com' } })).status, 200)
+  clock += 8 * DAY
+  try {
+    const again = await invite(room, { to: { email: 'pat@example.com' }, typeId: 'builtin:view' })
+    assert.equal(again.status, 200, JSON.stringify(again.body))
+    assert.deepEqual(await grants(room), [['email:pat@example.com', 'View only']])
+  } finally { clock -= 8 * DAY }
+})
+
+test('someone who already has access is changed from the people menu, not invited again', async () => {
+  const room = await session()
+  assert.equal((await t.call('PUT', `/v1/sessions/${room}/grants/person:lim`, { typeId: 'builtin:view' }, 'mem')).status, 200)
+  const res = await invite(room, { to: { account: 'person:lim' } })
+  assert.deepEqual([res.status, res.body.error], [409, 'They already have access to this session. Change it from the people menu.'])
+  assert.deepEqual(await grants(room), [['person:lim', 'View only']], 'their grant is untouched')
+})

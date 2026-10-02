@@ -56,7 +56,11 @@ create table public.session_invites (
   check ((email is null) <> (account is null))
 );
 create index session_invites_room on public.session_invites (room, created_at);
-create index session_invites_email on public.session_invites (room, email) where used_at is null and cancelled_at is null;
+-- One open invite per address or account in a session. Expiry isn't part of it (it moves
+-- with time): the API deletes that key's expired, unused invites just before inserting.
+create unique index session_invites_open_email on public.session_invites (room, email) where used_at is null and cancelled_at is null;
+create unique index session_invites_open_account on public.session_invites (room, account) where used_at is null and cancelled_at is null;
+create index session_invites_account on public.session_invites (account);
 
 alter table public.access_types enable row level security;
 alter table public.session_grants enable row level security;
