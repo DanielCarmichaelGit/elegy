@@ -396,3 +396,13 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 @media (max-width: 420px) {
   .agent-caps { grid-template-columns: 1fr; }
 }
+
+/* access types */
+.textarea { height: auto; padding: 10px 12px; resize: vertical; font: inherit; }
+.small { font-size: 13px; }
+.switch { gap: 8px; font-size: 15px; }
+details.access-type { display: block; }
+details.access-type > summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; list-style: none; }
+details.access-type > summary::-webkit-details-marker { display: none; }
+details.access-type[open] > summary .btn { visibility: hidden; }
+details.access-type > form { margin-top: 14px; }
