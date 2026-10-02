@@ -9,10 +9,11 @@ import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSes
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
 import { fileCardHref, renderable } from './chat.js'
+import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 
 let current = null // session id being shown
 let timers = []
-let grants = new Map() // account -> its grant in this session (the owner's view, from the API)
+let grantLoad = grantsLoading() // this session's grants (the owner's view, from the API), for the Access sections
 let mounted = null // AbortController for document-level listeners of this mount
 
 // ------------------------------------------------------------ layout state --
@@ -129,7 +130,7 @@ export function mountSession (id) {
   renderMessages(false, true)
   renderRecipients()
   renderComposer()
-  grants = new Map()
+  grantLoad = grantsLoading()
   // The approve control and the people menu offer access types once they're here.
   loadAccessTypes().then(() => { if (current === id) { renderAccess(); if (!$('#people-menu').hidden) renderPeopleMenu() } })
   loadTree()
@@ -355,6 +356,12 @@ function bindTop () {
       toast('Access updated')
     } catch (err) { toast(err.message) }
   })
+  menu.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-retry-grants]')) return
+    grantLoad = grantsLoading()
+    renderPeopleMenu({ force: true })
+    loadGrants()
+  })
   menu.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-remove]')
     if (!b) return
@@ -373,12 +380,14 @@ function bindTop () {
     const f = e.target.closest('.pm-access')
     if (!f) return
     e.preventDefault()
-    const tighten = { ...(f.viewOnly.checked ? { files: 'view' } : {}), ...(f.noTalk.checked ? { talk: false } : {}), foldersRemove: parseScopes(f.foldersRemove.value) }
+    // Only what was loaded: never a default type saved over a grant we haven't seen.
+    const body = accessSaveBody(grantLoad, state.accessTypes, f.dataset.key, { typeId: f.typeId.value, viewOnly: f.viewOnly.checked, noTalk: f.noTalk.checked, foldersRemove: f.foldersRemove.value })
+    if (!body) return toast('Their access is still loading. Try again in a moment.')
     const save = f.querySelector('[type=submit]')
     save.disabled = true
     try {
-      const r = await api('POST', `/api/sessions/${current}/members/access`, { key: f.dataset.key, typeId: f.typeId.value, tighten })
-      grants.set(f.dataset.key, r.grant)
+      const r = await api('POST', `/api/sessions/${current}/members/access`, body)
+      grantLoad.grants.set(f.dataset.key, r.grant)
       toast('Access updated')
       // The relay's member list may have redrawn the form meanwhile, from the old grant.
       save.blur()
@@ -566,19 +575,21 @@ function membersHtml (st) {
  * for them here (view only, folders taken away, no posting). It never widens the type.
  */
 function accessForm (m) {
-  const g = grants.get(m.key)
-  const t = g?.tighten || {}
-  const typeId = g?.typeId || (m.role === 'viewer' ? 'builtin:view' : 'builtin:edit')
+  // Disabled until this session's grants are here: Save only sends what was loaded.
+  const v = accessFormValues(grantLoad, m)
+  const ready = v.state === 'ready'
+  const off = ready ? '' : 'disabled'
   const name = esc(m.name)
   return `
       <form class="pm-member edit pm-access" data-key="${esc(m.key)}">
         <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${name}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <span class="hint pm-now">${esc(accessLine(m))}</span>
-        <select class="input" name="typeId" aria-label="Access type for ${name}">${typeOptions(typeId)}</select>
-        <label class="pm-check"><input type="checkbox" name="viewOnly" ${t.files === 'view' ? 'checked' : ''}> View only</label>
-        <label class="pm-check"><input type="checkbox" name="noTalk" ${t.talk === false ? 'checked' : ''}> No posting</label>
-        <input class="input" name="foldersRemove" value="${esc(scopesText(t.foldersRemove))}" placeholder="Take away folders, e.g. secrets" aria-label="Folders ${name} may not change" title="Folders taken away from this person, separated by commas">
-        <button type="submit" class="btn sm">Save</button>
+        ${ready ? '' : `<span class="hint pm-load ${v.state === 'error' ? 'warn' : ''}" role="status">${esc(v.message)}</span>`}
+        <select class="input" name="typeId" aria-label="Access type for ${name}" ${off}>${typeOptions(ready ? v.typeId : '')}</select>
+        <label class="pm-check"><input type="checkbox" name="viewOnly" ${ready && v.viewOnly ? 'checked' : ''} ${off}> View only</label>
+        <label class="pm-check"><input type="checkbox" name="noTalk" ${ready && v.noTalk ? 'checked' : ''} ${off}> No posting</label>
+        <input class="input" name="foldersRemove" value="${esc(ready ? v.foldersRemove : '')}" placeholder="Take away folders, e.g. secrets" aria-label="Folders ${name} may not change" title="Folders taken away from this person, separated by commas" ${off}>
+        ${v.state === 'error' ? '<button type="button" class="btn sm" data-retry-grants>Retry</button>' : `<button type="submit" class="btn sm" ${off}>Save</button>`}
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${name}" aria-label="Remove ${name}">${I.x}</button>
       </form>`
 }
@@ -586,21 +597,29 @@ function accessForm (m) {
 /** The owner's grants in this session, from the API, for the Access sections. */
 async function loadGrants () {
   const id = current
+  let next
   try {
-    const r = await api('GET', `/api/sessions/${id}/grants`)
-    if (id !== current) return
-    grants = new Map(r.grants.map((g) => [g.account, g]))
-    if (!$('#people-menu').hidden) renderPeopleMenu()
-  } catch {}
+    next = grantsLoaded((await api('GET', `/api/sessions/${id}/grants`)).grants)
+  } catch (err) {
+    // The forms say so and offer Retry: saving from grants we couldn't check isn't safe.
+    next = grantsFailed(err)
+  }
+  if (id !== current) return
+  grantLoad = next
+  // Fresh grants replace what the forms show, even one the owner is in.
+  if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
 }
 
-function renderPeopleMenu () {
+function renderPeopleMenu ({ force = false } = {}) {
   const st = sum().status
   const menu = $('#people-menu')
   const focusEl = menu.querySelector('#focus-input')
   const typing = focusEl && document.activeElement === focusEl ? focusEl.value : null
-  // Don't redraw under the owner while they change someone's access.
-  if (menu.querySelector('.pm-member.edit') && menu.contains(document.activeElement) && document.activeElement.closest('.pm-member')) return
+  // Don't redraw under the owner while they change someone's access (unless fresh grants
+  // arrived: then the form is redrawn from them, and keeps its focus).
+  const active = menu.contains(document.activeElement) && document.activeElement.closest('.pm-member') ? document.activeElement : null
+  if (!force && active && menu.querySelector('.pm-member.edit')) return
+  const refocus = active && active.name ? [active.closest('.pm-member').dataset.key, active.name] : null
   const self = personInfo(st.me.name)
   const a = st.me.agent || {}
   // Your AI chat: two plain switches instead of a button plus a checkbox.
@@ -647,6 +666,7 @@ function renderPeopleMenu () {
     el.focus()
     el.setSelectionRange(el.value.length, el.value.length)
   }
+  if (refocus) [...menu.querySelectorAll('.pm-member')].find((f) => f.dataset.key === refocus[0])?.elements?.[refocus[1]]?.focus()
 }
 
 // ------------------------------------------------------ main area (AI/Files) --

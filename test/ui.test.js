@@ -41,6 +41,8 @@ test('serves the app and logo without a token', async () => {
   assert.equal(page.status, 200)
   assert.match(await page.text(), /<script type="module" src="\/app.js">/)
   assert.equal((await fetch(base + '/logo.svg')).headers.get('content-type'), 'image/svg+xml')
+  // Every module the session page imports is served (session.js imports access-form.js).
+  assert.equal((await fetch(base + '/access-form.js')).status, 200)
 })
 
 test('API requires the launch token', async () => {

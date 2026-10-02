@@ -83,6 +83,7 @@ const STATIC = {
   '/common.js': ['common.js', 'text/javascript; charset=utf-8'],
   '/mark.js': ['mark.js', 'text/javascript; charset=utf-8'],
   '/invite.js': ['invite.js', 'text/javascript; charset=utf-8'],
+  '/access-form.js': ['access-form.js', 'text/javascript; charset=utf-8'],
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],

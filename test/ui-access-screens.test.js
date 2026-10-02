@@ -28,6 +28,12 @@ test("the owner's Access section changes the type and narrows it", () => {
   for (const bit of ['class="pm-member edit pm-access"', 'name="viewOnly"', 'View only', 'name="noTalk"', 'No posting', 'name="foldersRemove"', '/members/access', '/grants']) assert.ok(s.includes(bit), bit)
 })
 
+test('the Access section waits for the grants, offers Retry when they fail, and redraws from fresh ones', () => {
+  const s = ui('session.js')
+  for (const bit of ["from './access-form.js'", 'accessFormValues(grantLoad, m)', 'data-retry-grants', 'accessSaveBody(grantLoad, state.accessTypes', 'next = grantsFailed(err)', 'renderPeopleMenu({ force: true })']) assert.ok(s.includes(bit), bit)
+  assert.ok(!s.includes('catch {}\n}\n\nfunction renderPeopleMenu'), 'a failed load is not swallowed')
+})
+
 test('the invite panel invites as a type, from people you have worked with or by email, and lists pending invites', () => {
   const a = ui('app.js')
   for (const bit of ['Invite as', "People you've worked with", 'data-invite-account', 'Invite by email', 'Send invite', 'Pending invites', 'data-cancel-invite', '/api/collaborators', '/invites/cancel']) assert.ok(a.includes(bit), bit)
