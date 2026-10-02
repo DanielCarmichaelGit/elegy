@@ -20,6 +20,7 @@ import {
 import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob, blobId } from './largefiles.js'
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
+import { changeRefusal, TALK_REFUSED } from './session-access.js'
 
 export { applyTextDiff }
 
@@ -51,7 +52,8 @@ export class Session extends EventEmitter {
     this.viewSecret = viewSecret
     this.name = name
     this.identity = identity
-    this.passes = passes // signs in to a relay that requires it (see pass-source.js)
+    // Signs in to a relay that requires it (see pass-source.js), with passes for this room.
+    this.passes = passes && passes.forRoom ? passes.forRoom(room) : passes
     this.tool = tool
     this.color = color
     this.prefer = prefer
@@ -216,9 +218,12 @@ export class Session extends EventEmitter {
     this.access = a
     if (a.state === 'approved' && a.owner) this.sendStartName()
     if (a.state === 'pending' && (!was || was.state !== 'pending')) this.log(`⏳ waiting for the session owner to let you in (you were invited to ${a.invitedAs === 'viewer' ? 'view' : 'edit'})`)
-    if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes))) {
-      this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}`)
+    if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes) || String(was.scopesExcept || []) !== String(a.scopesExcept || []))) {
+      const except = a.role !== 'viewer' && a.scopesExcept && a.scopesExcept.length ? `, except ${a.scopesExcept.join(', ')}` : ''
+      this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}${except}`)
     }
+    if (a.state === 'approved' && (was ? was.talk !== false : true) && a.talk === false) this.log(`🔇 ${TALK_REFUSED}`)
+    if (a.state === 'approved' && was && was.talk === false && a.talk !== false) this.log('💬 you can post in this session again')
     if (a.refused) this.log(`🔒 the relay undid your change to ${a.refused.join(', ')}: ${a.why}`)
     this.emit('access', a)
     this.scheduleStatusWrite()
@@ -240,9 +245,12 @@ export class Session extends EventEmitter {
   writeRefusal (rel) {
     const a = this.access
     if (!a || a.state !== 'approved') return null
-    if (a.role === 'viewer') return 'you can only view this session'
-    if (a.scopes && a.scopes.length && !a.scopes.some((sc) => globMatcher(sc)(rel))) return `you may only change files in ${a.scopes.join(', ')}`
-    return null
+    return changeRefusal(a, rel)
+  }
+
+  /** May we post to chat and the feed? (The session's owner can say no; the relay undoes posts then.) */
+  mayTalk () {
+    return !(this.access && this.access.state === 'approved' && this.access.talk === false)
   }
 
   get isOwner () { return !!(this.access && this.access.owner) }
@@ -1223,6 +1231,7 @@ export class Session extends EventEmitter {
    * from the relay or a modified client).
    */
   say (text, { to = null, file = null } = {}) {
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     text = String(text || '').slice(0, 4000)
     if (!text && !file) throw new Error('message is empty')
     to = to ? String(to).trim() : null
@@ -1241,6 +1250,7 @@ export class Session extends EventEmitter {
 
   /** Uploads a file to the relay and posts it as a message. */
   async sendFile (filePath, { to = null, text = '' } = {}) {
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     const abs = path.resolve(this.root, filePath)
     const st = fs.statSync(abs)
     if (!st.isFile()) throw new Error(`${filePath} is not a file`)
@@ -1421,6 +1431,7 @@ export class Session extends EventEmitter {
   }
 
   shareAgentEntries (entries) {
+    if (!this.mayTalk()) return 0
     const indexById = new Map()
     this.agentFeed.forEach((e, i) => { if (e && e.by === this.name && e.id) indexById.set(e.id, i) })
     const fresh = []
@@ -1466,10 +1477,12 @@ export class Session extends EventEmitter {
     on = !!on
     if (on === this.agentSharing) return on
     const marker = { id: `${on ? 'resumed' : 'paused'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, by: this.name, tool: null, conv: null, kind: on ? 'resumed' : 'paused', text: '', ts: Date.now() }
-    this.doc.transact(() => {
-      this.agentFeed.push([marker])
-      this.trimAgentFeed()
-    }, LOCAL)
+    if (this.mayTalk()) {
+      this.doc.transact(() => {
+        this.agentFeed.push([marker])
+        this.trimAgentFeed()
+      }, LOCAL)
+    }
     this.agentSharing = on
     this.publishAgentState()
     this.saveConfig({ shareAgent: on })

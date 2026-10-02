@@ -333,6 +333,8 @@ export class Connection extends EventEmitter {
       this.access = JSON.parse(decoding.readVarString(dec))
       if (was && was.state === 'pending' && this.access.state === 'approved') this.startSync()
       this.emit('access', this.access)
+      // The owner just changed what we may do: a fresh pass carries what the API now says.
+      if (this.access.refresh && this.passes) this.refreshPass()
     } else if (type === MSG_MEMBERS) {
       const msg = JSON.parse(decoding.readVarString(dec))
       this.emit('members', msg)
