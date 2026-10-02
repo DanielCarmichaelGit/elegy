@@ -2,6 +2,7 @@
 // combined on their own. Kept as plain objects in the shared doc so everyone
 // in the session (and every AI) sees the same list and anyone can settle it.
 import crypto from 'node:crypto'
+import { isSafeRelPath } from './pathrules.js'
 
 export const MAX_RECORD_TEXT = 200_000
 export const MAX_MERGES = 50
@@ -11,20 +12,27 @@ export const STATES = ['open', 'editing', 'done']
 export const HOWS = ['mine', 'theirs', 'hand', 'agent', 'review']
 
 const HEX_ID = /^[0-9a-f]{16}$/i
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f]/
 const str = (v, max) => typeof v === 'string' && v.length <= max
 const optStr = (v, max) => v == null || str(v, max)
+// Names, paths and reasons go verbatim into logs and into the prompt a coding
+// tool gets for Send to…: one line each, no control characters.
+const line = (v, max) => str(v, max) && !CONTROL.test(v)
+const optLine = (v, max) => v == null || line(v, max)
 
 /** A record we'll show. Anything a modified client pushed that isn't this shape is ignored. */
 export function publicMerge (v) {
   if (!v || typeof v !== 'object') return null
   if (typeof v.id !== 'string' || !HEX_ID.test(v.id)) return null
-  if (!str(v.path, 1024) || !v.path) return null
-  if (!str(v.by, 80) || !optStr(v.byId, 128)) return null
-  if (!Array.isArray(v.others) || v.others.length > 20 || !v.others.every((n) => str(n, 80))) return null
+  // A path any member could be made to write: inside the project, never .git or .quilt.
+  if (!line(v.path, 1024) || !isSafeRelPath(v.path)) return null
+  if (!line(v.by, 80) || !optStr(v.byId, 128)) return null
+  if (!Array.isArray(v.others) || v.others.length > 20 || !v.others.every((n) => line(n, 80))) return null
   if (typeof v.ts !== 'number' || !Number.isFinite(v.ts)) return null
   if (!KINDS.includes(v.kind) || !STATES.includes(v.state)) return null
   if (!optStr(v.ours, MAX_RECORD_TEXT) || !optStr(v.base, MAX_RECORD_TEXT) || !optStr(v.theirsHash, 64)) return null
-  if (!optStr(v.claimedBy, 80) || !optStr(v.resolvedBy, 80) || !optStr(v.reason, 500)) return null
+  if (!optLine(v.claimedBy, 80) || !optLine(v.resolvedBy, 80) || !optLine(v.reason, 500)) return null
   if (v.how != null && !HOWS.includes(v.how)) return null
   if (v.doneTs != null && typeof v.doneTs !== 'number') return null
   // Deleted offline: ours is gone, not merely too big to share (records from before this field have none).

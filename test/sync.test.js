@@ -979,7 +979,31 @@ test('a viewer sees a merge but cannot settle it, not even as reviewed', async (
   assert.equal(read(dirB, 'same.txt'), 'top\nmiddle (alice)\nbottom\n')
 })
 
-const readBuf = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel)) } catch { return null } }
+test('a crafted merge record for an ignored or unsafe path never touches the disk', async (t) => {
+  const { A, B, dirB } = await pair(t)
+  write(dirB, '.env', 'SECRET=mine\n')
+  const crafted = (id, fields) => ({ id, by: 'alice', byId: null, others: [], ts: Date.now(), kind: 'conflict', state: 'open', ours: null, base: null, theirsHash: null, binary: false, local: false, oursDeleted: false, claimedBy: null, resolvedBy: null, how: null, doneTs: null, reason: null, ...fields })
+  A.doc.transact(() => {
+    A.merges.set('a000000000000001', crafted('a000000000000001', { path: '.env', ours: 'SECRET=pwned\n' }))
+    A.merges.set('a000000000000002', crafted('a000000000000002', { path: '.env.local', oursDeleted: true }))
+    A.merges.set('a000000000000003', crafted('a000000000000003', { path: '.git/hooks/pre-commit', ours: '#!/bin/sh\necho pwned\n' }))
+  })
+  await waitFor(() => B.mergeList().length === 2)
+  assert.deepEqual(B.mergeList().map((m) => m.path).sort(), ['.env', '.env.local'], 'a .git path is not even listed')
+  for (const how of ['mine', 'theirs', 'hand']) {
+    assert.throws(() => B.resolveMerge('a000000000000001', { how }), /not synced/)
+    assert.throws(() => B.resolveMerge('a000000000000002', { how }), /not synced/)
+  }
+  assert.throws(() => B.resolveMerge('a000000000000003', { how: 'mine' }), /no such merge/)
+  assert.throws(() => B.prepareMergeSend('a000000000000001'), /not synced/)
+  assert.equal(read(dirB, '.env'), 'SECRET=mine\n')
+  assert.equal(fs.existsSync(path.join(dirB, '.git')), false)
+  // It can still be dismissed, which only closes the record.
+  assert.equal(B.resolveMerge('a000000000000001', { how: 'review' }).state, 'done')
+  assert.equal(read(dirB, '.env'), 'SECRET=mine\n')
+})
+
+const readBuf =(dir, rel) => { try { return fs.readFileSync(path.join(dir, rel)) } catch { return null } }
 const exists = (dir, rel) => fs.existsSync(path.join(dir, rel))
 /** rejoinAfter for one binary file (rejoinAfter compares the shared text, which a binary has none of). */
 async function rejoinAfterBinary (t, p, rel, bob, alice) {

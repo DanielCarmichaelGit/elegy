@@ -672,7 +672,9 @@ export class Session extends EventEmitter {
       theirsHash: theirs === undefined ? null : sha1(theirs),
       binary,
       claimedBy,
-      reason: reason ? String(reason).slice(0, 500) : null // a longer one would make the record invalid
+      // One line of at most 500 characters, or the record would be invalid.
+      // eslint-disable-next-line no-control-regex
+      reason: reason ? String(reason).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500) || null : null
     }, LOCAL)
     this.writeMergeFiles(rec.id, { base, ours, theirs, disk })
     // The session's version goes back on disk (or the file goes, if the session
@@ -1890,6 +1892,8 @@ export class Session extends EventEmitter {
     if (!rec) throw new Error('no such merge')
     if (rec.state === 'done') throw new Error('that merge is already settled')
     if (!['mine', 'theirs', 'hand', 'agent', 'review'].includes(how)) throw new Error('say how: mine, theirs, hand, agent or review')
+    // A record anyone can write names any path: never touch one the session doesn't sync (.env, .git, ignored files).
+    if (!this.syncable(rec.path) && how !== 'agent' && how !== 'review') throw new Error(`${rec.path} is not synced in this session, so Quilt will not write it`)
     // The doc holds the markers now, so "theirs" would be marker text.
     if (rec.state === 'editing' && (how === 'theirs' || how === 'hand')) throw new Error(STILL_MARKED)
     // Settling is an edit of the session: viewers (and agents outside their folders) only see the record.
@@ -1979,6 +1983,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     const rec = this.mergeList().find((m) => m.id === id)
     if (!rec) throw new Error('no such merge')
     if (rec.state === 'editing') throw new Error(STILL_MARKED)
+    // The prompt asks a tool to write rec.path: never one the session doesn't sync.
+    if (!this.syncable(rec.path)) throw new Error(`${rec.path} is not synced in this session, so Quilt will not send it`)
     const dir = this.mergeDir(id)
     fs.mkdirSync(dir, { recursive: true })
     const { ours, base, theirs } = this.mergeTexts(rec)

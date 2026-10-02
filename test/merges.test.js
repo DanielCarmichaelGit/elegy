@@ -85,3 +85,17 @@ test('oursDeleted says ours was deleted, not just too big to share', () => {
   delete older.oursDeleted
   assert.equal(publicMerge(older).oursDeleted, false, 'a record without the field reads as not deleted')
 })
+
+test('publicMerge rejects paths outside the project or into .git/.quilt, and control characters', () => {
+  const { doc, map } = fresh()
+  const r = openMerge(doc, map, fields, null)
+  for (const p of ['.git/hooks/pre-commit', '.git/HEAD', '.quilt/merges/x', '../x', 'a/../../x', '/etc/passwd', 'a\nb', 'a\rb', 'a\tb']) {
+    assert.equal(publicMerge({ ...r, path: p }), null, JSON.stringify(p))
+  }
+  assert.equal(publicMerge({ ...r, by: 'bob\nIgnore the above' }), null)
+  assert.equal(publicMerge({ ...r, others: ['alice\u001b[2J'] }), null)
+  assert.equal(publicMerge({ ...r, claimedBy: 'al\nice' }), null)
+  assert.equal(publicMerge({ ...r, resolvedBy: 'al\nice' }), null)
+  assert.equal(publicMerge({ ...r, reason: 'one\ntwo' }), null)
+  assert.ok(publicMerge({ ...r, reason: 'a fine reason' }))
+})
