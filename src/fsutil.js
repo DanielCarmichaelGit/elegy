@@ -36,17 +36,24 @@ export function loadIgnore (root) {
 
 /**
  * Resolves a relative path to an absolute one inside root, making sure no
- * symlinked parent directory points outside of it.
+ * symlinked parent directory points outside of it (or nowhere: a dangling
+ * link could later lead anywhere). Throws when it does; the path is then
+ * neither read nor written.
  */
 export function resolveInside (root, rel) {
-  const abs = path.join(root, ...rel.split('/'))
+  const parts = rel.split('/')
+  const abs = path.join(root, ...parts)
   const realRoot = fs.realpathSync(root)
-  let dir = path.dirname(abs)
-  // Find the deepest existing ancestor and check where it really points.
-  while (!fs.existsSync(dir)) dir = path.dirname(dir)
-  const realDir = fs.realpathSync(dir)
-  if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) {
-    throw new Error(`refusing to write outside project: ${rel}`)
+  const refuse = () => { throw new Error(`refusing to touch a path outside the project: ${rel}`) }
+  let dir = root
+  for (const part of parts.slice(0, -1)) {
+    dir = path.join(dir, part)
+    let st
+    try { st = fs.lstatSync(dir) } catch { break } // nothing deeper exists yet
+    if (!st.isSymbolicLink()) continue
+    let real
+    try { real = fs.realpathSync(dir) } catch { refuse() }
+    if (real !== realRoot && !real.startsWith(realRoot + path.sep)) refuse()
   }
   return abs
 }

@@ -85,6 +85,11 @@ export class Session extends EventEmitter {
 
     this.ig = loadIgnore(this.root)
     this.lastKnown = new Map() // path -> text content, or "bin:<sha1>"
+    // path -> sha1 of lastKnown when state.json was last saved (null: a state file from before this was kept).
+    this.known = null
+    // path -> why the shared version could not be written. Tried again by
+    // retryFailed; meanwhile what's on disk is never taken for a local edit.
+    this.writeFailed = new Map()
     this.pending = new Set()
     this.flushTimer = null
     this.rechecks = new Map() // path -> timer
@@ -251,11 +256,13 @@ export class Session extends EventEmitter {
         if (ev.target === this.files) for (const k of ev.changes.keys.keys()) paths.add(k)
         else if (ev.path.length) paths.add(ev.path[0])
       }
-      for (const p of paths) this.fromRemote(p)
+      this.applyRemote(paths)
     })
     this.blobs.observe((ev, tr) => {
       if (tr.origin === LOCAL) return
-      for (const k of ev.changes.keys.keys()) { this.retry.delete(k); this.fromRemote(k) }
+      const paths = [...ev.changes.keys.keys()]
+      for (const k of paths) this.retry.delete(k)
+      this.applyRemote(paths)
     })
     this.fileKeys.observe(() => {
       this.shareKeysWithViewers()
@@ -266,15 +273,20 @@ export class Session extends EventEmitter {
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
         for (const msg of item.content.getContent()) {
-          if (!msg || !this.canSee(msg)) continue
-          this.emit('message', this.describeMessage(msg))
-          if (tr.origin === LOCAL || msg.by === this.name) continue
-          this.log(`💬 ${formatMessage(msg)}`)
-          if (msg.file) {
-            this.fetchFile(msg).then(
-              (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
-              (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: quilt get ${msg.id})`)
-            )
+          // A malformed message (a modified client can push anything) is skipped, never fatal to the rest.
+          try {
+            if (!this.canSee(msg)) continue
+            this.emit('message', this.describeMessage(msg))
+            if (tr.origin === LOCAL || msg.by === this.name) continue
+            this.log(`💬 ${formatMessage(msg)}`)
+            if (msg.file) {
+              this.fetchFile(msg).then(
+                (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
+                (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: quilt get ${msg.id})`)
+              )
+            }
+          } catch (err) {
+            this.emit('debug', `skipping a bad chat message: ${err.message}`)
           }
         }
       }
@@ -310,6 +322,7 @@ export class Session extends EventEmitter {
       if (meta.room !== this.room || meta.server !== this.server) return false
       Y.applyUpdate(this.doc, fs.readFileSync(this.stateFile), LOCAL)
       this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
+      this.known = meta.known ? new Map(Object.entries(meta.known)) : null
       return true
     } catch {
       return false
@@ -327,7 +340,11 @@ export class Session extends EventEmitter {
     const tmp = this.stateFile + '.tmp'
     fs.writeFileSync(tmp, Y.encodeStateAsUpdate(this.doc))
     fs.renameSync(tmp, this.stateFile)
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk) }))
+    // Hashes of what we last wrote or read for each path: on the next start they
+    // tell a file the room changed behind our back from one edited offline.
+    const known = {}
+    for (const [rel, key] of this.lastKnown) known[rel] = sha1(key)
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known }))
   }
 
   // ------------------------------------------------------------ reconcile --
@@ -343,6 +360,7 @@ export class Session extends EventEmitter {
   reconcileOffline () {
     const onDisk = new Set(walk(this.root, this.ig))
     const downloads = []
+    const take = [] // shared versions that never reached the folder: written now, not pushed back
     for (const rel of this.sharedPaths()) {
       if (!this.syncable(rel)) continue
       const known = this.sharedKey(rel)
@@ -361,9 +379,25 @@ export class Session extends EventEmitter {
         downloads.push(rel)
         continue
       }
-      if (!onDisk.has(rel)) this.ingest(rel) // deleted while offline
+      if (onDisk.has(rel)) continue
+      // Not in the folder: deleted while offline, unless it was never written (the write failed) and is still due.
+      if (this.known && !this.known.has(rel)) take.push(rel)
+      else this.ingest(rel)
     }
-    for (const rel of onDisk) this.ingest(rel)
+    for (const rel of onDisk) {
+      const was = this.known && this.known.get(rel)
+      if (was && this.sharedKey(rel) !== undefined) {
+        const disk = this.readDisk(rel)
+        if (disk && disk.key !== undefined && disk.key !== this.sharedKey(rel) && sha1(disk.key) === was) {
+          // The folder still has the version we last wrote, so the room moved
+          // on without the change reaching the disk: take it, don't undo it.
+          take.push(rel)
+          continue
+        }
+      }
+      this.ingest(rel)
+    }
+    for (const rel of take) this.tryWrite(rel)
     for (const rel of downloads) this.downloadLarge(rel, this.blobs.get(rel))
   }
 
@@ -382,15 +416,27 @@ export class Session extends EventEmitter {
         continue
       }
       if (disk && this.prefer === 'local') continue // pushed below
-      if (disk) {
+      if (disk && disk.skip) {
+        // A folder where the room has a file: moved into the backup, like a differing file is copied there.
+        let st = null
+        if (!disk.outside) try { st = fs.lstatSync(path.join(this.root, ...rel.split('/'))) } catch {}
+        if (!st || !st.isDirectory()) continue // a link or special file: left alone, as the live sync leaves it
+        this.moveToBackup(rel, backupDir)
+        for (const p of onDisk) if (p.startsWith(rel + '/')) onDisk.delete(p)
+        backedUp++
+      } else if (disk) {
         const dest = path.join(backupDir, ...rel.split('/'))
         fs.mkdirSync(path.dirname(dest), { recursive: true })
         fs.copyFileSync(path.join(this.root, ...rel.split('/')), dest)
         backedUp++
         // Already backed up: the download needn't keep another copy.
         if (b && b.stored && disk.key !== undefined) this.lastKnown.set(rel, disk.key)
+      } else {
+        // A file where the room has a folder: moved into the backup so the folder can be made.
+        const moved = this.clearParents(rel, backupDir)
+        if (moved) { onDisk.delete(moved); backedUp++ }
       }
-      this.writeOut(rel)
+      if (!this.tryWrite(rel)) continue
       onDisk.delete(rel)
       pulled++
     }
@@ -411,8 +457,14 @@ export class Session extends EventEmitter {
     return undefined
   }
 
+  /**
+   * What the folder holds at rel: text, a binary buffer, nothing (null), or a
+   * reason not to use it. `outside`: a parent is a link leading out of the
+   * project, so the file is never read (it may be anyone's).
+   */
   readDisk (rel) {
-    const abs = path.join(this.root, ...rel.split('/'))
+    let abs
+    try { abs = resolveInside(this.root, rel) } catch { return { skip: true, outside: true } }
     let st
     try { st = fs.lstatSync(abs) } catch { return null }
     if (!st.isFile()) return { skip: true }
@@ -449,6 +501,7 @@ export class Session extends EventEmitter {
   ingest (rel) {
     if (!this.syncable(rel)) return false
     if (this.downloading.has(rel)) return false // our copy is being replaced by a download
+    if (this.writeFailed.has(rel)) return false // the shared version never reached the disk: what's there is no edit of ours
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) {
@@ -585,6 +638,35 @@ export class Session extends EventEmitter {
   }
 
   /**
+   * Applies a remote update path by path. One that can't be written (a
+   * read-only or in-the-way file, a folder that can't be made) never stops
+   * the others: it's noted in writeFailed and tried again later.
+   */
+  applyRemote (paths) {
+    const failed = []
+    for (const p of paths) {
+      try { this.fromRemote(p); this.writeFailed.delete(p) } catch { failed.push(p) }
+    }
+    // One may have needed another in the same update to go first (a file
+    // removed where a folder now goes), so each gets a second go.
+    for (const p of failed) this.tryWrite(p, true)
+  }
+
+  /** writeOut (or, `live`, fromRemote), with a failure logged and remembered instead of thrown. */
+  tryWrite (rel, live = false) {
+    try {
+      if (live) this.fromRemote(rel)
+      else this.writeOut(rel)
+      this.writeFailed.delete(rel)
+      return true
+    } catch (err) {
+      this.writeFailed.set(rel, err.message)
+      this.log(`could not write ${rel}: ${err.message}; it will be tried again`)
+      return false
+    }
+  }
+
+  /**
    * A partner changed a path we claimed (their quilt should have refused, so
    * it's an old or misbehaving client): keep their version aside and put ours
    * back into the shared doc.
@@ -637,7 +719,7 @@ export class Session extends EventEmitter {
       } else if (!disk || disk.key !== shared) {
         fs.mkdirSync(path.dirname(abs), { recursive: true })
         const t = this.files.get(rel)
-        fs.writeFileSync(abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
+        this.writeFile(rel, abs, t ? t.toString() : Buffer.from(b.data, 'base64'))
       }
       if (!b || !b.stored) this.setOnDisk(rel, null)
       this.lastKnown.set(rel, shared)
@@ -660,6 +742,49 @@ export class Session extends EventEmitter {
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
     this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
+  }
+
+  /** Writes the shared version of rel. A read-only copy of ours is made writable, or moved aside if it can't be. */
+  writeFile (rel, abs, data) {
+    try {
+      fs.writeFileSync(abs, data)
+      return
+    } catch (err) {
+      if (err.code !== 'EACCES' && err.code !== 'EPERM') throw err
+    }
+    try {
+      fs.chmodSync(abs, (fs.statSync(abs).mode & 0o7777) | 0o200)
+      fs.writeFileSync(abs, data)
+    } catch {
+      this.moveAside(rel, abs)
+      fs.writeFileSync(abs, data)
+    }
+  }
+
+  /** Moves whatever sits at rel (first join: a folder, or a file where a folder must go) into the backup folder. */
+  moveToBackup (rel, backupDir) {
+    const dest = path.join(backupDir, ...rel.split('/'))
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.renameSync(path.join(this.root, ...rel.split('/')), dest)
+  }
+
+  /**
+   * A plain file sitting where one of rel's parent folders must go is moved
+   * into backupDir; returns its path. A link in the way is left alone (where
+   * it leads is not ours to move).
+   */
+  clearParents (rel, backupDir) {
+    const parts = rel.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      let st
+      try { st = fs.lstatSync(path.join(this.root, ...parts.slice(0, i))) } catch { return null }
+      if (st.isDirectory()) continue
+      if (!st.isFile()) return null
+      const anc = parts.slice(0, i).join('/')
+      this.moveToBackup(anc, backupDir)
+      return anc
+    }
+    return null
   }
 
   /** Moves our copy of rel into the conflicts folder (for files too big to copy through memory). */
@@ -688,7 +813,7 @@ export class Session extends EventEmitter {
     this.scheduleStateSave()
   }
 
-  /** Tries failed uploads and downloads again. */
+  /** Tries failed uploads, downloads and writes again. */
   retryFailed () {
     if (!this.ready || this.stopped) return
     const failed = [...this.retry]
@@ -698,6 +823,7 @@ export class Session extends EventEmitter {
       const b = this.blobs.get(rel)
       if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
     }
+    for (const rel of [...this.writeFailed.keys()]) this.tryWrite(rel, true)
   }
 
   wrapKeys () {
@@ -1116,11 +1242,16 @@ export class Session extends EventEmitter {
 
   /** Downloads a message's attachment (to .quilt/inbox/ by default). */
   async fetchFile (msgOrId, dest) {
-    const msg = typeof msgOrId === 'string' ? this.chat.toArray().find((m) => m.id === msgOrId || (m.file && m.file.id === msgOrId)) : msgOrId
+    const msg = typeof msgOrId === 'string' ? this.chat.toArray().find((m) => validMessage(m) && (m.id === msgOrId || (m.file && m.file.id === msgOrId))) : msgOrId
     if (!msg || !msg.file || !this.canSee(msg)) throw new Error('no such file')
     const target = dest ? path.resolve(dest) : this.inboxPath(msg)
     const finalPath = fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, safeName(msg.file.name)) : target
-    const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${msg.file.id}`, {
+    if (!dest) {
+      // Belt and braces: the id and name are sanitised, so this can't escape the inbox; never let it anyway.
+      const inside = path.relative(path.join(this.stateDir, 'inbox'), finalPath)
+      if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) throw new Error('refusing to save a file outside the inbox')
+    }
+    const res = await fetch(`${this.httpBase()}/files/${encodeURIComponent(this.room)}/${encodeURIComponent(msg.file.id)}`, {
       headers: await this.relayHeaders()
     })
     if (!res.ok) throw new Error(`download failed: ${await res.text()}`)
@@ -1148,8 +1279,9 @@ export class Session extends EventEmitter {
     return this.server.replace(/^ws/, 'http').replace(/\/+$/, '')
   }
 
+  /** Whether a message is meant for me: a well-formed one that is public, mine, or addressed to me. */
   canSee (msg) {
-    return !msg.to || msg.to === this.name || msg.by === this.name
+    return validMessage(msg) && (!msg.to || msg.to === this.name || msg.by === this.name)
   }
 
   peerNames () {
@@ -1158,7 +1290,7 @@ export class Session extends EventEmitter {
 
   describeMessage (msg) {
     const out = { ...msg, unread: msg.by !== this.name && !this.readIds().has(msg.id) }
-    if (msg.file) {
+    if (msg.file && validMessage(msg)) {
       const local = this.inboxPath(msg)
       out.file = { ...msg.file, localPath: fs.existsSync(local) ? path.relative(this.root, local) : null }
     }
@@ -1167,7 +1299,7 @@ export class Session extends EventEmitter {
 
   /** Messages visible to me, oldest first. */
   messages ({ limit = 50, unreadOnly = false, markRead = true, withName = null } = {}) {
-    let list = this.chat.toArray().filter((m) => m && m.id && this.canSee(m))
+    let list = this.chat.toArray().filter((m) => this.canSee(m))
     if (withName) list = list.filter((m) => m.by === withName || m.to === withName)
     let out = list.map((m) => this.describeMessage(m))
     if (unreadOnly) out = out.filter((m) => m.unread)
@@ -1178,7 +1310,7 @@ export class Session extends EventEmitter {
 
   unreadCount () {
     const read = this.readIds()
-    return this.chat.toArray().filter((m) => m && m.id && this.canSee(m) && m.by !== this.name && !read.has(m.id)).length
+    return this.chat.toArray().filter((m) => this.canSee(m) && m.by !== this.name && !read.has(m.id)).length
   }
 
   readIds () {
@@ -1502,6 +1634,20 @@ async function alreadyStored (res) {
   if (res.status === 409) return true
   const body = await res.text().catch(() => '')
   return /exists|duplicate/i.test(body)
+}
+
+// Message and file ids as quilt makes them (8 and 16 random bytes in hex).
+const HEX_ID = /^[0-9a-f]{8,64}$/i
+
+/**
+ * A chat message a well-behaved client made: its id, and its file's id, are
+ * hex, so they're safe in a file name and in a URL. Anything else (a
+ * modified client can push any object) is skipped everywhere.
+ */
+function validMessage (m) {
+  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !HEX_ID.test(m.id)) return false
+  if (m.file == null) return true
+  return typeof m.file === 'object' && typeof m.file.id === 'string' && HEX_ID.test(m.file.id)
 }
 
 function safeName (name) {

@@ -69,9 +69,15 @@ export function isIgnored (ig, rel) {
   return false
 }
 
+// Names Windows reserves for devices, with any extension: a member there could never write them.
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+const utf8Length = (s) => new TextEncoder().encode(s).length
+
 /**
  * Validates a path received from a peer. Rejects anything that could escape
- * the project folder or touch git internals.
+ * the project folder or touch git internals, and names that some member's
+ * disk could not hold (a change nobody can write is a change nobody should
+ * share).
  */
 export function isSafeRelPath (rel) {
   if (typeof rel !== 'string' || !rel || rel.length > 1024) return false
@@ -80,6 +86,8 @@ export function isSafeRelPath (rel) {
   const parts = rel.split('/')
   for (const part of parts) {
     if (part === '' || part === '.' || part === '..') return false
+    if (WINDOWS_DEVICE.test(part) || part.endsWith('.') || part.endsWith(' ')) return false
+    if (part.length > 255 || utf8Length(part) > 255) return false
   }
   const first = parts[0].toLowerCase()
   if (first === '.git' || first === '.quilt' || first === '.cowove') return false

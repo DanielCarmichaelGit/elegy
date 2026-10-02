@@ -24,9 +24,9 @@ the commit, so the history stays in one place.
 | [014](014-session-ownership-first-come.md) | Session ownership and creation go to whoever connects first | **Fixed** (7028258): only the creator becomes owner; creation by a view link needs a client-side join flag |
 | [015](015-relay-disk-errors.md) | A disk error stops the relay; a half-written session file is deleted on restart | **Fixed** (7028258); a relay-wide free-space cap is still to do |
 | [021](021-chat-xss.md) | Stored XSS in the chat panel through a peer-controlled message id | **Fixed** (a95063c): id encoded and escaped, non-hex ids dropped, CSP on the page |
-| [032](032-remote-write-failure-reverts-edits.md) | One unwritable file drops the rest of an update and reverts the partner's edit; first-join name collisions abort | Open, high |
-| [033](033-symlink-read-on-rejoin.md) | On rejoin, a shared path under a local symlink reads a file outside the project into the room | Open, high |
-| [034](034-chat-attachment-lands-in-project.md) | A crafted chat message id puts an attachment in the project root; a malformed message breaks status for everyone | Open, high |
+| [032](032-remote-write-failure-reverts-edits.md) | One unwritable file drops the rest of an update and reverts the partner's edit; first-join name collisions abort | **Fixed** (26262b4) |
+| [033](033-symlink-read-on-rejoin.md) | On rejoin, a shared path under a local symlink reads a file outside the project into the room | **Fixed** (83e39bf) |
+| [034](034-chat-attachment-lands-in-project.md) | A crafted chat message id puts an attachment in the project root; a malformed message breaks status for everyone | **Fixed** (53c067d) |
 | [016](016-relay-limits-bypass-and-leaks.md) | Relay limits bypassable (X-Forwarded-For), rooms pinned in memory, pending guests stranded, quotas by declared size | Open, medium |
 | [017](017-public-keys-not-canonical.md) | API accepts public keys with junk, defeating one-key-per-agent/computer | Open, medium |
 | [018](018-names-not-cleaned.md) | Person and computer names not cleaned: bidi/invisible characters reach passes, sessions, the approve page | Open, medium |
@@ -43,7 +43,7 @@ the commit, so the history stays in one place.
 | [030](030-mail-dns-and-headers.md) | Mail DNS incomplete (no DMARC/SPF on hq); Fly apps send no hardening headers | Open, low |
 | [035](035-sync-data-loss-edge-cases.md) | Sync edge cases: case-only collisions, delete-vs-edit race, `.quilt/` committable, 1 s rescan cost, more | Open, medium |
 
-Issues 009 to 035 come from the full audit of 2026-10-01 (relay, sync client, accounts API, Supabase, website, desktop app, deploy and docs). 009, 010 and 031 are fixed; the highs are next.
+Issues 009 to 035 come from the full audit of 2026-10-01 (relay, sync client, accounts API, Supabase, website, desktop app, deploy and docs). 009, 010 and 031 and the highs (011, 013, 014, 015, 021, 032, 033, 034) are fixed; 012 needs two GitHub actions by hand (see the file).
 
 Feature ideas (not bugs) go in [unlocks.md](unlocks.md).
 

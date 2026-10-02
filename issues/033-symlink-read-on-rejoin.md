@@ -1,6 +1,6 @@
 # 033: On rejoin, a shared path under a local symlinked folder is read through the symlink and a file outside the project is pushed into the room
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** sync client from main, reproduced locally
+**Status:** **Fixed** (83e39bf) · **Reported:** 2026-10-01 (audit) · **Seen on:** sync client from main, reproduced locally
 
 ## What happens
 Bob's project contains `link -> /somewhere/outside`. A partner (or a modified
@@ -29,3 +29,4 @@ Reproduced (`scratchpad/sync/t5-symlink-ingest.mjs`):
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: fixed in 83e39bf. `readDisk` resolves through `resolveInside` first and answers `{ skip, outside }` when a parent is a link leading out of the project (or dangling), so `ingest`, and with it `reconcileOffline`, `reclaim` and the `unlinkDir` handler, never read the outside file; the shared entry is left alone, live and on rejoin. `resolveInside` now walks each parent component with `lstat` instead of trusting the deepest existing ancestor. Test in test/sync.test.js covers the live write, the claimer's revert and the rejoin.
