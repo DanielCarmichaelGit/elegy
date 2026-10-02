@@ -20,6 +20,9 @@ const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, 
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
 const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
+const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at'
+// PostgREST hands back at most 1000 rows per request: longer lists are read a page at a time.
+const PAGE = 1000
 
 // One mapper for every table: camelCases the columns and turns every `*At` field
 // (createdAt, updatedAt, lastSeenAt, lastUsedAt, revokedAt, expiresAt, joinedAt,
@@ -32,6 +35,15 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
   const db = client || createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
   const one = async (q) => { const { data, error } = await q; if (error) throw error; return data }
   const memberOf = async (orgId, userId) => rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('user_id', userId).maybeSingle()))
+  // Every row of a query, a page at a time. `build` makes a fresh query (with a stable order) per page.
+  const pages = async (build) => {
+    const out = []
+    for (let from = 0; ; from += PAGE) {
+      const rows = await one(build().range(from, from + PAGE - 1))
+      out.push(...rows)
+      if (rows.length < PAGE) return out
+    }
+  }
 
   return {
     async createLink (l) {
@@ -135,8 +147,11 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async releaseRefresh (id) {
       await one(db.from('agent_keys').update({ refreshed_at: null }).eq('id', id).is('revoked_at', null))
     },
-    // Deleting the auth user cascades through profiles, devices, links and agents.
+    // Deleting the auth user cascades through profiles, devices, links and agents. Session
+    // activity is keyed by 'person:<id>' and 'agent:<id>', not foreign keys, so it goes first.
     async deleteUser (userId) {
+      const agents = await one(db.from('agents').select('id').eq('owner_user_id', userId))
+      await one(db.rpc('delete_account_activity', { p_accounts: [`person:${userId}`, ...agents.map((a) => `agent:${a.id}`)] }))
       const { error } = await db.auth.admin.deleteUser(userId)
       if (error) throw error
     },
@@ -147,6 +162,25 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       if (error) { if (error.status === 404) return null; throw error }
       const u = data?.user
       return u ? { email: u.email || '', confirmed: !!u.email_confirmed_at } : null
+    },
+
+    // Session activity (see 20261002000000_session_activity.sql). Event times are epoch ms.
+    async ingestPresence (events, receivedAt) {
+      return await one(db.rpc('ingest_presence', { p_events: events, p_received_at: ts(receivedAt) }))
+    },
+    async accountSessions (account, { since, limit }) {
+      return (await pages(() => db.rpc('account_sessions', { p_account: account, p_since: ts(since), p_limit: limit }))).map(rowFrom)
+    },
+    async sessionByRoom (room) { return rowFrom(await one(db.from('relay_sessions').select(RELAY_SESSION).eq('room', room).maybeSingle())) },
+    async visitsInRooms (rooms) {
+      if (!rooms.length) return []
+      return (await pages(() => db.rpc('visits_in_rooms', { p_rooms: rooms }))).map(rowFrom)
+    },
+    async renameSession (room, name, at) {
+      return rowFrom(await one(db.from('relay_sessions').update({ name, renamed_at: ts(at) }).eq('room', room).select(RELAY_SESSION).maybeSingle()))
+    },
+    async pruneActivity ({ before, seenBefore }) {
+      await one(db.rpc('prune_activity', { p_before: ts(before), p_seen_before: ts(seenBefore) }))
     },
 
     // Orgs. create_org makes the org, its three built-in roles and its owner in one
