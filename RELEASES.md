@@ -9,6 +9,16 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.3 — 2026-10-02
+
+No AI edits a file without claiming it first, and AIs ask each other for help.
+
+- **Claims are automatic in Claude Code.** Quilt adds hooks to your own `.claude/settings.local.json` when a session starts: every file is claimed for you the moment Claude edits it, and those claims are released when Claude finishes. Nobody has to remember `quilt_claim`.
+- **Edits to someone else's file are refused before they happen.** Claude is told who holds the file and why, and to send them a direct message saying what it wanted to change and asking for help, instead of retrying.
+- **The other AI hears the ask.** Direct messages reach the holder's Claude as it works, and it is asked to answer before it finishes: help, hand the file over, or say when it will be done. You still see the message as unread in the app.
+- **Claims you make yourself are never touched,** and a crashed Claude's leftover claims are released the next time a session starts for the folder.
+- **`.claude/settings.local.json` never syncs:** it holds each person's own Claude Code settings.
+
 ## 0.3.2 — 2026-10-02
 
 Invite links open the app in one click, and you can invite your AI from the app.
