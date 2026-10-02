@@ -12,6 +12,7 @@ import { relayUrl, isHostedRelay } from './settings.js'
 import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
+import { listProcesses } from './procs.js'
 import { JOIN_HOST, buildInvite, parseInvite } from './ui/invite.js'
 
 export { JOIN_HOST }
@@ -48,16 +49,45 @@ export function readConfig (dir) {
   try { return JSON.parse(fs.readFileSync(path.join(migrateDir(dir), 'config.json'), 'utf8')) } catch { return null }
 }
 
-/** True if another process is already syncing this exact folder. */
-export function runningElsewhere (dir) {
+/** The other process syncing this exact folder ({ pid, port, token } from its daemon.json), or null. */
+function otherSync (dir) {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'daemon.json'), 'utf8'))
-    if (info.pid === process.pid) return false
+    if (info.pid === process.pid) return null
     process.kill(info.pid, 0)
-    return true
+    return info
   } catch {
-    return false
+    return null
   }
+}
+
+/** True if another process is already syncing this exact folder. */
+export function runningElsewhere (dir) {
+  return !!otherSync(dir)
+}
+
+/**
+ * Says what is already syncing `dir`, so the person can stop it rather than guess: an AI
+ * agent that joined from its tool's quilt MCP server, a `quilt join` in a terminal, another
+ * copy of the app. Null when nothing else is.
+ */
+export async function describeOtherSync (dir) {
+  const other = otherSync(dir)
+  if (!other) return null
+  let info = null
+  try {
+    const res = await fetch(`http://127.0.0.1:${other.port}/info`, { headers: { authorization: `Bearer ${other.token}` }, signal: AbortSignal.timeout(1500) })
+    if (res.ok) info = await res.json()
+  } catch {}
+  const proc = listProcesses().find((p) => p.pid === other.pid)
+  const who = info && info.kind === 'agent'
+    ? `your AI agent "${info.name}" joined it from its tool's quilt MCP server (process ${other.pid}). Ask the agent to leave with quilt_leave_session, or close that tool`
+    : proc && proc.kind === 'app'
+      ? `another copy of the Quilt app (process ${other.pid}) has it open. Leave it there, or quit that app`
+      : proc && proc.kind === 'sync'
+        ? `a \`quilt join\` in a terminal (process ${other.pid}) is syncing it${info ? ` as "${info.name}"` : ''}. Stop that one (Ctrl-C there, or \`quilt stop\`)`
+        : `another quilt process (${other.pid}) is syncing it${info ? ` as "${info.name}"` : ''}. Stop that one first`
+  return `This folder is already being synced by another quilt process: ${who}, then rejoin here.`
 }
 
 /**
@@ -70,7 +100,8 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a folder`)
-  if (runningElsewhere(dir)) throw new Error('This folder is already being synced by another quilt process.')
+  const busy = await describeOtherSync(dir)
+  if (busy) throw new Error(busy)
 
   // With passes, the relay knows you by your account (or agent): its name and agent
   // badge come from the pass. The session starts with the name saved on this computer

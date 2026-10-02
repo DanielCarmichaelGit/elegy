@@ -64,6 +64,14 @@ window.addEventListener('quilt-signed-out', () => signedOutNow(SIGNED_OUT))
 
 function connectEvents () {
   const es = state.events = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
+  // The browser reopens a dropped stream by itself, but whatever was pushed meanwhile is
+  // gone (a partner back after a blip, say), and nothing pushes again until something
+  // changes. So after a reopen, fetch the state over again.
+  let opened = false
+  es.addEventListener('open', () => {
+    if (!opened) { opened = true; return }
+    resync()
+  })
   es.addEventListener('session', (e) => {
     const sum = JSON.parse(e.data)
     const prev = state.sessions.get(sum.id)
@@ -144,6 +152,26 @@ async function refreshRecent () {
     state.recent = s.recent
     state.profile = s.profile
   } catch {}
+}
+
+/** Brings every session's summary (and the recent list) up to date with the server. */
+async function resync () {
+  let s
+  try { s = await api('GET', '/api/state') } catch { return }
+  state.recent = s.recent
+  state.profile = s.profile
+  const live = new Set()
+  for (const sum of s.sessions) {
+    live.add(sum.id)
+    const prev = state.sessions.get(sum.id)
+    state.sessions.set(sum.id, prev ? { ...sum, logs: prev.logs } : sum)
+  }
+  for (const id of [...state.sessions.keys()]) if (!live.has(id)) state.sessions.delete(id)
+  if (isSession(state.view)) {
+    if (state.sessions.has(state.view)) sessionUpdated(state.view)
+    else { state.view = 'home'; render() }
+  } else if (state.view === 'home') render()
+  else renderTabs()
 }
 
 export async function go (view) {

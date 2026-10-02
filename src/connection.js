@@ -24,6 +24,11 @@ const BAD_ADDRESS = "Couldn't connect to the relay: the address isn't valid."
 // row, the clock is the likely culprit, and reconnecting won't help.
 const QUICK_EXPIRY_MS = 60 * 1000
 const MAX_QUICK_EXPIRIES = 5
+// The relay pings every 30s. A connection that hears nothing for this long is dead
+// (a laptop that slept, a network that silently dropped): the socket would otherwise
+// look open for minutes while partners vanish and nothing syncs.
+export const LIVENESS_MS = 75 * 1000
+const HANDSHAKE_MS = 20 * 1000
 const CLOCK_WRONG = "Your computer's clock looks wrong, so Quilt can't stay signed in. Check the date and time."
 
 export const REMOTE = Symbol('remote')
@@ -42,8 +47,9 @@ export class Connection extends EventEmitter {
    * @param {() => void} [opts.beforeRemote] called before remote changes are applied
    * @param {import('./pass-source.js').PassSource} [opts.passes]  signs in to a relay that requires passes
    * @param {number} [opts.passRefreshMs]  how often to send the relay a fresh pass while connected
+   * @param {number} [opts.livenessMs]  give up on a connection that stays silent this long
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files', passes = null, passRefreshMs = PASS_REFRESH_MS }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files', passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS }) {
     super()
     if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
     // Secrets travel in headers, never in the URL: proxies log URLs, and Fly's did (issue 011).
@@ -59,6 +65,8 @@ export class Connection extends EventEmitter {
     this.passes = passes
     this.passRefreshMs = passRefreshMs
     this.passTimer = null
+    this.livenessMs = livenessMs
+    this.livenessTimer = null
     this.passStale = false // after a 4419 close (or a refused pass): get a new pass, not the cached one
     this.passRetried = false // a refused pass gets one retry with a fresh pass before it's fatal
     this.connectedAt = 0
@@ -119,7 +127,8 @@ export class Connection extends EventEmitter {
   open (headers) {
     let ws
     try {
-      ws = new WebSocket(this.url, { headers })
+      // A handshake that never answers (a network gone away) must end too, so the reconnect runs.
+      ws = new WebSocket(this.url, { headers, handshakeTimeout: HANDSHAKE_MS })
     } catch {
       // Later, so whoever made this connection is listening (and never with ws's error, which quotes the URL).
       setImmediate(() => {
@@ -141,6 +150,21 @@ export class Connection extends EventEmitter {
         else this.authenticate(new Uint8Array(data))
       } catch (err) { this.emit('warn', `error handling message from relay: ${err.stack}`) }
     })
+
+    // Anything from the relay (its pings included) proves the connection is alive.
+    const heard = () => {
+      clearTimeout(this.livenessTimer)
+      this.livenessTimer = setTimeout(() => {
+        if (this.ws !== ws || this.closed) return
+        this.emit('warn', 'the relay went quiet; reconnecting')
+        ws.retrying = true
+        ws.terminate() // 'close' fires and the reconnect with backoff runs
+      }, this.livenessMs)
+      this.livenessTimer.unref?.()
+    }
+    ws.on('open', heard)
+    ws.on('ping', heard)
+    ws.on('message', heard)
 
     ws.on('unexpected-response', (req, res) => {
       const reason = res.statusMessage || `HTTP ${res.statusCode}`
@@ -178,6 +202,7 @@ export class Connection extends EventEmitter {
 
     ws.on('close', (code, reason) => {
       clearInterval(this.passTimer)
+      if (this.ws === ws) clearTimeout(this.livenessTimer)
       const upSince = this.connectedAt
       this.connectedAt = 0
       // Count 4419s that came soon after connecting (or before signing in finished); any other
@@ -213,6 +238,14 @@ export class Connection extends EventEmitter {
       // Peers' presence is stale once we're disconnected.
       const others = [...this.awareness.getStates().keys()].filter((id) => id !== this.doc.clientID)
       awarenessProtocol.removeAwarenessStates(this.awareness, others, 'connection')
+      // Forget how far their clocks had got, or the states the relay sends back on reconnect
+      // (the same clocks, nothing changed) are ignored and partners stay invisible until
+      // their next renewal, up to 15s later. A clock of -1 keeps them as known clients, so
+      // their return is an update, not a fresh "joined".
+      for (const id of others) {
+        const m = this.awareness.meta.get(id)
+        if (m) this.awareness.meta.set(id, { ...m, clock: -1 })
+      }
       if (wasConnected && !this.closed) this.emit('status', 'disconnected')
       if (!this.closed) {
         setTimeout(() => this.connect(), this.backoff)
@@ -267,9 +300,10 @@ export class Connection extends EventEmitter {
 
   startSync () {
     this.send(syncStep1Message(this.doc))
-    if (this.awareness.getLocalState() !== null) {
-      this.send(awarenessMessage(this.awareness, [this.doc.clientID]))
-    }
+    // Set again rather than resent: that moves our clock on, so the relay takes the state
+    // even when it still holds the clock from before a drop (it would ignore a repeat).
+    const mine = this.awareness.getLocalState()
+    if (mine !== null) this.awareness.setLocalState(mine)
     const q = encoding.createEncoder()
     encoding.writeVarUint(q, MSG_QUERY_AWARENESS)
     this.send(encoding.toUint8Array(q))
@@ -355,6 +389,7 @@ export class Connection extends EventEmitter {
   close () {
     this.closed = true
     clearInterval(this.passTimer)
+    clearTimeout(this.livenessTimer)
     this.doc.off('update', this._onUpdate)
     this.awareness.off('update', this._onAwareness)
     awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'local')
