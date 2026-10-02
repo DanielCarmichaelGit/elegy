@@ -1,6 +1,6 @@
 // Quilt app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
-import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall, startDropdowns } from './common.js'
+import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall, startDropdowns, avatar, loadAccessTypes, typeOptions } from './common.js'
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
@@ -305,6 +305,8 @@ export function openInvite (id) {
   const s = state.sessions.get(id)
   if (!s) return
   const d = decodeInvite(s.invite)
+  // The owner of a session with approvals can invite people as an access type.
+  const owner = !!(s.viewInvite && s.status.access?.owner)
   const back = document.createElement('div')
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
@@ -316,6 +318,21 @@ export function openInvite (id) {
     <div class="codebox"><code id="inv-view">${esc(s.viewInvite)}</code><button class="btn icon" data-copy="inv-view" title="Copy" aria-label="Copy view-only link">${I.copy}</button></div>` : ''}
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
     <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later from the people menu.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
+    ${owner ? `<div class="inv-section" id="inv-access">
+      <div class="label inv-agent-label">Invite as</div>
+      <select class="input" id="inv-type" aria-label="Invite as"></select>
+      <p class="hint">People you invite here get straight in with this access once they sign in. No waiting for you.</p>
+      <div class="label inv-sub">People you've worked with</div>
+      <div class="inv-list" id="inv-people"><p class="hint">Loading…</p></div>
+      <div class="label inv-sub">Invite by email</div>
+      <form class="row" id="inv-email-form">
+        <input class="input grow" type="email" id="inv-email" placeholder="name@example.com" aria-label="Email address" required>
+        <button class="btn primary" type="submit">Send invite</button>
+      </form>
+      <div class="label inv-sub">Pending invites</div>
+      <div class="inv-list" id="inv-pending"></div>
+      <p class="error" id="inv-error"></p>
+    </div>` : ''}
     <div class="label inv-agent-label">Your AI</div>
     <div id="inv-agent" class="inv-agent">
       <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it. It joins as your own agent, listed in Settings.</p>
@@ -348,6 +365,60 @@ export function openInvite (id) {
   }
   $('#inv-done', back).onclick = close
   back.onclick = (e) => { if (e.target === back) close() }
+  if (owner) bindInviteAs(id, back)
+}
+
+/** The owner's invite panel: "Invite as" a type, people you've worked with, by email, and pending invites. */
+function bindInviteAs (id, back) {
+  const error = (msg) => { $('#inv-error', back).textContent = msg || '' }
+  const typeId = () => $('#inv-type', back).value
+  const invite = async (to, done) => {
+    error('')
+    try {
+      await api('POST', `/api/sessions/${id}/invites`, { typeId: typeId(), to })
+      toast(done)
+      await pending()
+    } catch (err) { error(err.message) }
+  }
+  async function pending () {
+    const el = $('#inv-pending', back)
+    try {
+      const open = (await api('GET', `/api/sessions/${id}/invites`)).invites.filter((i) => i.status === 'waiting')
+      el.innerHTML = open.length
+        ? open.map((i) => `<div class="inv-row"><span class="grow">${esc(i.email || i.name)}<span class="hint"> · ${esc(i.typeName)}</span></span><button class="btn sm ghost" type="button" data-cancel-invite="${esc(i.id)}">Cancel</button></div>`).join('')
+        : '<p class="hint">No pending invites.</p>'
+    } catch (err) { el.innerHTML = `<p class="hint">${esc(err.message)}</p>` }
+  }
+  async function people () {
+    const el = $('#inv-people', back)
+    try {
+      const list = (await api('GET', '/api/collaborators')).collaborators
+      el.innerHTML = list.length
+        ? list.map((c) => `<div class="inv-row">${avatar(c.name, null)}<span class="grow">${esc(c.name)}${c.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}</span><button class="btn sm" type="button" data-invite-account="${esc(c.account)}" data-name="${esc(c.name)}">Invite</button></div>`).join('')
+        : "<p class=\"hint\">Nobody yet. People and agents you've been in a session with show up here.</p>"
+    } catch (err) { el.innerHTML = `<p class="hint">${esc(err.message)}</p>` }
+  }
+  ;(state.accessTypes ? Promise.resolve(state.accessTypes) : loadAccessTypes()).then((types) => {
+    const sel = $('#inv-type', back)
+    if (types) sel.innerHTML = typeOptions()
+    else { sel.innerHTML = '<option value="builtin:edit">Can edit</option><option value="builtin:view">View only</option>' }
+  })
+  people()
+  pending()
+  back.addEventListener('click', async (e) => {
+    const inv = e.target.closest('[data-invite-account]')
+    if (inv) { inv.disabled = true; await invite({ account: inv.dataset.inviteAccount }, `Invited ${inv.dataset.name}`); inv.disabled = false; return }
+    const cancel = e.target.closest('[data-cancel-invite]')
+    if (cancel) {
+      try { await api('POST', `/api/sessions/${id}/invites/cancel`, { inviteId: cancel.dataset.cancelInvite }); toast('Invite cancelled'); await pending() } catch (err) { error(err.message) }
+    }
+  })
+  $('#inv-email-form', back).onsubmit = async (e) => {
+    e.preventDefault()
+    const input = $('#inv-email', back)
+    await invite({ email: input.value.trim() }, 'Invite sent')
+    if (!$('#inv-error', back).textContent) input.value = ''
+  }
 }
 
 /** A fresh agent invite, as the text to paste into an AI, with Copy. */

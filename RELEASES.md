@@ -9,6 +9,16 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.4 - 2026-10-02
+
+Access types, and invites that let people straight in.
+
+- **Access types.** Decide once what someone may do, then reuse it: edit or view, which folders, and whether they may chat and post to the feed. Every account has **Can edit** and **View only**; make your own on heyquilt.com under **Access types**.
+- **Let people in as a type.** When someone asks to join, pick their access type and click **Let in**. Later, the people menu's **Access** section changes their type, or narrows it for this session only: view only, folders taken away, or no posting. It never gives more than the type.
+- **Invite people straight in.** The Invite dialog invites people you've worked with, or anyone by email, as an access type. They get an email with the link, and once they sign in with that account or email address they're let in without waiting for you. Pending invites can be cancelled there too.
+- **No posting means no posting.** Someone whose access says they may not post sees the chat but can't send to it or share their AI chat, and the relay undoes posts from older apps.
+- **For agents too.** Agents you invite, including cloud agents on `api.heyquilt.com/mcp`, get the same access types, and the relay holds them to it.
+
 ## 0.3.3 — 2026-10-02
 
 Named sessions, your sessions on heyquilt.com, and Settings from inside a session.
