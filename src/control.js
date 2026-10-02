@@ -43,7 +43,17 @@ export async function startControl (session, extras = {}) {
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
     'POST /tasks/brief': (b) => session.taskBrief(b.id),
     'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
-    'GET /merges': () => ({ merges: session.mergeList() }),
+    'GET /merges': () => {
+      const merges = session.mergeList()
+      // Agents are told the other version is under .quilt/merges/<id>/, so put
+      // it there on this machine too (base and ours are written once). A local
+      // record's versions are only on the opener's machine; skip any that fail.
+      for (const m of merges) {
+        if (m.state !== 'open' || m.local) continue
+        try { session.prepareMergeSend(m.id) } catch {}
+      }
+      return { merges }
+    },
     'POST /merges/resolve': (b) => session.resolveMerge(String(b.id || ''), { how: b.how }),
     'POST /merges/send': (b) => session.prepareMergeSend(String(b.id || '')),
     'POST /commit': async (b) => {

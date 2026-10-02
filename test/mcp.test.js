@@ -187,6 +187,10 @@ test('merges are listed and settled through the MCP tools', async () => {
   const listed = await waitFor(async () => { const t = text(await call('quilt_merges')); return t.includes(rec.id) ? t : null })
   assert.match(listed, /src\/app\.js/)
   assert.match(listed, /dana/)
+  // The tool says the other version is under .quilt/merges/<id>/: it must be there on the agent's machine too.
+  const there = path.join(agentCwd, '.quilt', 'merges', rec.id)
+  assert.equal(fs.readFileSync(path.join(there, 'ours'), 'utf8'), 'console.log("dana")\n')
+  assert.equal(fs.readFileSync(path.join(there, 'base'), 'utf8'), 'console.log("hi")\n')
   const r = text(await call('quilt_resolve_merge', { id: rec.id, how: 'theirs' }))
   assert.match(r, /settled/i)
   await waitFor(() => human.mergeList().find((m) => m.id === rec.id)?.state === 'done')

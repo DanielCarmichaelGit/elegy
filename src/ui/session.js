@@ -577,6 +577,30 @@ async function renameSession () {
 const isViewer = () => { const a = sum().status.access || {}; return !!(a.controlled && a.role === 'viewer') }
 const shownMerge = () => (sum().status.merges || []).find((m) => m.id === ws(current).mergeSel) || null
 
+// Status carries merge records without their texts; the compare view fetches
+// the full record once. Keyed by session, id and state: ours and base never
+// change for a record, but "edit by hand" and settling change its state.
+const mergeTexts = new Map() // `${session}\n${id}\n${state}` -> { ours, base } | 'loading'
+const mergeKey = (sid, m) => `${sid}\n${m.id}\n${m.state}`
+
+/** The shown merge's ours and base, or undefined while they load. */
+function fullMerge (m) {
+  const sid = current
+  const got = mergeTexts.get(mergeKey(sid, m))
+  if (got && got !== 'loading') return got
+  if (got) return undefined
+  mergeTexts.set(mergeKey(sid, m), 'loading')
+  api('GET', `/api/sessions/${sid}/merges`).then((r) => {
+    for (const full of r.merges || []) mergeTexts.set(mergeKey(sid, full), { ours: full.ours ?? null, base: full.base ?? null })
+    if (mergeTexts.get(mergeKey(sid, m)) === 'loading') mergeTexts.set(mergeKey(sid, m), { ours: null, base: null }) // gone meanwhile
+    if (current === sid && ws(sid).mode === 'merge') renderMain()
+  }).catch(() => {
+    mergeTexts.set(mergeKey(sid, m), { ours: null, base: null }) // shown as not available, not refetched on every status
+    if (current === sid && ws(sid).mode === 'merge') renderMain()
+  })
+  return undefined
+}
+
 /** The merge bar, and the compare view when it's showing (it only redraws on a change). */
 function renderMerges () {
   const bar = $('#merges')
@@ -1080,7 +1104,8 @@ function renderMain () {
     const cached = m ? state.files.get(fileKey(m.path)) : null
     const f = cached && cached.file
     const theirs = !cached ? undefined : f.missing || f.binary ? null : f.text
-    renderMergeView(el, { merge: m, theirs, me: me(), editors: editorsByPreference(), viewer: isViewer() })
+    const texts = m && !m.binary ? fullMerge(m) : { ours: null, base: null }
+    renderMergeView(el, { merge: m, texts, theirs, me: me(), editors: editorsByPreference(), viewer: isViewer() })
     if (m && !m.binary && !cached) refreshFile(m.path, false)
     return
   }

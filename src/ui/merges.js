@@ -115,26 +115,37 @@ function column (title, text, base, note) {
   return `<div class="merge-col"><div class="merge-col-head">${title}</div><div class="fv-scroll">${body}</div></div>`
 }
 
+/** A short fingerprint of a text (FNV-1a and length), so a redraw check needn't keep or compare whole files. */
+function textSig (t) {
+  if (t == null) return t === undefined ? 'u' : 'n'
+  let h = 0x811c9dc5
+  for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 0x01000193)
+  return `${t.length}:${(h >>> 0).toString(36)}`
+}
+
 /**
- * The compare view. `theirs`: the session's text now, `null` when it isn't
- * there, `undefined` while it loads.
+ * The compare view. `m`: the record without its texts, as status has it.
+ * `texts`: { ours, base } from the full record, `undefined` while it loads.
+ * `theirs`: the session's text now, `null` when it isn't there, `undefined` while it loads.
  */
-export function renderMergeView (el, { merge: m, theirs, me, editors, viewer = false }) {
+export function renderMergeView (el, { merge: m, texts, theirs, me, editors, viewer = false }) {
   const showing = el.querySelector(':scope > .merge-view')
   // Don't redraw under someone picking an app.
   if (showing && el.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return
-  const sig = JSON.stringify([m, theirs ?? null, theirs === undefined, me, editors.map((e) => e.id), viewer])
+  const sig = JSON.stringify([m, textSig(texts?.ours), textSig(texts?.base), texts === undefined, textSig(theirs), me, editors.map((e) => e.id), viewer])
   if (showing && el._mergeSig === sig) return
   el._mergeSig = sig
   if (!m) { el.innerHTML = '<div class="main-empty merge-view"><p class="hint">That merge is settled or gone.</p></div>'; return }
+  const ours = texts ? texts.ours : null
+  const base = texts ? texts.base : null
   const mine = m.by === me ? 'Yours, from offline' : `${esc(m.by)}'s, from offline`
   const sess = m.kind === 'ai' ? 'In the session now, combined by AI' : `In the session${m.others[0] ? `, from ${you(m.others[0], me)}` : ''}`
-  const oursNote = m.oursDeleted ? 'Deleted offline' : m.local ? `Too big to show here. It's in the merge folder on ${m.by === me ? 'this computer' : `${esc(m.by)}'s computer`}.` : 'Not available'
+  const oursNote = m.oursDeleted ? 'Deleted offline' : texts === undefined ? 'Loading…' : m.local ? `Too big to show here. It's in the merge folder on ${m.by === me ? 'this computer' : `${esc(m.by)}'s computer`}.` : 'Not available'
   const theirsNote = theirs === undefined ? 'Loading…' : m.theirsHash === null ? 'Deleted in the session' : 'Not in the session any more'
   el.innerHTML = `<div class="fv merge-view">
     <div class="fv-banner"><span class="fv-path mono">${esc(m.path)}</span><span class="fv-edited">${describe(m, me)}</span><span class="spacer"></span>${mergeActionsHtml(m, me, editors, { full: true, viewer })}</div>
     ${m.binary
       ? `<div class="fv-note">${I.file} Binary file: pick a version above.</div>`
-      : `<div class="merge-cols">${column(mine, m.ours, m.base, oursNote)}${column(sess, theirs, m.base, theirsNote)}</div>`}
+      : `<div class="merge-cols">${column(mine, ours, base, oursNote)}${column(sess, theirs, base, theirsNote)}</div>`}
   </div>`
 }

@@ -2263,7 +2263,9 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
       tasks: this.taskList(),
-      merges: this.mergeList(),
+      // Without the texts (up to 400 KB a record): status goes out on every
+      // change. The full records are at GET /merges and the app's merges route.
+      merges: this.mergeList().map(({ ours, base, ...m }) => m),
       activity: this.activity.toArray().slice(-30),
       changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10) })),
       chat: this.messages({ limit: 20, markRead: false }),

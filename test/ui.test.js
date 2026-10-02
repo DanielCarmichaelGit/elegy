@@ -164,6 +164,13 @@ test('merges: listed, resolved, and a send to an unknown app is refused', async 
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   assert.ok(merges.body.merges.some((m) => m.id === rec.id && m.path === 'a.txt'), JSON.stringify(merges.body))
+  // The merges route has the texts for the compare view; status, pushed on every change, does not.
+  assert.equal(merges.body.merges.find((m) => m.id === rec.id).ours, 'mine\n')
+  const listed = (await api('GET', '/api/state')).body.sessions.find((s) => s.id === id).status.merges.find((m) => m.id === rec.id)
+  assert.ok(listed, 'status lists the record')
+  assert.equal('ours' in listed, false)
+  assert.equal('base' in listed, false)
+  assert.equal(listed.path, 'a.txt')
 
   const resolved = await api('POST', `/api/sessions/${id}/merges/resolve`, { id: rec.id, how: 'theirs' })
   assert.equal(resolved.status, 200, JSON.stringify(resolved.body))
