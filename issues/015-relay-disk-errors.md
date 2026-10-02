@@ -1,6 +1,6 @@
 # 015: A disk error while saving a session stops the relay, and a half-written session file is deleted on the next start
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** relay from main (98eb68b)
+**Status:** **Fixed** (7028258); the free-space cap (step 4) is still open · **Reported:** 2026-10-01 (audit) · **Seen on:** relay from main (98eb68b)
 
 ## What happens
 - `saveMeta()` (`src/server.js:487`, `writeFileSync`) runs synchronously from
@@ -32,3 +32,12 @@ delete it.
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: steps 1–3 fixed (7028258). `saveMeta` and `save` catch disk errors, log once and
+  mark the room `full` (read-only, the existing refuse-edits path) instead of letting the exception
+  take the process down; metadata is written to a `.tmp` and renamed, like the ydoc. A room whose
+  `.json` or `.ydoc` can't be read is refused with 503 (the app keeps retrying, so a repair takes
+  effect without a restart) and left on disk; the startup sweep logs and skips such files rather than
+  deleting them. The tombstone write, `removeRoomData` and the chat-file upload's `mkdir` are guarded
+  too. Tests in `test/relay.test.js`: "a data folder that stops taking writes makes sessions
+  read-only instead of stopping the relay" and "a session whose metadata is unreadable is refused and
+  left on disk, not deleted". Step 4 (a relay-wide free-space check) is not done.
