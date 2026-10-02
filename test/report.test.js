@@ -14,6 +14,9 @@ test('scrub reduces paths to basenames and hides tokens and invite links', () =>
   assert.equal(scrub('quilt://join?invite=xyz'), '[invite]')
   assert.equal(scrub('plain message 42'), 'plain message 42')
   assert.equal(scrub(null), '')
+  assert.equal(scrub('open /Users/dana/My Documents and Settings/file.txt now'), 'open file.txt now')
+  assert.equal(scrub('C:\\Program Files (x86)\\Quilt\\app.exe crashed'), 'app.exe crashed')
+  assert.equal(scrub('a /Users/a/x failed, see /home/b/y'), 'a x failed, see y')
 })
 
 /** A reporter over fake time and a fake fetch that records every request. */
@@ -116,4 +119,37 @@ test('flush sends what is waiting now and gives up after the timeout', async () 
   await hang.flush({ timeoutMs: 20 })
   assert.ok(Date.now() - started < 1000, 'flush returned without the fetch finishing')
   resolveFetch({ ok: true, status: 200 })
+})
+
+test('send never throws even if token() throws; the batch is dropped and it backs off', async () => {
+  let t = 1_000_000
+  const timers = []
+  const sent = []
+  let calls = 0
+  const token = () => { calls += 1; if (calls === 2) throw new Error('keychain locked'); return 'qd_tok' }
+  const fetch = async (url, opts) => { sent.push({ url, body: JSON.parse(opts.body) }); return { ok: true, status: 200 } }
+  const setTimer = (fn, ms) => { const id = { fn, at: t + ms }; timers.push(id); return id }
+  const clearTimer = (id) => { const i = timers.indexOf(id); if (i >= 0) timers.splice(i, 1) }
+  const r = createReporter({ token, fetch, api: 'https://api.test', version: '0.3.2', platform: 'darwin', now: () => t, setTimer, clearTimer })
+  const advance = async (ms) => {
+    t += ms
+    for (const id of timers.filter((x) => x.at <= t)) { clearTimer(id); id.fn() }
+    await new Promise((res) => setImmediate(res))
+  }
+  r.record({ kind: 'error', name: 'a' })
+  await advance(10_000)
+  assert.equal(sent.length, 1)
+  r.record({ kind: 'error', name: 'b' })
+  await advance(10_000)
+  assert.equal(sent.length, 1, 'the second attempt threw inside token() and was dropped, not sent')
+  assert.equal(r.waiting(), 0)
+})
+
+test('flush drains every waiting batch, and close leaves no timer armed', async () => {
+  const h = harness()
+  for (let i = 0; i < 45; i++) h.r.record({ kind: 'action', name: `n${i}` })
+  await h.r.close()
+  assert.equal(h.sent.reduce((n, s) => n + s.body.events.length, 0), 45)
+  assert.equal(h.r.waiting(), 0)
+  assert.equal(h.timers.length, 0)
 })

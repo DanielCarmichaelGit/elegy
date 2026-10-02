@@ -6,8 +6,9 @@ import { apiUrl } from './account.js'
 import { currentVersion } from './releases.js'
 
 // A path on this computer says who you are and how your disk is laid out; its last part
-// (the project folder, the app) is all a report needs.
-const PATH = /(?:~|[A-Za-z]:\\|\/(?:Users|home|private|tmp|var|opt|Applications|Volumes|root|mnt))(?:[^\s'"`:,()]|\s(?=[^\s'"`:,()]*[\\/]))*/g
+// (the project folder, the app) is all a report needs. A directory segment may be a few
+// space-joined words of its own ("Program Files (x86)"), so each segment allows up to four.
+const PATH = /(?:~|[A-Za-z]:|\/(?:Users|home|private|tmp|var|opt|Applications|Volumes|root|mnt))(?:[\\/][^\s'"`:,\\/]+(?: [^\s'"`:,\\/]+){0,3})*/g
 const TOKEN = /\b(?:qd|qa|qr|dc)_[A-Za-z0-9_-]+/g
 const INVITE = /(?:https?:\/\/join\.heyquilt\.com\/[^\s'"`]+|quilt:\/\/[^\s'"`]+)/g
 
@@ -30,6 +31,7 @@ export function createReporter ({
   let timer = null
   let pausedUntil = 0
   let inflight = null
+  let closed = false
 
   function record (event) {
     try {
@@ -43,9 +45,15 @@ export function createReporter ({
   }
 
   function schedule () {
-    if (timer || !waiting.length) return
+    if (closed || timer || !waiting.length) return
     const delay = Math.max(delayMs, pausedUntil - now())
     timer = setTimer(() => { timer = null; send() }, delay)
+  }
+
+  // Dropped, not retried: a report is never worth a retry storm. One quiet line.
+  function fail (err) {
+    pausedUntil = now() + backoffMs
+    log(`issue report not sent: ${err?.message || err}`)
   }
 
   function send () {
@@ -53,30 +61,43 @@ export function createReporter ({
     if (now() < pausedUntil) return schedule()
     if (timer) { clearTimer(timer); timer = null }
     const events = waiting.splice(0, batchSize)
-    const t = token()
-    inflight = Promise.resolve().then(() => fetch(`${api}/v1/issues`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) },
-      body: JSON.stringify({ surface: 'app', appVersion: version, platform, events })
-    })).then((res) => {
-      if (!res || !res.ok) throw new Error(`Quilt answered ${res && res.status}`)
-    }).catch((err) => {
-      // Dropped, not retried: a report is never worth a retry storm. One quiet line.
-      pausedUntil = now() + backoffMs
-      log(`issue report not sent: ${err?.message || err}`)
-    }).finally(() => {
-      inflight = null
+    try {
+      const t = token()
+      inflight = Promise.resolve().then(() => fetch(`${api}/v1/issues`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) },
+        body: JSON.stringify({ surface: 'app', appVersion: version, platform, events })
+      })).then((res) => {
+        if (!res || !res.ok) throw new Error(`Quilt answered ${res && res.status}`)
+      }).catch(fail).finally(() => {
+        inflight = null
+        if (waiting.length) schedule()
+      })
+      return inflight
+    } catch (err) {
+      // token() (or anything else synchronous above) threw before any request went out:
+      // the batch taken off `waiting` is still dropped, same as a failed send.
+      fail(err)
       if (waiting.length) schedule()
-    })
-    return inflight
+    }
   }
 
-  /** Sends what is waiting now; gives up after `timeoutMs` so shutdown never hangs on it. */
+  /** Sends what is waiting now, batch after batch, until nothing is left or `timeoutMs` runs out. */
   async function flush ({ timeoutMs = 2000 } = {}) {
-    if (!waiting.length && !inflight) return
-    const work = (inflight || Promise.resolve()).then(() => { pausedUntil = 0; return send() })
-    await Promise.race([work, new Promise((res) => setTimeout(res, timeoutMs))]).catch(() => {})
+    const deadline = Date.now() + timeoutMs
+    pausedUntil = 0
+    while ((waiting.length || inflight) && Date.now() < deadline) {
+      const step = inflight || send() || Promise.resolve()
+      await Promise.race([step, new Promise((res) => setTimeout(res, Math.max(0, deadline - Date.now())))]).catch(() => {})
+    }
   }
 
-  return { record, flush, close: () => flush(), waiting: () => waiting.length }
+  /** Stops any future scheduling and flushes what is left, so shutdown never leaves a timer armed. */
+  function close () {
+    closed = true
+    if (timer) { clearTimer(timer); timer = null }
+    return flush()
+  }
+
+  return { record, flush, close, waiting: () => waiting.length }
 }
