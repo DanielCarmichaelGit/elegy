@@ -37,7 +37,8 @@ function parseSmtpUrl (raw) {
 
 export function createSmtpMailer ({ url, from, transport, createTransport = nodemailer.createTransport }) {
   const t = transport || createTransport(parseSmtpUrl(url))
-  return { send: ({ to, subject, text }) => t.sendMail({ from, to, subject, text }) }
+  // A message may name its own sender (session invites come from hello@); otherwise SMTP_FROM.
+  return { send: ({ to, subject, text, from: sender }) => t.sendMail({ from: sender || from, to, subject, text }) }
 }
 
 // `quilt api --memory` prints emails instead, so invite links can be copied from the terminal.

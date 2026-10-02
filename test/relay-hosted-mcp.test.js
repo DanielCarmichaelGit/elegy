@@ -264,3 +264,46 @@ test('a hosted agent in an uncontrolled room (no owner) is an editor straight aw
     await waitFor(() => read(dir, 'open.txt') === 'open')
   } finally { await dana.stop() }
 })
+
+test('a hosted agent whose room pass has a grant gets straight in, with that access', async () => {
+  const access = { files: 'edit', folders: [], foldersExcept: ['secrets'], talk: false }
+  const gem = await client(hostedPass({ sub: 'agent-gem', name: 'Gem', room: 'hm-1', access }))
+  const gemCall = (name, args = {}) => gem.callTool({ name, arguments: args })
+  try {
+    assert.match(out(await gemCall('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#v' })), /Joined room hm-1 as Gem \(editor\)/)
+    await waitFor(() => carl.members.some((m) => m.key === 'agent:agent-gem' && m.talk === false))
+    assert.ok(!carl.waiting.some((p) => p.key === 'agent:agent-gem'), 'no prompt for the owner')
+    assert.match(out(await gemCall('quilt_session_info')), /an editor, not in secrets, and you may not post/)
+    assert.match(out(await gemCall('quilt_status')), /You may not post in this session/)
+    const said = await gemCall('quilt_message', { text: 'hello' })
+    assert.deepEqual([said.isError, out(said)], [true, "You can't post in this session."])
+    assert.equal(out(await gemCall('quilt_share', { summary: 'plan' })), "You can't post in this session.")
+    assert.equal(out(await gemCall('quilt_write_file', { path: 'secrets/token.txt', content: 'x' })), 'You may not change files in secrets.')
+    assert.match(out(await gemCall('quilt_write_file', { path: 'gem.txt', content: 'from Gem' })), /Created gem.txt/)
+    await waitFor(() => read(carlDir, 'gem.txt') === 'from Gem')
+    assert.match(out(await gemCall('quilt_claim', { pattern: 'gem/**', note: 'everyone, read this' })), /Claimed gem/)
+    assert.equal(srv.rooms.get('hm-1').meta.claims['gem/**'].note, '', 'a claim, but not its note')
+  } finally { await gem.close() }
+})
+
+test('a granted agent whose pass names no room is asked to call again, never told it was removed', async () => {
+  // Gem joined hm-1 by its grant (above). Its pass from an API that just restarted names no room.
+  const rpc = (name, args = {}) => fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': hostedPass({ sub: 'agent-gem', name: 'Gem' }), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
+  const res = await rpc('quilt_status')
+  assert.equal(res.headers.get('x-quilt-room'), 'hm-1')
+  assert.equal(res.headers.get('x-quilt-retry'), 'room-pass', 'the API retries with a pass for that room')
+  const body = await res.text()
+  assert.match(body, /Call the same tool again/)
+  assert.doesNotMatch(body, /no longer in that session/)
+  // With a pass for the room, the same call works.
+  const gem = await client(hostedPass({ sub: 'agent-gem', name: 'Gem', room: 'hm-1', access: { files: 'edit', folders: [], foldersExcept: ['secrets'], talk: false } }))
+  try { assert.match(out(await gem.callTool({ name: 'quilt_status', arguments: {} })), /Carl/) } finally { await gem.close() }
+})
+
+test('the relay tells the accounts API which session a hosted agent is in', async () => {
+  const pass = hostedPass({ sub: 'agent-gem', name: 'Gem' })
+  const res = await fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': pass, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })
+  assert.equal(res.headers.get('x-quilt-room'), 'hm-1')
+  const other = await fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': hostedPass({ sub: 'agent-new', name: 'New' }), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })
+  assert.equal(other.headers.get('x-quilt-room'), null, 'in no session')
+})

@@ -1031,3 +1031,17 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
   .board-col { min-height: auto; overflow: visible; }
   .board-list { flex: none; max-height: min(280px, 50vh); overscroll-behavior: contain; }
 }
+/* access types: the invite panel, the people menu's Access section, and a chat you can't post to */
+.inv-sub { margin: 14px 0 6px; }
+.inv-section #inv-type { width: 100%; }
+.inv-section .hint { margin: 6px 0 0; }
+.inv-list { display: flex; flex-direction: column; gap: 4px; }
+.inv-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
+.inv-row .avatar { width: 24px; height: 24px; font-size: 11px; }
+.inv-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-section .error:empty { display: none; }
+.pm-access .pm-now { flex-basis: 100%; }
+.pm-access select.input { flex: 1; }
+.pm-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.composer.muted .box { opacity: .6; }
+.composer.muted textarea { cursor: not-allowed; }

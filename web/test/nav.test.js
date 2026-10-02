@@ -8,6 +8,7 @@ test('exactly one personal tab is on for each personal page', () => {
   assert.deepEqual(active('/dashboard'), ['Dashboard'])
   assert.deepEqual(active('/dashboard/computers'), ['Computers'])
   assert.deepEqual(active('/dashboard/agents'), ['Agents'])
+  assert.deepEqual(active('/dashboard/access'), ['Access types'])
   assert.deepEqual(active('/settings'), [])
 })
 

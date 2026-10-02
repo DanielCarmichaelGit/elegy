@@ -24,6 +24,7 @@ import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as d
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
 import { pickChecklist } from './agent-task-workflow.js'
+import { changeRefusal, TALK_REFUSED } from './session-access.js'
 
 export { applyTextDiff }
 
@@ -55,7 +56,8 @@ export class Session extends EventEmitter {
     this.viewSecret = viewSecret
     this.name = name
     this.identity = identity
-    this.passes = passes // signs in to a relay that requires it (see pass-source.js)
+    // Signs in to a relay that requires it (see pass-source.js), with passes for this room.
+    this.passes = passes && passes.forRoom ? passes.forRoom(room) : passes
     this.tool = tool
     this.color = color
     this.prefer = prefer
@@ -232,9 +234,14 @@ export class Session extends EventEmitter {
     this.access = a
     if (a.state === 'approved' && a.owner) this.sendStartName()
     if (a.state === 'pending' && (!was || was.state !== 'pending')) this.log(`⏳ waiting for the session owner to let you in (you were invited to ${a.invitedAs === 'viewer' ? 'view' : 'edit'})`)
-    if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes))) {
-      this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}`)
+    if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes) || String(was.scopesExcept || []) !== String(a.scopesExcept || []))) {
+      const except = a.role !== 'viewer' && a.scopesExcept && a.scopesExcept.length ? `, except ${a.scopesExcept.join(', ')}` : ''
+      this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}${except}`)
     }
+    if (a.state === 'approved' && (was ? was.talk !== false : true) && a.talk === false) this.log(`🔇 ${TALK_REFUSED}`)
+    if (a.state === 'approved' && was && was.talk === false && a.talk !== false) this.log('💬 you can post in this session again')
+    // Partners see you sharing your AI chat only while it can reach them.
+    if (a.state === 'approved' && (was?.talk === false) !== (a.talk === false)) this.publishAgentState()
     if (a.refused) this.log(`🔒 the relay undid your change to ${a.refused.join(', ')}: ${a.why}`)
     this.emit('access', a)
     this.scheduleStatusWrite()
@@ -256,17 +263,24 @@ export class Session extends EventEmitter {
   writeRefusal (rel) {
     const a = this.access
     if (!a || a.state !== 'approved') return null
-    if (a.role === 'viewer') return 'you can only view this session'
-    if (a.scopes && a.scopes.length && !a.scopes.some((sc) => globMatcher(sc)(rel))) return `you may only change files in ${a.scopes.join(', ')}`
-    return null
+    return changeRefusal(a, rel)
+  }
+
+  /** May we post to chat and the feed? (The session's owner can say no; the relay undoes posts then.) */
+  mayTalk () {
+    return !(this.access && this.access.state === 'approved' && this.access.talk === false)
   }
 
   get isOwner () { return !!(this.access && this.access.owner) }
 
-  /** Owner only: let someone in, with a role and (for agents) the folders they may change. */
-  approve (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'approve', key, role, scopes }) }
+  /**
+   * Owner only: let someone in, as an access type (`typeId`, with the `access` it comes to:
+   * { files, folders, foldersExcept, talk }), or, as before access types, with a role and
+   * the folders they may change.
+   */
+  approve (key, { role, scopes, typeId, access } = {}) { return this.conn.adminRequest({ op: 'approve', key, role, scopes, typeId, access }) }
   deny (key) { return this.conn.adminRequest({ op: 'deny', key }) }
-  setMember (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes }) }
+  setMember (key, { role, scopes, access } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes, access }) }
   removeMember (key) { return this.conn.adminRequest({ op: 'remove', key }) }
 
   /** Owner only: names the session for everyone in it (1 to 80 characters). */
@@ -1237,6 +1251,8 @@ export class Session extends EventEmitter {
     message = String(message || '').trim().slice(0, 500)
     if (!message) throw new Error('say what the commit is for')
     if (this.access && this.access.state === 'approved' && this.access.role === 'viewer') throw new Error('viewers can’t ask for commits')
+    // A commit request is a message to the host: the relay undoes it from someone who may not post.
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     const r = { id: crypto.randomBytes(6).toString('hex'), by: this.name, message, ts: Date.now(), state: 'open' }
     this.doc.transact(() => {
       this.commitRequests.set(r.id, r)
@@ -1412,6 +1428,7 @@ export class Session extends EventEmitter {
    * from the relay or a modified client).
    */
   say (text, { to = null, file = null } = {}) {
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     text = String(text || '').slice(0, 4000)
     if (!text && !file) throw new Error('message is empty')
     to = to ? String(to).trim() : null
@@ -1430,6 +1447,7 @@ export class Session extends EventEmitter {
 
   /** Uploads a file to the relay and posts it as a message. */
   async sendFile (filePath, { to = null, text = '' } = {}) {
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     const abs = path.resolve(this.root, filePath)
     const st = fs.statSync(abs)
     if (!st.isFile()) throw new Error(`${filePath} is not a file`)
@@ -1666,6 +1684,7 @@ export class Session extends EventEmitter {
   }
 
   shareAgentEntries (entries) {
+    if (!this.mayTalk()) return 0
     const indexById = new Map()
     this.agentFeed.forEach((e, i) => { if (e && e.by === this.name && e.id) indexById.set(e.id, i) })
     const fresh = []
@@ -1709,12 +1728,16 @@ export class Session extends EventEmitter {
   /** Turns sharing of your AI chat on or off, leaving a marker in the feed. */
   setAgentSharing (on) {
     on = !!on
+    // Sharing your AI chat posts it to the feed: not for someone who may not post.
+    if (on && !this.mayTalk()) throw new Error(TALK_REFUSED)
     if (on === this.agentSharing) return on
     const marker = { id: `${on ? 'resumed' : 'paused'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`, by: this.name, tool: null, conv: null, kind: on ? 'resumed' : 'paused', text: '', ts: Date.now() }
-    this.doc.transact(() => {
-      this.agentFeed.push([marker])
-      this.trimAgentFeed()
-    }, LOCAL)
+    if (this.mayTalk()) {
+      this.doc.transact(() => {
+        this.agentFeed.push([marker])
+        this.trimAgentFeed()
+      }, LOCAL)
+    }
     this.agentSharing = on
     this.publishAgentState()
     this.saveConfig({ shareAgent: on })
@@ -1749,7 +1772,7 @@ export class Session extends EventEmitter {
     if (!this.conn) return
     const st = this.agentState || { tool: null, status: 'idle' }
     // While paused, partners only learn that sharing is off, not whether you're working.
-    const shared = this.agentSharing ? { ...st, sharing: true, ...(this.summarizer ? { summarized: true } : {}) } : { tool: st.tool, status: 'idle', sharing: false }
+    const shared = this.agentSharing && this.mayTalk() ? { ...st, sharing: true, ...(this.summarizer ? { summarized: true } : {}) } : { tool: st.tool, status: 'idle', sharing: false }
     this.conn.awareness.setLocalStateField('agent', shared)
   }
 

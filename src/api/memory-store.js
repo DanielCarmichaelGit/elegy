@@ -1,6 +1,7 @@
 // The accounts API's data, in memory. Used by tests and `quilt api --memory`;
 // production uses supabase-store.js, which has the same methods.
 import crypto from 'node:crypto'
+import { FALLBACK_TYPE } from '../session-access.js'
 
 const uuid = () => crypto.randomUUID()
 const copy = (o) => (o ? structuredClone(o) : null)
@@ -28,6 +29,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const agentInvites = new Map(); const keyRows = new Map()
   const events = new Map(); const issues = new Map()
   const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
+  const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
+  const grantKey = (room, account) => `${room}\n${account}`
+  const inviteOpenAt = (i, at) => !i.usedAt && !i.cancelledAt && i.expiresAt > at
   const all = (m, keep) => [...m.values()].filter(keep)
   const nameOf = (userId) => profiles.get(userId)?.name || ''
   const findMember = (orgId, userId) => all(members, (m) => m.orgId === orgId && m.userId === userId)[0]
@@ -57,6 +61,18 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const dropActivity = (accounts) => {
     for (const [room, s] of relaySessions) if (accounts.includes(s.ownerAccount)) relaySessions.delete(room)
     for (const [id, v] of visits) if (accounts.includes(v.account) || !relaySessions.has(v.room)) visits.delete(id)
+    dropOrphans()
+  }
+  // Grants and invites go with their session (on delete cascade).
+  const dropOrphans = () => {
+    for (const [k, g] of grants) if (!relaySessions.has(g.room)) grants.delete(k)
+    for (const [id, i] of sessionInvites) if (!relaySessions.has(i.room)) sessionInvites.delete(id)
+  }
+  // Mirrors delete_account_access.
+  const dropAccess = (accounts) => {
+    for (const [id, t] of accessTypes) if (accounts.includes(t.ownerAccount)) accessTypes.delete(id)
+    for (const [k, g] of grants) if (accounts.includes(g.account)) grants.delete(k)
+    for (const [id, i] of sessionInvites) if (accounts.includes(i.account)) sessionInvites.delete(id)
   }
 
   return {
@@ -177,7 +193,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (k && !k.revokedAt) k.refreshedAt = null
     },
     async deleteUser (userId) {
-      dropActivity([`person:${userId}`, ...all(agents, (a) => a.ownerUserId === userId).map((a) => `agent:${a.id}`)])
+      const accounts = [`person:${userId}`, ...all(agents, (a) => a.ownerUserId === userId).map((a) => `agent:${a.id}`)]
+      dropAccess(accounts)
+      dropActivity(accounts)
       profiles.delete(userId); users.delete(userId)
       for (const [id, d] of devices) if (d.userId === userId) devices.delete(id)
       for (const [id, a] of agents) if (a.ownerUserId === userId) dropAgent(id)
@@ -244,6 +262,99 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [id, v] of visits) if (v.endedAt != null && v.endedAt < before) visits.delete(id)
       for (const [room, s] of relaySessions) if (s.lastActiveAt < before && !all(visits, (v) => v.room === room).length) relaySessions.delete(room)
       for (const [id, at] of seenEvents) if (at < seenBefore) seenEvents.delete(id)
+      dropOrphans()
+    },
+
+    // Access types (see 20261002010000_access_types_and_invites.sql). The built-ins live in
+    // session-access.js, not here.
+    async listAccessTypes (ownerAccount) {
+      return all(accessTypes, (t) => t.ownerAccount === ownerAccount).sort((a, b) => a.createdAt - b.createdAt).map(copy)
+    },
+    async accessTypeById (id) { return copy(accessTypes.get(id)) },
+    async createAccessType ({ ownerAccount, name, files, folders = [], talk = true }) {
+      if (folders.length > 20) throw checkViolation('at most 20 folders')
+      const row = { id: uuid(), ownerAccount, name, files, folders: [...folders], talk, createdAt: now(), updatedAt: now() }
+      accessTypes.set(row.id, row); return copy(row)
+    },
+    async updateAccessType (id, patch) {
+      const t = accessTypes.get(id)
+      if (!t) return null
+      for (const k of ['name', 'files', 'folders', 'talk']) if (patch[k] !== undefined) t[k] = copy(patch[k])
+      t.updatedAt = now()
+      return copy(t)
+    },
+    // Mirrors delete_access_type: grants and invites that used it fall back to View only.
+    async deleteAccessType (id, ownerAccount) {
+      const t = accessTypes.get(id)
+      if (!t || t.ownerAccount !== ownerAccount) return false
+      accessTypes.delete(id)
+      for (const g of grants.values()) if (g.typeId === id) Object.assign(g, { typeId: FALLBACK_TYPE, updatedAt: now() })
+      for (const i of sessionInvites.values()) if (i.typeId === id) i.typeId = FALLBACK_TYPE
+      return true
+    },
+
+    // Grants: one per (room, account). Mirrors the foreign key to relay_sessions.
+    async grantFor (room, account) { return copy(grants.get(grantKey(room, account))) },
+    async listGrants (room) { return all(grants, (g) => g.room === room).sort((a, b) => a.createdAt - b.createdAt).map(copy) },
+    async putGrant ({ room, account, typeId, tighten = {}, grantedBy }) {
+      if (!relaySessions.has(room)) throw fkViolation('session', 'does not exist')
+      const k = grantKey(room, account)
+      const old = grants.get(k)
+      const row = { room, account, typeId, tighten: copy(tighten), grantedBy, createdAt: old ? old.createdAt : now(), updatedAt: now() }
+      grants.set(k, row); return copy(row)
+    },
+    async deleteGrant (room, account) { return grants.delete(grantKey(room, account)) },
+
+    // Session invites: the link is never kept.
+    // Mirrors the unique indexes on open invites, and clearing that key's expired ones first.
+    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, at = now() }) {
+      if (!relaySessions.has(room)) throw fkViolation('session', 'does not exist')
+      if ((email == null) === (account == null)) throw checkViolation('an invite is for an email or an account')
+      email = email && email.toLowerCase()
+      const same = (i) => i.room === room && (email ? i.email === email : i.account === account) && !i.usedAt && !i.cancelledAt
+      for (const [id, i] of sessionInvites) if (same(i) && i.expiresAt <= at) sessionInvites.delete(id)
+      if (all(sessionInvites, same).length) throw duplicate('an open invite')
+      const row = { id: uuid(), room, email: email && email.toLowerCase(), account, accountName, typeId, invitedBy, createdAt: now(), expiresAt, usedAt: null, usedBy: null, cancelledAt: null }
+      sessionInvites.set(row.id, row); return copy(row)
+    },
+    async listSessionInvites (room) {
+      return all(sessionInvites, (i) => i.room === room).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(copy)
+    },
+    async sessionInviteById (room, id) { const i = sessionInvites.get(id); return i && i.room === room ? copy(i) : null },
+    async openSessionInvite (room, { email = null, account = null }, at, exceptId = null) {
+      const found = all(sessionInvites, (i) => i.room === room && i.id !== exceptId && (email ? i.email === email : i.account === account) && inviteOpenAt(i, at))
+      return copy(found[0] || null)
+    },
+    // Check-and-set: only a waiting invite is cancelled.
+    async cancelSessionInvite (id) {
+      const i = sessionInvites.get(id)
+      if (!i || i.usedAt || i.cancelledAt) return false
+      i.cancelledAt = now(); return true
+    },
+    // Mirrors delete_unused_grant.
+    async deleteUnusedGrant (room, account, at) {
+      const email = account.startsWith('email:') ? account.slice('email:'.length) : null
+      if (all(sessionInvites, (i) => i.room === room && (email ? i.email === email : i.account === account) && inviteOpenAt(i, at)).length) return false
+      return grants.delete(grantKey(room, account))
+    },
+    // Mirrors claim_email_invites: the open invites are used, and the email's grant becomes the account's.
+    async claimEmailInvites (room, email, account) {
+      const at = now()
+      const open = all(sessionInvites, (i) => i.room === room && i.email === email && inviteOpenAt(i, at))
+      if (!open.length) return 0
+      for (const i of open) Object.assign(i, { usedAt: at, usedBy: account })
+      const from = grants.get(grantKey(room, `email:${email}`))
+      if (from) {
+        const old = grants.get(grantKey(room, account))
+        grants.set(grantKey(room, account), { ...copy(from), account, createdAt: old ? old.createdAt : at, updatedAt: at })
+        grants.delete(grantKey(room, `email:${email}`))
+      }
+      return open.length
+    },
+    // An invited account came in: its open invites are used.
+    async useAccountInvites (room, account) {
+      const at = now()
+      for (const i of sessionInvites.values()) if (i.room === room && i.account === account && inviteOpenAt(i, at)) Object.assign(i, { usedAt: at, usedBy: account })
     },
 
     // Orgs. Creating one makes its three built-in roles and its owner together.

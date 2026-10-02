@@ -1,6 +1,7 @@
 // Session passes from the accounts API. A pass proves who you are to the relay
 // for 10 minutes. Clients keep one until 2 minutes before it runs out, and while
-// connected they fetch a fresh one every 5 minutes (see connection.js).
+// connected they fetch a fresh one every 5 minutes (see connection.js). A session
+// asks for passes for its own room: those carry what you may do there.
 import { readPass } from './passes.js'
 import { apiUrl, readAccount, NOT_SIGNED_IN, SIGNED_OUT } from './account.js'
 import { agentAccess, readAgent } from './agent-join.js'
@@ -18,13 +19,22 @@ export class SignedOutError extends Error {
 }
 
 export class PassSource {
-  /** `fetchPass` resolves to { pass, expiresAt }. */
-  constructor ({ fetchPass, now = Date.now, earlyMs = PASS_EARLY_MS }) {
+  /** `fetchPass(room)` resolves to { pass, expiresAt }; `room` is '' for a pass that isn't for one room. */
+  constructor ({ fetchPass, now = Date.now, earlyMs = PASS_EARLY_MS, room = '' }) {
     this.fetchPass = fetchPass
     this.now = now
     this.earlyMs = earlyMs
+    this.room = room
+    this.rooms = new Map() // room -> PassSource, for forRoom
     this.current = null // { pass, expiresAt, payload }
     this.pending = null
+  }
+
+  /** The same account's passes for one room (kept, one per room). They carry its access there. */
+  forRoom (room) {
+    if (!room || room === this.room) return this
+    if (!this.rooms.has(room)) this.rooms.set(room, new PassSource({ fetchPass: this.fetchPass, now: this.now, earlyMs: this.earlyMs, room }))
+    return this.rooms.get(room)
   }
 
   /** A pass with at least `earlyMs` left, fetching one when needed. */
@@ -37,7 +47,7 @@ export class PassSource {
   fresh () {
     if (!this.pending) {
       this.pending = Promise.resolve()
-        .then(() => this.fetchPass())
+        .then(() => this.fetchPass(this.room))
         .then(({ pass, expiresAt }) => {
           this.current = { pass, expiresAt, payload: readPass(pass) }
           return pass
@@ -45,6 +55,15 @@ export class PassSource {
         .finally(() => { this.pending = null })
     }
     return this.pending
+  }
+
+  /**
+   * A pass issued after this call. One already on its way may have been issued before
+   * something changed (the relay asking for a fresh pass after the owner changed our
+   * access): wait for it, then ask again.
+   */
+  newer () {
+    return this.pending ? this.pending.catch(() => {}).then(() => this.fresh()) : this.fresh()
   }
 
   /** Forgets the cached pass (the relay turned it away), so the next get() fetches one. */
@@ -58,10 +77,11 @@ export class PassSource {
   }
 }
 
-async function requestPass (fetchImpl, api, bearer, signedOutMessage) {
+async function requestPass (fetchImpl, api, bearer, signedOutMessage, room = '') {
   let res
   try {
-    res = await fetchImpl(`${String(api).replace(/\/+$/, '')}/v1/passes`, { method: 'POST', headers: { authorization: `Bearer ${bearer}` } })
+    const body = room ? { headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify({ room }) } : { headers: { authorization: `Bearer ${bearer}` } }
+    res = await fetchImpl(`${String(api).replace(/\/+$/, '')}/v1/passes`, { method: 'POST', ...body })
   } catch (err) {
     throw new Error(`Couldn't reach Quilt (${err.cause?.code || err.message}).`)
   }
@@ -73,14 +93,14 @@ async function requestPass (fetchImpl, api, bearer, signedOutMessage) {
 
 /** Passes for this computer's account, from its qd_ token. */
 export function personPasses ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, now } = {}) {
-  return new PassSource({ now, fetchPass: () => requestPass(fetchImpl, api, token, SIGNED_OUT) })
+  return new PassSource({ now, fetchPass: (room) => requestPass(fetchImpl, api, token, SIGNED_OUT, room) })
 }
 
 /** Passes for a saved agent, from its access key (refreshed with its refresh key when it runs out). */
 export function agentPasses ({ name, dir, fetch: fetchImpl = globalThis.fetch, now } = {}) {
   return new PassSource({
     now,
-    fetchPass: async () => {
+    fetchPass: async (room) => {
       let saved
       try {
         saved = await agentAccess({ name, dir, fetch: fetchImpl, now })
@@ -88,7 +108,7 @@ export function agentPasses ({ name, dir, fetch: fetchImpl = globalThis.fetch, n
         if (err.status === 401) throw new SignedOutError(err.message)
         throw err
       }
-      return requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT)
+      return requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT, room)
     }
   })
 }

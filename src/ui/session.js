@@ -1,6 +1,6 @@
 // The session workspace: file tree on the left, a partner's live AI chat, a
 // shared file, or the task board in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { conversations } from './feed-convs.js'
@@ -11,9 +11,11 @@ import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
 import { fileCardHref, renderable } from './chat.js'
 import { renderBoard } from './board.js'
+import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 
 let current = null // session id being shown
 let timers = []
+let grantLoad = grantsLoading() // this session's grants (the owner's view, from the API), for the Access sections
 let mounted = null // AbortController for document-level listeners of this mount
 
 // ------------------------------------------------------------ layout state --
@@ -133,6 +135,10 @@ export function mountSession (id) {
   renderTreePane()
   renderMessages(false, true)
   renderRecipients()
+  renderComposer()
+  grantLoad = grantsLoading()
+  // The approve control and the people menu offer access types once they're here.
+  loadAccessTypes().then(() => { if (current === id) { renderAccess(); if (!$('#people-menu').hidden) renderPeopleMenu() } })
   loadTree()
   loadFeeds()
   autoOpenNewPeople(id) // everyone already here gets a tab on first visit
@@ -161,6 +167,7 @@ export function sessionUpdated (id) {
   renderTop()
   renderMainBar()
   renderRecipients()
+  renderComposer()
   if (ws(id).mode === 'ai') renderMain()
   if (ws(id).mode === 'tasks') paintBoard()
   scheduleTree()
@@ -301,7 +308,12 @@ function bindTop () {
   const menu = $('#people-menu')
   let hoverTimer
   let openedAt = 0
-  const open = () => { clearTimeout(hoverTimer); if (menu.hidden) { menu.hidden = false; openedAt = Date.now(); btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu() } }
+  const open = () => {
+    clearTimeout(hoverTimer)
+    if (!menu.hidden) return
+    menu.hidden = false; openedAt = Date.now(); btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu()
+    if (sum().status.access?.owner) loadGrants()
+  }
   const close = () => { clearTimeout(hoverTimer); menu.hidden = true; btn.setAttribute('aria-expanded', 'false') }
   // A click also focuses (and may hover) the button, which already opened the menu; don't toggle it shut.
   btn.onclick = () => (menu.hidden ? open() : Date.now() - openedAt > 400 && close())
@@ -355,18 +367,25 @@ function bindTop () {
   })
   menu.addEventListener('change', async (e) => {
     const f = e.target.closest('.pm-member.edit')
-    if (!f) return
+    // Access types are saved with Save (below), not on every change.
+    if (!f || f.classList.contains('pm-access')) return
     try {
       await api('POST', `/api/sessions/${current}/members/set`, { key: f.dataset.key, role: f.role.value, ...(f.scopes ? { scopes: parseScopes(f.scopes.value) } : {}) })
       toast('Access updated')
     } catch (err) { toast(err.message) }
+  })
+  menu.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-retry-grants]')) return
+    grantLoad = grantsLoading()
+    renderPeopleMenu({ force: true })
+    loadGrants()
   })
   menu.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-remove]')
     if (!b) return
     const f = b.closest('.pm-member')
     if (!await ask({ title: `Remove ${f.querySelector('.nm').textContent.trim()}?`, message: 'They\'ll need a new invite and your approval to come back.', ok: 'Remove', danger: true })) return
-    try { await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast('Removed') } catch (err) { toast(err.message) }
+    try { const r = await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast(r.warning || 'Removed') } catch (err) { toast(err.message) }
   })
   menu.addEventListener('click', async (e) => {
     if (e.target.closest('[data-end-session]')) {
@@ -374,6 +393,24 @@ function bindTop () {
       try { await api('POST', `/api/sessions/${current}/end`); toast('Session ended') } catch (err) { toast(err.message) }
       return
     }
+  })
+  menu.addEventListener('submit', async (e) => {
+    const f = e.target.closest('.pm-access')
+    if (!f) return
+    e.preventDefault()
+    // Only what was loaded: never a default type saved over a grant we haven't seen.
+    const body = accessSaveBody(grantLoad, state.accessTypes, f.dataset.key, { typeId: f.typeId.value, viewOnly: f.viewOnly.checked, noTalk: f.noTalk.checked, foldersRemove: f.foldersRemove.value })
+    if (!body) return toast('Their access is still loading. Try again in a moment.')
+    const save = f.querySelector('[type=submit]')
+    save.disabled = true
+    try {
+      const r = await api('POST', `/api/sessions/${current}/members/access`, body)
+      grantLoad.grants.set(f.dataset.key, r.grant)
+      toast('Access updated')
+      // The relay's member list may have redrawn the form meanwhile, from the old grant.
+      save.blur()
+      renderPeopleMenu()
+    } catch (err) { toast(err.message) } finally { save.disabled = false }
   })
   menu.addEventListener('submit', async (e) => {
     e.preventDefault()
@@ -465,9 +502,12 @@ function renderAccess () {
   const acc = st.access || {}
   const pill = $('#access-pill')
   if (pill) {
-    const text = acc.state === 'pending' ? 'Waiting to be let in'
-      : acc.controlled && acc.role === 'viewer' ? 'View only'
-        : acc.controlled && acc.scopes && acc.scopes.length ? `Can change ${scopesText(acc.scopes)}` : ''
+    const parts = acc.state === 'pending' ? ['Waiting to be let in'] : !acc.controlled ? [] : [
+      ...(acc.role === 'viewer' ? ['View only'] : acc.scopes && acc.scopes.length ? [`Can change ${scopesText(acc.scopes)}`] : []),
+      ...(acc.role !== 'viewer' && acc.scopesExcept && acc.scopesExcept.length ? [`Not ${scopesText(acc.scopesExcept)}`] : []),
+      ...(acc.talk === false ? ["Can't post"] : [])
+    ]
+    const text = parts.join(' · ')
     pill.hidden = !text
     pill.textContent = text
     pill.className = `access-pill${acc.state === 'pending' ? ' wait' : ''}`
@@ -475,19 +515,23 @@ function renderAccess () {
   const bar = $('#requests')
   if (!bar) return
   const waiting = st.waiting || []
-  // Don't redraw while the owner is filling in a request.
-  if (bar.contains(document.activeElement) && ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return
+  // Don't redraw while the owner is filling in a request (the type picker is a button, see
+  // startDropdowns), only once they've let someone in or denied them.
+  const active = document.activeElement
+  if (bar.contains(active) && !active.closest('[type=submit],[data-deny]')) return
   bar.hidden = !waiting.length
   bar.innerHTML = waiting.map((p) => `
     <form class="request" data-key="${esc(p.key)}">
       ${avatar(p.name, null)}
       <div class="rq-main"><b>${esc(p.name)}</b>${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}
         <span class="hint">wants to join · invited to ${p.invitedAs === 'viewer' ? 'view' : 'edit'}</span></div>
-      <select class="input" name="role" aria-label="Role for ${esc(p.name)}">
+      ${state.accessTypes
+        ? `<select class="input" name="typeId" aria-label="Let ${esc(p.name)} in as" title="What they may do: an access type">${typeOptions()}</select>`
+        : `<select class="input" name="role" aria-label="Role for ${esc(p.name)}">
         <option value="editor" ${p.invitedAs !== 'viewer' ? 'selected' : ''}>Can edit</option>
         <option value="viewer" ${p.invitedAs === 'viewer' ? 'selected' : ''}>View only</option>
       </select>
-      ${p.kind === 'agent' ? `<input class="input" name="scopes" placeholder="All folders (or e.g. src, docs)" aria-label="Folders ${esc(p.name)} may change" title="Folders this agent may change, separated by commas">` : ''}
+      ${p.kind === 'agent' ? `<input class="input" name="scopes" placeholder="All folders (or e.g. src, docs)" aria-label="Folders ${esc(p.name)} may change" title="Folders this agent may change, separated by commas">` : ''}`}
       <button type="button" class="btn sm ghost" data-deny>Deny</button>
       <button type="submit" class="btn sm primary">Let in</button>
     </form>`).join('')
@@ -501,8 +545,9 @@ function bindAccess () {
     const btn = f.querySelector('[type=submit]')
     btn.disabled = true
     try {
-      await api('POST', `/api/sessions/${current}/members/approve`, { key: f.dataset.key, role: f.role.value, scopes: f.scopes ? parseScopes(f.scopes.value) : [] })
-      toast('Let in')
+      const body = f.typeId ? { key: f.dataset.key, typeId: f.typeId.value } : { key: f.dataset.key, role: f.role.value, scopes: f.scopes ? parseScopes(f.scopes.value) : [] }
+      const r = await api('POST', `/api/sessions/${current}/members/approve`, body)
+      toast(r.warning || 'Let in')
     } catch (err) { toast(err.message); btn.disabled = false }
   })
   bar.addEventListener('click', async (e) => {
@@ -530,7 +575,7 @@ function membersHtml (st) {
       ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}</div>` : ''
   }
   return `<div class="pm-section"><div class="pm-title">Who can get in</div>
-    ${list.length ? list.map((m) => `
+    ${list.length ? list.map((m) => state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
       <form class="pm-member edit" data-key="${esc(m.key)}">
         <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <select class="input" name="role" aria-label="Role for ${esc(m.name)}">
@@ -544,21 +589,66 @@ function membersHtml (st) {
     <div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
 }
 
-function renderPeopleMenu () {
+/**
+ * The owner's "Access" section for one person: their access type, and how it's narrowed
+ * for them here (view only, folders taken away, no posting). It never widens the type.
+ */
+function accessForm (m) {
+  // Disabled until this session's grants are here: Save only sends what was loaded.
+  const v = accessFormValues(grantLoad, m)
+  const ready = v.state === 'ready'
+  const off = ready ? '' : 'disabled'
+  const name = esc(m.name)
+  return `
+      <form class="pm-member edit pm-access" data-key="${esc(m.key)}">
+        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${name}${m.kind === 'agent' ? ' (agent)' : ''}</span>
+        <span class="hint pm-now">${esc(accessLine(m))}</span>
+        ${ready ? '' : `<span class="hint pm-load ${v.state === 'error' ? 'warn' : ''}" role="status">${esc(v.message)}</span>`}
+        <select class="input" name="typeId" aria-label="Access type for ${name}" ${off}>${typeOptions(ready ? v.typeId : '')}</select>
+        <label class="pm-check"><input type="checkbox" name="viewOnly" ${ready && v.viewOnly ? 'checked' : ''} ${off}> View only</label>
+        <label class="pm-check"><input type="checkbox" name="noTalk" ${ready && v.noTalk ? 'checked' : ''} ${off}> No posting</label>
+        <input class="input" name="foldersRemove" value="${esc(ready ? v.foldersRemove : '')}" placeholder="Take away folders, e.g. secrets" aria-label="Folders ${name} may not change" title="Folders taken away from this person, separated by commas" ${off}>
+        ${v.state === 'error' ? '<button type="button" class="btn sm" data-retry-grants>Retry</button>' : `<button type="submit" class="btn sm" ${off}>Save</button>`}
+        <button type="button" class="btn sm ghost icon" data-remove title="Remove ${name}" aria-label="Remove ${name}">${I.x}</button>
+      </form>`
+}
+
+/** The owner's grants in this session, from the API, for the Access sections. */
+async function loadGrants () {
+  const id = current
+  let next
+  try {
+    next = grantsLoaded((await api('GET', `/api/sessions/${id}/grants`)).grants)
+  } catch (err) {
+    // The forms say so and offer Retry: saving from grants we couldn't check isn't safe.
+    next = grantsFailed(err)
+  }
+  if (id !== current) return
+  grantLoad = next
+  // Fresh grants replace what the forms show, even one the owner is in.
+  if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
+}
+
+function renderPeopleMenu ({ force = false } = {}) {
   const st = sum().status
   const menu = $('#people-menu')
   const focusEl = menu.querySelector('#focus-input')
   const typing = focusEl && document.activeElement === focusEl ? focusEl.value : null
-  // Don't redraw under the owner while they change someone's access.
-  if (menu.querySelector('.pm-member.edit') && menu.contains(document.activeElement) && document.activeElement.closest('.pm-member')) return
+  // Don't redraw under the owner while they change someone's access (unless fresh grants
+  // arrived: then the form is redrawn from them, and keeps its focus).
+  const active = menu.contains(document.activeElement) && document.activeElement.closest('.pm-member') ? document.activeElement : null
+  if (!force && active && menu.querySelector('.pm-member.edit')) return
+  const refocus = active && active.name ? [active.closest('.pm-member').dataset.key, active.name] : null
   const self = personInfo(st.me.name)
   const a = st.me.agent || {}
   // Your AI chat: two plain switches instead of a button plus a checkbox.
-  const sharing = a.sharing !== false
+  // Without posting rights there's nothing to share: the feed is posting too.
+  const muted = mayNotPost()
+  const sharing = a.sharing !== false && !muted
   const shareLine = a.status === 'unavailable'
     ? `<div class="pm-card"><div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div></div>`
     : `<div class="pm-card pm-settings">
-        <label class="pm-switch"><span><b>Share my AI chat</b><small>Others see your prompts and your AI's replies.</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''}></label>
+        <label class="pm-switch ${muted ? 'off' : ''}"><span><b>Share my AI chat</b><small>${muted ? NO_POSTING : 'Others see your prompts and your AI\'s replies.'}</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''} ${muted ? 'disabled' : ''}></label>
         <label class="pm-switch ${sharing ? '' : 'off'}"><span><b>Summarize it first</b><small>Share short summaries instead of every word.</small></span><input type="checkbox" role="switch" data-summarize ${a.summarized ? 'checked' : ''} ${sharing ? '' : 'disabled'}></label>
       </div>`
   const row = (p) => {
@@ -597,6 +687,7 @@ function renderPeopleMenu () {
     el.focus()
     el.setSelectionRange(el.value.length, el.value.length)
   }
+  if (refocus) [...menu.querySelectorAll('.pm-member')].find((f) => f.dataset.key === refocus[0])?.elements?.[refocus[1]]?.focus()
 }
 
 // ------------------------------------------------------ main area (AI/Files) --
@@ -1173,7 +1264,7 @@ function bindChat () {
     } catch (err) {
       toast(err.message)
     } finally {
-      $('#send-btn').disabled = false
+      $('#send-btn').disabled = mayNotPost()
       input.focus()
     }
   }
@@ -1196,6 +1287,7 @@ function bindChat () {
 }
 
 function addFiles (list) {
+  if (mayNotPost()) return toast(NO_POSTING)
   for (const f of list) {
     if (state.maxFileBytes && f.size > state.maxFileBytes) { toast(`${f.name} is larger than ${bytes(state.maxFileBytes)}`); continue }
     state.pending.push(f)
@@ -1211,9 +1303,28 @@ function renderAttachments () {
   updatePlaceholder()
 }
 
+/** Someone who may not post sees the chat, but not a way to post to it. */
+function renderComposer () {
+  const input = $('#msg-input')
+  const s = sum()
+  if (!input || !s) return
+  const muted = mayNotPost()
+  input.disabled = muted
+  $('#attach-btn').disabled = muted
+  $('#send-btn').disabled = muted
+  $('#composer').classList.toggle('muted', muted)
+  updatePlaceholder()
+}
+
+function mayNotPost () {
+  const acc = sum()?.status.access
+  return !!(acc && acc.state === 'approved' && acc.talk === false)
+}
+
 function updatePlaceholder () {
   const input = $('#msg-input')
   if (!input) return
+  if (mayNotPost()) { input.placeholder = NO_POSTING; return }
   const who = state.to ? state.to : 'everyone'
   input.placeholder = state.pending.length ? `Add a note for ${who} (optional)…` : `Message ${who}…`
 }

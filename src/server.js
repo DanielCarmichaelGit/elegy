@@ -30,8 +30,9 @@ import {
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
-import { verifyPass } from './passes.js'
-import { patternsOverlap, globMatcher } from './fsutil.js'
+import { verifyPass, PASS_TTL_MS } from './passes.js'
+import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
+import { patternsOverlap } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
@@ -46,6 +47,8 @@ const HOSTED_ONLINE_MS = 3 * 60 * 1000
 const RENAME_MS = 2000
 const MAX_PATTERN = 500
 const MAX_SCOPES = 20
+// Removed accounts remembered per room, so an older pass's grant can't bring them back.
+const MAX_REMOVED = 200
 const ROLES = ['editor', 'viewer']
 const MB = 1024 * 1024
 const DAY = 24 * 60 * 60 * 1000
@@ -129,10 +132,25 @@ class Room {
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
-    // Undoes file changes from people who may not make them (viewers, and
-    // agents outside their folders). Only their connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys], { trackedOrigins: new Set(), captureTimeout: 0 })
+    this.chat = this.doc.getArray('chat')
+    this.feed = this.doc.getArray('agentFeed')
+    this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
+    this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state, ... }
+    // Undoes changes from people who may not make them: file changes from viewers and from
+    // people outside their folders, and posts from people who may not post (chat, the feed,
+    // words of their own in the activity log, commit requests). Only their connections are tracked.
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
+    this.recorded = null // the change the guard recorded last, for checkChange
+    this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.recorded = stackItem })
+    // What a tracked change added to the activity log, read before Yjs merges the new entries
+    // into older ones (after which a change event can no longer tell them apart).
+    this.activityAdded = new WeakMap()
+    this.doc.on('afterTransaction', (tr) => {
+      const events = tr.changedParentTypes.get(this.activity)
+      if (!events || !this.guard.trackedOrigins.has(tr.origin)) return
+      this.activityAdded.set(tr, events.flatMap((e) => [...e.changes.added].flatMap((item) => item.content.getContent())))
+    })
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
@@ -195,7 +213,7 @@ class Room {
    * for the owner. `account` is '<kind>:<sub>' from their pass when sign-in is
    * on: then they are their account, on any computer, not their key.
    */
-  accessFor (key, name, kind, invitedAs, account = '') {
+  accessFor (key, name, kind, invitedAs, account = '', pass = null) {
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false }
     if (!this.meta.owner) {
       // The room's creator becomes its owner when they sign in, and nobody else, however much
@@ -213,14 +231,105 @@ class Room {
       }
       return { state: 'approved', role: 'editor', scopes: [], owner: true }
     }
+    // A room pass with a grant (from the accounts API) lets them straight in, with its access.
+    const granted = this.passGrant(pass)
+    if (granted) {
+      this.noteGranted(account, name, kind, granted)
+      return { state: 'approved', ...relayAccess(granted), owner: false, id: account }
+    }
     // Members approved with a pass are kept under their account; older ones under their key.
     const id = account && this.meta.members[account] ? account : key
-    const m = this.meta.members[id]
+    const m = this.storedMember(id, pass)
     if (m) {
       if (m.name !== name || m.kind !== kind) { m.name = name; m.kind = kind; this.saveMeta() }
-      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
+      return { state: 'approved', ...memberAccess(m), owner: false, id }
     }
     return { state: 'pending', invitedAs }
+  }
+
+  /**
+   * What a pass for this room lets its holder do here (the grant the accounts API signed
+   * into it), or null: no pass for this room, no grant, or the owner removed them after it
+   * was issued. An owner's narrowing made after it was issued still applies.
+   */
+  passGrant (pass) {
+    if (!pass || pass.room !== this.name) return null
+    const access = cleanAccess(pass.access)
+    if (!access) return null
+    const account = `${pass.kind}:${pass.sub}`
+    const issued = typeof pass.iat === 'number' ? pass.iat : pass.exp - PASS_TTL_MS
+    const removedAt = (this.meta.removed || {})[account]
+    if (removedAt && issued <= removedAt) return null
+    const m = this.meta.members[account]
+    if (m && m.setAt && issued <= m.setAt) return narrowAccess(access, fromRelay(m))
+    return access
+  }
+
+  /**
+   * True when this pass was issued no later than the owner's last change to its holder,
+   * and that change cut what it grants. A pass from the same millisecond as the change
+   * (or from a clock a little behind) may already carry it, but the relay can't tell, so
+   * the app is asked for a newer one: otherwise more access waits for the next refresh.
+   */
+  passPredatesChange (pass) {
+    if (!pass || pass.room !== this.name) return false
+    const access = cleanAccess(pass.access)
+    const m = this.meta.members[`${pass.kind}:${pass.sub}`]
+    if (!access || !m || !m.setAt) return false
+    const issued = typeof pass.iat === 'number' ? pass.iat : pass.exp - PASS_TTL_MS
+    return issued <= m.setAt && !sameAccess(access, narrowAccess(access, fromRelay(m)))
+  }
+
+  /**
+   * The member record that may let this pass in, or null. Someone let in as a type (by a
+   * grant, or by the owner approving them as one) has their access in the API: only a pass
+   * for this room speaks for it, so without one their stored record lets nobody in, or an
+   * access type narrowed or deleted on the API would never reach the relay. Members from
+   * before access types keep coming in on their record.
+   */
+  storedMember (id, pass) {
+    const m = this.meta.members[id]
+    if (!m) return null
+    return m.granted && !(pass && pass.room === this.name) ? null : m
+  }
+
+  /** Keeps someone let in by their pass's grant on the member list, with that access. */
+  noteGranted (id, name, kind, access) {
+    const m = this.meta.members[id]
+    if (m && m.name === name && m.kind === kind && sameAccess(fromRelay(m), access)) return
+    this.meta.members[id] = { ...(m || {}), name, kind, ...relayAccess(access), since: m?.since || Date.now(), granted: true }
+    this.saveMeta()
+  }
+
+  /**
+   * A fresh pass arrived (see renewPass): its grant applies now. Someone waiting is let in,
+   * and someone in the room gets the new access, both without the owner.
+   */
+  passRenewed (ws) {
+    const granted = this.passGrant(ws.pass)
+    if (!granted) return
+    const id = `${ws.pass.kind}:${ws.pass.sub}`
+    if (this.meta.ownerSub === id) return
+    const waiting = this.pending.get(ws)
+    if (waiting) {
+      this.pending.delete(ws)
+      this.noteGranted(id, waiting.name, waiting.kind, granted)
+      this.log(`[${this.name}] ${waiting.name} was let in by their invite`)
+      this.enter(ws, { key: waiting.key, id, name: waiting.name, kind: waiting.kind, ...relayAccess(granted), owner: false })
+      return
+    }
+    const a = this.access.get(ws)
+    if (!a || a.owner) return
+    const refresh = this.passPredatesChange(ws.pass) ? { refresh: true } : {}
+    if (sameAccess(fromRelay(a), granted)) {
+      if (refresh.refresh) send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), ...refresh }))
+      return
+    }
+    this.noteGranted(id, a.name, a.kind, granted)
+    Object.assign(a, relayAccess(granted))
+    this.setAccess(ws, a)
+    send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), ...refresh }))
+    this.broadcastMembers()
   }
 
   /**
@@ -250,7 +359,18 @@ class Room {
     if (!this.controlled) return true
     const account = `${pass.kind}:${pass.sub}`
     if (this.meta.owner && this.isOwner(pass.key, account)) return true
-    return !!(this.meta.members[account] || this.meta.members[pass.key])
+    if (this.passGrant(pass)) return true
+    return !!(this.storedMember(account, pass) || this.storedMember(pass.key, pass))
+  }
+
+  /** With sign-in on: the relay access a pass has here over HTTP (null for the owner, or nobody). */
+  httpAccess (pass) {
+    const account = `${pass.kind}:${pass.sub}`
+    if (!this.controlled || (this.meta.owner && this.isOwner(pass.key, account))) return null
+    const granted = this.passGrant(pass)
+    if (granted) return relayAccess(granted)
+    const m = this.storedMember(account, pass) || this.storedMember(pass.key, pass)
+    return m ? memberAccess(m) : null
   }
 
   /** The id the member list shows the owner under. */
@@ -274,16 +394,27 @@ class Room {
     return { state: 'pending', invitedAs }
   }
 
-  /** A hosted agent's current standing, changing nothing: approved (role, scopes) or pending. */
+  /**
+   * A hosted agent's current standing: approved (with its access) or pending. A room pass
+   * with a grant approves it, and puts it on the member list.
+   */
   hostedAccess (pass) {
     const id = `${pass.kind}:${pass.sub}`
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false, id }
     if (this.meta.owner && this.isOwner(pass.key || '', id)) return { state: 'approved', role: 'editor', scopes: [], owner: true, id }
-    const m = this.meta.members[id]
+    const granted = this.passGrant(pass)
+    if (granted) {
+      this.noteGranted(id, pass.name, pass.kind === 'agent' ? 'agent' : 'human', granted)
+      return { state: 'approved', ...relayAccess(granted), owner: false, id }
+    }
+    const m = this.storedMember(id, pass)
     if (m) {
       if (m.name !== pass.name) { m.name = pass.name; this.saveMeta() }
-      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
+      return { state: 'approved', ...memberAccess(m), owner: false, id }
     }
+    // Let in as a type, but this pass isn't for this room (the accounts API didn't know which
+    // room the agent is in, after a restart): a pass for this room will let it in.
+    if (this.meta.members[id]?.granted) return { state: 'pending', id, needsRoomPass: true }
     return { state: 'pending', id }
   }
 
@@ -316,10 +447,7 @@ class Room {
   }
 
   /** May this connection change this file? */
-  mayWrite (a, rel) {
-    if (!a || a.role === 'viewer') return false
-    return !a.scopes || !a.scopes.length || a.scopes.some((s) => globMatcher(s)(rel))
-  }
+  mayWrite (a, rel) { return mayChange(a, rel) }
 
   /**
    * A restricted member (viewer, or agent limited to folders) changed the doc.
@@ -329,47 +457,101 @@ class Room {
    */
   checkChange (ws, update, tr) {
     const a = this.access.get(ws)
-    const touched = new Set()
+    const touched = new Map() // path -> the types (files, blobs) it changed in
     const refused = []
+    const posts = [] // chat and the feed, for people who may not post
+    // Only the parts of the change that were refused are undone: one update can carry
+    // allowed and refused changes together (an edit and a post in one transaction).
+    const undo = new Set()
     for (const [type, events] of tr.changedParentTypes) {
+      if (type === this.chat || type === this.feed) {
+        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : 'the feed'); undo.add(type) }
+        continue
+      }
+      if (type === this.commitRequests) {
+        // Asking for a commit is a message to the host; marking one done (same message) isn't.
+        if (a?.talk !== false) continue
+        for (const e of events) {
+          for (const [id, c] of e.changes.keys) {
+            const now = type.get(id)
+            if (c.action === 'add' || (c.action === 'update' && now?.message !== c.oldValue?.message)) { posts.push('a commit request'); undo.add(type); break }
+          }
+        }
+        continue
+      }
       if (type === this.fileKeys) {
         // Keys to stored files: viewers may not touch them, and others may
         // only add new ones, so nobody can lock people out of stored files.
         for (const e of events) {
-          if (e.target !== type) { refused.push('a file key'); continue }
-          for (const [id, c] of e.changes.keys) if (a?.role === 'viewer' || c.action !== 'add') refused.push(`file key ${id}`)
+          if (e.target !== type) { refused.push('a file key'); undo.add(type); continue }
+          for (const [id, c] of e.changes.keys) if (a?.role === 'viewer' || c.action !== 'add') { refused.push(`file key ${id}`); undo.add(type) }
         }
         continue
       }
       if (type !== this.files && type !== this.blobs) continue
+      const touch = (rel) => touched.set(rel, [...(touched.get(rel) || []), type])
       for (const e of events) {
-        if (e.target === type) for (const k of e.changes.keys.keys()) touched.add(k)
+        if (e.target === type) for (const k of e.changes.keys.keys()) touch(k)
         else {
           // A change inside a file's text: walk up to the entry in files.
           let t = e.target
           while (t && t._item && t._item.parent !== type) t = t._item.parent
-          if (t && t._item && t._item.parentSub) touched.add(t._item.parentSub)
+          if (t && t._item && t._item.parentSub) touch(t._item.parentSub)
         }
       }
     }
-    refused.push(...[...touched].filter((rel) => !this.mayWrite(a, rel)))
-    if (!refused.length) { queueMicrotask(() => this.guard.clear()); return true }
+    for (const [rel, types] of touched) {
+      if (this.mayWrite(a, rel)) continue
+      refused.push(rel)
+      for (const t of types) undo.add(t)
+      // The log entry for a change that's undone would describe something that never happened.
+      if (tr.changedParentTypes.has(this.activity)) undo.add(this.activity)
+    }
+    // The activity log is written by apps as files change. Someone who may not post may add
+    // only those entries, for files this same change touched, never words of their own.
+    if (a?.talk === false && tr.changedParentTypes.has(this.activity) && !undo.has(this.activity)) {
+      const plain = (x) => x && typeof x === 'object' && Object.keys(x).every((k) => ACTIVITY_FIELDS.includes(k)) &&
+        x.by === a.name && ACTIVITY_KINDS.includes(x.kind) && touched.has(x.path) &&
+        (x.detail === undefined || ACTIVITY_DETAIL.test(x.detail)) && typeof x.ts === 'number'
+      const added = this.activityAdded.get(tr) || []
+      if (!added.every(plain)) { posts.push('the activity log'); undo.add(this.activity) }
+    }
+    refused.push(...posts)
+    // The guard recorded this change just before this 'update' (its stack-item-added): only
+    // that one is kept or undone, never another change that arrived in the same moment.
+    const item = this.recorded
+    this.recorded = null
+    if (!refused.length) { this.forget(item); return true }
     this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
     queueMicrotask(() => {
       // Send the change and its undo as one update: nobody sees the change,
       // and nobody is left missing part of this person's history.
+      const others = this.guard.undoStack.filter((x) => x !== item)
+      const scope = this.guard.scope
+      this.guard.undoStack = item ? [item] : []
+      this.guard.scope = scope.filter((t) => undo.has(t))
       this.undoing = []
       try { this.guard.undo() } finally {
+        this.guard.scope = scope
+        this.guard.undoStack = others
+        this.guard.redoStack = []
         const merged = Y.mergeUpdates([update, ...this.undoing])
         this.undoing = null
         const msg = updateMessage(merged)
         for (const other of this.conns.keys()) send(other, msg)
       }
-      this.guard.clear()
-      const why = a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
+      const why = posts.length === refused.length
+        ? TALK_WHY
+        : a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
       send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refused: refused.slice(0, 20), why }))
     })
     return false
+  }
+
+  /** An allowed change: the guard never needs to undo it. */
+  forget (item) {
+    const i = item ? this.guard.undoStack.indexOf(item) : -1
+    if (i >= 0) this.guard.undoStack.splice(i, 1)
   }
 
   /** Can this connection's app handle the session as it is now? */
@@ -390,13 +572,13 @@ class Room {
   }
 
   accessMessage (a) {
-    return { state: 'approved', role: a.role, scopes: a.scopes || [], owner: !!a.owner, controlled: this.controlled }
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled }
   }
 
   /** Tracks restricted connections so their file changes are checked. */
   setAccess (ws, a) {
     this.access.set(ws, a)
-    const restricted = a.role === 'viewer' || (a.scopes && a.scopes.length)
+    const restricted = a.role === 'viewer' || (a.scopes && a.scopes.length) || (a.scopesExcept && a.scopesExcept.length) || a.talk === false
     if (restricted) this.guard.trackedOrigins.add(ws)
     else this.guard.trackedOrigins.delete(ws)
   }
@@ -410,7 +592,7 @@ class Room {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
       list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
-    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, role: m.role, scopes: m.scopes || [], online: online.has(key) })
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key) })
     return list
   }
 
@@ -463,20 +645,29 @@ class Room {
       ? req.scopes.map((s) => String(s).trim().replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean).slice(0, MAX_SCOPES)
       : null
     if (scopes && scopes.some((s) => s.length > MAX_PATTERN || s.split('/').includes('..'))) throw new Error('bad folder')
+    // Apps with access types send the access itself ({ files, folders, foldersExcept, talk }),
+    // and the type it came from (typeId), which the relay doesn't need: the API keeps grants.
+    const requested = req.access === undefined ? null : cleanAccess(req.access)
+    if (req.access !== undefined && !requested) throw new Error('bad access')
     if (key === this.meta.owner || key === this.meta.ownerSub) throw new Error('the owner always has full access')
     // `key` is the id from the member or pending list. One account may be waiting on several computers.
     const waiting = [...this.pending].filter(([, p]) => p.id === key)
     if (req.op === 'approve') {
       if (!waiting.length) throw new Error('nobody with that key is waiting')
       const p = waiting[0][1]
-      this.meta.members[key] = { name: p.name, kind: p.kind, role: role || p.invitedAs, scopes: scopes || [], since: Date.now() }
+      const access = requested ? relayAccess(requested) : { role: role || p.invitedAs, scopes: scopes || [], scopesExcept: [], talk: true }
+      // Let in as a type: their access lives in the API now (see storedMember).
+      this.meta.members[key] = { name: p.name, kind: p.kind, ...access, since: Date.now(), ...(req.typeId ? { granted: true } : {}) }
+      if (this.meta.removed) delete this.meta.removed[key]
       this.saveMeta()
-      this.log(`[${this.name}] ${p.name} approved as ${this.meta.members[key].role}`)
+      this.log(`[${this.name}] ${p.name} approved as ${access.role}`)
       for (const [pws, w] of waiting) {
         this.pending.delete(pws)
         // A hosted agent has no connection to let in: it finds out on its next tool call.
         if (pws.hosted) continue
-        this.enter(pws, { key: w.key, id: key, name: w.name, kind: w.kind, role: this.meta.members[key].role, scopes: this.meta.members[key].scopes, owner: false })
+        this.enter(pws, { key: w.key, id: key, name: w.name, kind: w.kind, ...access, owner: false })
+        // Their app fetches a fresh pass now, so the grant the owner's app just wrote applies.
+        send(pws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(this.access.get(pws)), refresh: true }))
       }
       return { ok: true }
     }
@@ -491,15 +682,20 @@ class Room {
     const m = this.meta.members[key]
     if (!m) throw new Error('no such member')
     if (req.op === 'set') {
-      if (role) m.role = role
-      if (scopes) m.scopes = scopes
+      const want = requested || { ...fromRelay(m), ...(role ? { files: role === 'viewer' ? 'view' : 'edit' } : {}), ...(scopes ? { folders: scopes } : {}) }
+      // Someone let in as a type keeps what both their record (their last pass) and the owner
+      // allow: more needs a fresh pass from the API. Older members get what the owner asks.
+      const stored = m.granted ? narrowAccess(want, fromRelay(m)) : want
+      // Remembered with when, so a pass issued before now can't undo it (see passGrant).
+      Object.assign(m, relayAccess(stored), { setAt: Date.now() })
       this.saveMeta()
       for (const [cws, a] of this.access) {
         if (a.id !== key) continue
-        a.role = m.role
-        a.scopes = m.scopes
+        // Someone let in by a grant gets what both their pass and the owner allow: the owner's
+        // app can narrow access at once, but more waits for a pass from the API that allows it.
+        Object.assign(a, relayAccess(this.passGrant(cws.pass) || stored))
         this.setAccess(cws, a)
-        send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+        send(cws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), refresh: true }))
       }
       return { ok: true }
     }
@@ -507,6 +703,11 @@ class Room {
       // An account goes with any older entries for keys it has used here, so it can't get back in by key.
       const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
       for (const id of gone) delete this.meta.members[id]
+      // A pass issued before now can't bring them back by its grant (see passGrant). Removals
+      // older than a pass lasts can match no valid pass, so they go; the newest are kept.
+      const cutoff = Date.now() - PASS_TTL_MS
+      const removed = Object.entries({ ...(this.meta.removed || {}), [key]: Date.now() }).filter(([, at]) => at > cutoff).sort((a, b) => a[1] - b[1])
+      this.meta.removed = Object.fromEntries(removed.slice(-MAX_REMOVED))
       this.saveMeta()
       for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
       for (const id of gone) this.hostedSeen.delete(id)
@@ -565,7 +766,7 @@ class Room {
     const name = this.names.get(ws)
     if (!ws.pass) return { name }
     const a = this.access.get(ws)
-    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner) }
+    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) }
   }
 
   claimList () {
@@ -592,7 +793,7 @@ class Room {
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
       const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: String(req.note ?? '').slice(0, 500), ts: Date.now() }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now() }
       return { ok: true }
     }
     if (req.op === 'release') {
@@ -665,6 +866,7 @@ class Room {
       // (MSG_PASS is under 128, so it is the whole first byte.)
       if (ws.pass && buf[0] === MSG_PASS) {
         if (!renewPass(ws, buf)) this.log(`[${this.name}] ignored a pass refresh from ${name} that wasn't theirs`)
+        else this.passRenewed(ws)
         return
       }
       if (joined || this.access.has(ws)) {
@@ -690,7 +892,7 @@ class Room {
         if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
         this.bindName(name, publicKey)
       }
-      const acc = this.accessFor(publicKey, name, kind, invitedAs, account)
+      const acc = this.accessFor(publicKey, name, kind, invitedAs, account, ws.pass)
       if (acc.state === 'pending') {
         waiting = true
         this.pending.set(ws, { key: publicKey, id: account || publicKey, name, kind, invitedAs, since: Date.now() })
@@ -701,7 +903,7 @@ class Room {
         return
       }
       joined = true
-      this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, owner: acc.owner })
+      this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, scopesExcept: acc.scopesExcept || [], talk: acc.talk !== false, owner: acc.owner })
       onJoin()
     })
     ws.on('close', () => {
@@ -715,8 +917,15 @@ class Room {
   enter (ws, a) {
     this.setAccess(ws, a)
     // Presence: an account's visit starts once it's let in (never while it waits for the owner).
-    if (ws.pass && this.presence && !ws.visit) ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
-    send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    if (ws.pass && this.presence && !ws.visit) {
+      ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
+      // The accounts API learns who owns a session from this report, and only the owner may
+      // give people access there: tell it now rather than within the minute.
+      if (a.owner) this.presence.tick().catch(() => {})
+    }
+    // Back with a pass from before the owner's last change: a newer one may allow more.
+    const refresh = !a.owner && this.passPredatesChange(ws.pass) ? { refresh: true } : {}
+    send(ws, jsonMessage(MSG_ACCESS, { ...this.accessMessage(a), ...refresh }))
     this.join(ws, a.name)
     this.broadcastMembers()
   }
@@ -819,7 +1028,15 @@ class Room {
   }
 }
 
+const TALK_WHY = "you can't post in this session"
+// What an app's activity entries look like (session.js recordActivity, relay-mcp.js quilt_write).
+const ACTIVITY_FIELDS = ['by', 'path', 'kind', 'detail', 'ts']
+const ACTIVITY_KINDS = ['created', 'edited', 'deleted']
+const ACTIVITY_DETAIL = /^(\+\d+ -\d+|\d+ bytes)?$/
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
+
+/** A saved member's access, in the relay's shape (members saved before access types may talk and have no exceptions). */
+const memberAccess = (m) => ({ role: m.role, scopes: m.scopes || [], scopesExcept: m.scopesExcept || [], talk: m.talk !== false })
 
 /** Closes the connection when its pass runs out, unless a newer one arrives first. */
 function trackPass (ws, pass) {
@@ -837,7 +1054,7 @@ function renewPass (ws, buf) {
     decoding.readVarUint(dec)
     next = verifyPass(String(JSON.parse(decoding.readVarString(dec)).pass || ''), ws.passKey)
   } catch {}
-  if (!next || next.sub !== ws.pass.sub || next.kind !== ws.pass.kind || next.key !== ws.pass.key) return false
+  if (!next || next.sub !== ws.pass.sub || next.kind !== ws.pass.kind || next.key !== ws.pass.key || next.room !== ws.pass.room) return false
   trackPass(ws, next)
   return true
 }
@@ -851,7 +1068,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const passKey = cfg.passPublicKey ? parsePublicKey(cfg.passPublicKey) : null
   if (cfg.passPublicKey && !passKey) throw new Error('QUILT_PASS_PUBLIC_KEY is not an Ed25519 public key (spki, base64url)')
   /** With sign-in on: the request's valid pass, or null. With it off: an empty pass. */
-  const httpPass = (req) => passKey ? verifyPass(String(req.headers['x-quilt-pass'] || ''), passKey) : {}
+  const httpPass = (req, room = '') => {
+    if (!passKey) return {}
+    const p = verifyPass(String(req.headers['x-quilt-pass'] || ''), passKey)
+    // A room pass is good in its own room only.
+    return p && (!p.room || !room || p.room === room) ? p : null
+  }
   // Who a new session counts against: their account with sign-in on, otherwise their address.
   const starterOf = (pass, req) => pass && pass.sub ? `${pass.kind}:${pass.sub}` : clientIp(req)
   // Without sign-in the limit is per address, and the message says so (as before).
@@ -1055,6 +1277,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (err) return text(400, err.message)
         const { token, room: roomName, secret, name, tool } = body || {}
         if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
+        if (pass.room && pass.room !== roomName) return text(401, SIGN_IN)
         if (roomEnded(roomName)) return text(410, ENDED_MESSAGE)
         const room = getRoom(roomName)
         if (!room) return text(...refused(roomName))
@@ -1112,7 +1335,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         return receiveBlob(req, file, Number(n), (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
       }
       if (req.method !== 'POST') return text(405, 'method not allowed')
-      const pass = httpPass(req)
+      const pass = httpPass(req, name)
       if (!pass) return text(401, SIGN_IN)
       const starter = starterOf(pass, req)
       const room = getRoom(name)
@@ -1135,7 +1358,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
             if (!room.meta.blobs[id]) return text(404, 'no such file')
             return json(200, await store.downloadTarget(name, id))
           }
-          if (auth !== 'editor') return text(403, 'you can only view this session')
+          // The room secret and, with sign-in on, the person's own access: a view-only grant
+          // with the edit link may not use up the room's storage.
+          if (auth !== 'editor' || (passKey && room.httpAccess(pass)?.role === 'viewer')) return text(403, 'you can only view this session')
           const size = Number(body && body.size)
           if (!(size >= 0)) return text(400, 'size required')
           if (size > cfg.maxStoredFileBytes) return text(413, `files over ${Math.round(cfg.maxStoredFileBytes / MB)} MB can't be shared`)
@@ -1156,7 +1381,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
     const [, name, id] = m
     if (roomEnded(name)) return text(410, ENDED_MESSAGE)
-    const pass = httpPass(req)
+    const pass = httpPass(req, name)
     if (!pass) return text(401, SIGN_IN)
     const starter = starterOf(pass, req)
     const room = getRoom(name)
@@ -1175,6 +1400,11 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }
     const dir = path.join(filesDir, name)
     if (req.method === 'POST' && !id) {
+      // A chat file is a post: someone who may not post may not send one.
+      if (passKey && room.httpAccess(pass)?.talk === false) {
+        if (!room.conns.size && room.onEmpty) room.onEmpty()
+        return text(403, TALK_REFUSED)
+      }
       // Chat files and stored large files share one quota.
       const used = dirSize(dir) + storedBytes(room)
       const incoming = Number(req.headers['content-length'] || 0)
@@ -1205,7 +1435,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
     // With sign-in on, nobody gets further without a pass, and who they are comes from it.
     const pass = passKey ? verifyPass(header('x-quilt-pass') || url.searchParams.get('pass') || '', passKey) : null
-    if (passKey && (!pass || pass.key !== publicKey)) return reject(socket, 401, SIGN_IN)
+    if (passKey && (!pass || pass.key !== publicKey || (pass.room && pass.room !== name))) return reject(socket, 401, SIGN_IN)
     const person = pass ? pass.name : (url.searchParams.get('name') || '').trim()
     const kind = pass ? (pass.kind === 'agent' ? 'agent' : 'human') : (url.searchParams.get('kind') === 'agent' ? 'agent' : 'human')
     // People and agents come from different id spaces, so the kind is part of who they are.

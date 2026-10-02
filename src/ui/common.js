@@ -72,7 +72,8 @@ export const state = {
   feeds: new Map(), // session id -> Map(person -> entries[])
   trees: new Map(), // session id -> { files, claims }
   files: new Map(), // `${id}\n${path}` -> file contents from /file
-  ws: new Map() // session id -> workspace layout (mode, tabs, expanded folders)
+  ws: new Map(), // session id -> workspace layout (mode, tabs, expanded folders)
+  accessTypes: null // the account's access types (built-ins first), once loaded; null if the API can't be reached
 }
 
 // -------------------------------------------------------------- helpers --
@@ -152,6 +153,30 @@ export async function api (method, path, body, headers = {}) {
     throw err
   }
   return data
+}
+
+// ------------------------------------------------------------ access types --
+export const NO_POSTING = "You can't post in this session."
+export const ACCOUNT_KEY = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
+
+/** Loads this account's access types into state.accessTypes (null when the accounts API can't be reached). */
+export async function loadAccessTypes () {
+  try { state.accessTypes = (await api('GET', '/api/access-types')).types } catch { state.accessTypes = null }
+  return state.accessTypes
+}
+
+/** <option>s for an access type picker, "Can edit" selected unless `selected` says otherwise. */
+export function typeOptions (selected = 'builtin:edit') {
+  return (state.accessTypes || []).map((t) => `<option value="${esc(t.id)}" ${t.id === selected ? 'selected' : ''}>${esc(t.name)}</option>`).join('')
+}
+
+/** "Can edit · src · except src/keys · no posting": what someone's access comes to, from the relay's member list. */
+export function accessLine (m) {
+  if (m.role === 'viewer') return m.talk === false ? 'View only · no posting' : 'View only'
+  const parts = ['Can edit', m.scopes && m.scopes.length ? m.scopes.join(', ') : 'all folders']
+  if (m.scopesExcept && m.scopesExcept.length) parts.push(`except ${m.scopesExcept.join(', ')}`)
+  if (m.talk === false) parts.push('no posting')
+  return parts.join(' · ')
 }
 
 // ------------------------------------------------------------- reports --

@@ -22,6 +22,7 @@ import { scanInbox, renderInbox } from './inbox.js'
 import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
+import { changeRefusal, TALK_REFUSED } from './session-access.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -58,6 +59,9 @@ const NOT_LINKED = 'Your user is not in a quilt session in their browser right n
 const NOT_JOINED = 'You are not in a session. Call quilt_join_session with an invite link (https://join.heyquilt.com/<room>#<secret>).'
 const WAITING = 'The session owner has not let you in yet. They see you on their list; call quilt_session_info to check again.'
 const REMOVED = 'You are no longer in that session. Ask for a new invite and call quilt_join_session again.'
+// Let in by a grant, but the pass named no room: the accounts API retries with one for the
+// room in x-quilt-room. A client that reaches the relay some other way just calls again.
+const NEEDS_ROOM_PASS = 'Reconnecting you to the session. Call the same tool again.'
 
 const id = () => crypto.randomBytes(8).toString('hex')
 
@@ -150,6 +154,8 @@ function sessionTools (server, ctx) {
     const lines = [`You are ${me} in a live quilt session (room ${room.name}).`]
     if (a && a.role === 'viewer') lines.push('You may only view this session: reading, chat and claims work, file changes are refused.')
     else if (a && a.scopes && a.scopes.length) lines.push(`You may change files only in: ${a.scopes.join(', ')}.`)
+    if (a && a.scopesExcept && a.scopesExcept.length && a.role !== 'viewer') lines.push(`You may not change files in: ${a.scopesExcept.join(', ')}.`)
+    if (a && a.talk === false) lines.push("You may not post in this session: quilt_message and quilt_share are refused.")
     lines.push('', '## People online')
     const ps = peers(room)
     if (!ps.length) lines.push('- Nobody else right now.')
@@ -280,6 +286,7 @@ function sessionTools (server, ctx) {
   }, ({ request, summary, files: changed }, { room, doc, feed }) => {
     const err = writable(room)
     if (err) return fail(err)
+    if (ctx.access(room)?.talk === false) return fail(TALK_REFUSED)
     const t = ctx.tool()
     const now = Date.now()
     const entries = []
@@ -343,6 +350,7 @@ function sessionTools (server, ctx) {
   }, ({ text: t, to }, { room, doc, chat }) => {
     const err = writable(room)
     if (err) return fail(err)
+    if (ctx.access(room)?.talk === false) return fail(TALK_REFUSED)
     const msg = { id: id(), by: me, to: to || null, text: t, ts: Date.now() }
     doc.transact(() => {
       chat.push([msg])
@@ -404,7 +412,8 @@ function sessionTools (server, ctx) {
     if (!isSafeRelPath(rel)) return fail('That is not a path inside the project.')
     const a = ctx.access(room)
     if (a && a.role === 'viewer') return fail('You can only view this session; file changes are refused.')
-    if (a && a.scopes && a.scopes.length && !a.scopes.some((s) => globMatcher(s)(rel))) return fail(`You may only change files in ${a.scopes.join(', ')}.`)
+    const refusal = a && changeRefusal(a, rel)
+    if (refusal) return fail(`${refusal[0].toUpperCase()}${refusal.slice(1)}.`)
     const claim = claimsOf(room).find((c) => c.by !== me && globMatcher(c.pattern)(rel))
     if (claim) return fail(`${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}. Message them instead of editing it.`)
     if (blobs.get(rel)?.stored) return fail(`${rel} is a large file kept in storage; it can't be changed here.`)
@@ -436,7 +445,8 @@ function sessionTools (server, ctx) {
     const err = writable(room)
     if (err) return fail(err)
     try {
-      const r = room.claimRequest(ctx.who(room), { op: 'claim', pattern: pattern.trim(), note: note || '' })
+      // Someone who may not post keeps their claim but not its note, which everyone reads.
+      const r = room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: pattern.trim(), note: note || '' })
       if (r.ok === false) return fail(r.error || 'Could not claim that.')
     } catch (e) { return fail(e.message) }
     room.broadcastClaims()
@@ -477,6 +487,15 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
   const touched = new Set()
   const done = () => { for (const room of touched) if (room && !room.conns.size && room.onEmpty) room.onEmpty() }
   res.on('close', done)
+  // Which session the agent is in, for the accounts API: its next pass is for that room,
+  // and so carries the agent's grant there. Absent: in no session.
+  const tellRoom = () => {
+    if (res.headersSent) return
+    const h = relay.hosted.get(account)
+    if (h) res.setHeader('x-quilt-room', h.room)
+    else res.removeHeader('x-quilt-room')
+  }
+  tellRoom()
 
   /** The room this agent is in, with its standing there, or why it has none: { room, access } | { error }. */
   const current = () => {
@@ -488,6 +507,10 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     touched.add(room)
     if (!room.exists) { relay.hosted.delete(account); relay.saveHosted(); return { error: REMOVED } }
     const access = room.hostedAccess(pass)
+    if (access.needsRoomPass) {
+      if (!res.headersSent) res.setHeader('x-quilt-retry', 'room-pass')
+      return { error: NEEDS_ROOM_PASS, room, access }
+    }
     if (access.state !== 'approved') return { error: h.pending ? WAITING : REMOVED, room, access }
     h.seenAt = Date.now()
     relay.saveHosted()
@@ -530,6 +553,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     const a = room.hostedRequest(pass, auth)
     relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', inbox: takeStock(room.doc, me) })
     relay.saveHosted()
+    tellRoom()
     if (a.state === 'pending') return text(`Asked to join room ${inv.room} as ${auth === 'viewer' ? 'a viewer' : 'an editor'}. ${WAITING}`)
     room.hostedActive(account)
     return text(`Joined room ${inv.room} as ${me} (${a.owner ? 'owner' : a.role}${a.scopes && a.scopes.length ? `, folders ${a.scopes.join(', ')}` : ''}). Call quilt_status to see who is here.`)
@@ -545,7 +569,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     if (c.error && !c.room) return fail(c.error)
     if (c.error) return text(`Room ${h.room}: ${c.error}`)
     const a = c.access
-    return text(`Room ${h.room}: you are ${me}, ${a.owner ? 'the owner' : a.role === 'viewer' ? 'a viewer (no file changes)' : 'an editor'}${a.scopes && a.scopes.length ? `, limited to ${a.scopes.join(', ')}` : ''}.`)
+    return text(`Room ${h.room}: you are ${me}, ${a.owner ? 'the owner' : a.role === 'viewer' ? 'a viewer (no file changes)' : 'an editor'}${a.scopes && a.scopes.length ? `, limited to ${a.scopes.join(', ')}` : ''}${a.scopesExcept && a.scopesExcept.length ? `, not in ${a.scopesExcept.join(', ')}` : ''}${a.talk === false ? ', and you may not post' : ''}.`)
   })
 
   mcp.registerTool('quilt_leave_session', {
@@ -556,6 +580,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     if (!h) return text('You are not in a session.')
     relay.hosted.delete(account)
     relay.saveHosted()
+    tellRoom()
     const room = relay.getRoom(h.room)
     if (room) {
       touched.add(room)

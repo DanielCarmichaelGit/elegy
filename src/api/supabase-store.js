@@ -21,6 +21,9 @@ const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, cre
 const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
 const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at'
+const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
+const GRANT = 'room, account, type_id, tighten, granted_by, created_at, updated_at'
+const SESSION_INVITE = 'id, room, email, account, account_name, type_id, invited_by, created_at, expires_at, used_at, used_by, cancelled_at'
 // PostgREST hands back at most 1000 rows per request: longer lists are read a page at a time.
 const PAGE = 1000
 
@@ -151,7 +154,9 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     // activity is keyed by 'person:<id>' and 'agent:<id>', not foreign keys, so it goes first.
     async deleteUser (userId) {
       const agents = await one(db.from('agents').select('id').eq('owner_user_id', userId))
-      await one(db.rpc('delete_account_activity', { p_accounts: [`person:${userId}`, ...agents.map((a) => `agent:${a.id}`)] }))
+      const accounts = [`person:${userId}`, ...agents.map((a) => `agent:${a.id}`)]
+      await one(db.rpc('delete_account_access', { p_accounts: accounts }))
+      await one(db.rpc('delete_account_activity', { p_accounts: accounts }))
       const { error } = await db.auth.admin.deleteUser(userId)
       if (error) throw error
     },
@@ -181,6 +186,69 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     async pruneActivity ({ before, seenBefore }) {
       await one(db.rpc('prune_activity', { p_before: ts(before), p_seen_before: ts(seenBefore) }))
+    },
+
+    // Access types, grants and session invites (see 20261002010000_access_types_and_invites.sql).
+    async listAccessTypes (ownerAccount) {
+      return (await one(db.from('access_types').select(ACCESS_TYPE).eq('owner_account', ownerAccount).order('created_at'))).map(rowFrom)
+    },
+    async accessTypeById (id) { return rowFrom(await one(db.from('access_types').select(ACCESS_TYPE).eq('id', id).maybeSingle())) },
+    async createAccessType ({ ownerAccount, name, files, folders = [], talk = true }) {
+      return rowFrom(await one(db.from('access_types').insert({ owner_account: ownerAccount, name, files, folders, talk }).select(ACCESS_TYPE).single()))
+    },
+    async updateAccessType (id, { name, files, folders, talk }) {
+      return rowFrom(await one(db.from('access_types').update(toSnake({ name, files, folders, talk, updatedAt: new Date().toISOString() })).eq('id', id).select(ACCESS_TYPE).maybeSingle()))
+    },
+    // Its grants and invites fall back to View only, in the same transaction.
+    async deleteAccessType (id, ownerAccount) {
+      return await one(db.rpc('delete_access_type', { p_id: id, p_owner: ownerAccount }))
+    },
+    async grantFor (room, account) { return rowFrom(await one(db.from('session_grants').select(GRANT).eq('room', room).eq('account', account).maybeSingle())) },
+    async listGrants (room) { return (await one(db.from('session_grants').select(GRANT).eq('room', room).order('created_at'))).map(rowFrom) },
+    async putGrant ({ room, account, typeId, tighten = {}, grantedBy }) {
+      return rowFrom(await one(db.from('session_grants')
+        .upsert({ room, account, type_id: typeId, tighten, granted_by: grantedBy, updated_at: new Date().toISOString() }, { onConflict: 'room,account' })
+        .select(GRANT).single()))
+    },
+    async deleteGrant (room, account) {
+      return (await one(db.from('session_grants').delete().eq('room', room).eq('account', account).select('account'))).length > 0
+    },
+    // One open invite per address or account (a unique index; a second one is a 23505). That
+    // key's expired, unused invites go first, so they never block a new one.
+    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, at = Date.now() }) {
+      email = email && email.toLowerCase()
+      await one(db.from('session_invites').delete().eq('room', room).eq(email ? 'email' : 'account', email || account)
+        .is('used_at', null).is('cancelled_at', null).lte('expires_at', ts(at)))
+      return rowFrom(await one(db.from('session_invites')
+        .insert({ room, email: email && email.toLowerCase(), account, account_name: accountName, type_id: typeId, invited_by: invitedBy, expires_at: ts(expiresAt) })
+        .select(SESSION_INVITE).single()))
+    },
+    async listSessionInvites (room) {
+      return (await one(db.from('session_invites').select(SESSION_INVITE).eq('room', room).order('created_at', { ascending: false }).limit(50))).map(rowFrom)
+    },
+    async sessionInviteById (room, id) { return rowFrom(await one(db.from('session_invites').select(SESSION_INVITE).eq('room', room).eq('id', id).maybeSingle())) },
+    // The open (unused, not cancelled, not expired) invite for an address or account, but `exceptId`.
+    async openSessionInvite (room, { email = null, account = null }, at, exceptId = null) {
+      let q = db.from('session_invites').select(SESSION_INVITE).eq('room', room).eq(email ? 'email' : 'account', email || account)
+        .is('used_at', null).is('cancelled_at', null).gt('expires_at', ts(at))
+      if (exceptId) q = q.neq('id', exceptId)
+      return rowFrom((await one(q.limit(1)))[0] || null)
+    },
+    // Check-and-set: only a waiting invite is cancelled.
+    async cancelSessionInvite (id) {
+      const rows = await one(db.from('session_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).select('id'))
+      return rows.length > 0
+    },
+    // The grant goes unless an open invite for that address or account still needs it (one statement).
+    async deleteUnusedGrant (room, account, at) {
+      return await one(db.rpc('delete_unused_grant', { p_room: room, p_account: account, p_now: ts(at) }))
+    },
+    async claimEmailInvites (room, email, account) {
+      return await one(db.rpc('claim_email_invites', { p_room: room, p_email: email, p_account: account, p_now: new Date().toISOString() }))
+    },
+    async useAccountInvites (room, account) {
+      const at = new Date().toISOString()
+      await one(db.from('session_invites').update({ used_at: at, used_by: account }).eq('room', room).eq('account', account).is('used_at', null).is('cancelled_at', null).gt('expires_at', at))
     },
 
     // Orgs. create_org makes the org, its three built-in roles and its owner in one

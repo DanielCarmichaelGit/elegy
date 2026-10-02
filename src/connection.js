@@ -283,9 +283,10 @@ export class Connection extends EventEmitter {
     this.passTimer.unref?.()
   }
 
-  async refreshPass () {
+  /** Sends the relay a fresh pass. `newer`: one issued after now (the relay asked: our access changed). */
+  async refreshPass ({ newer = false } = {}) {
     try {
-      const pass = await this.passes.fresh()
+      const pass = await (newer ? this.passes.newer() : this.passes.fresh())
       this.emit('pass', this.passes.payload)
       this.send(jsonMessage(MSG_PASS, { pass }))
     } catch (err) {
@@ -333,6 +334,8 @@ export class Connection extends EventEmitter {
       this.access = JSON.parse(decoding.readVarString(dec))
       if (was && was.state === 'pending' && this.access.state === 'approved') this.startSync()
       this.emit('access', this.access)
+      // The owner just changed what we may do: a fresh pass carries what the API now says.
+      if (this.access.refresh && this.passes) this.refreshPass({ newer: true })
     } else if (type === MSG_MEMBERS) {
       const msg = JSON.parse(decoding.readVarString(dec))
       this.emit('members', msg)
