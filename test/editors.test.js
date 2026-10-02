@@ -124,3 +124,22 @@ test('sending a merge to Claude Code falls back to the clipboard and the folder 
   assert.equal(calls.length, 2, 'it still opened the folder')
   assert.equal(calls[1].file, 'open')
 })
+
+test('a send to an unknown or missing app is refused before anything reaches the clipboard', async () => {
+  const copied = []
+  const copy = async (text) => { copied.push(text); return true }
+  const run = async () => { throw new Error('nothing should run') }
+  await assert.rejects(openIn('nope', '/Users/me/p', { ...mac([]), run, copy, prompt: 'Merge conflict' }), /Unknown app/)
+  await assert.rejects(openIn('zed', '/Users/me/p', { ...mac([]), run, copy, prompt: 'Merge conflict' }), /isn't installed/)
+  await assert.rejects(openIn('claude', '/Users/me/p', { ...mac([]), run, copy, prompt: 'Merge conflict' }), /isn't installed/)
+  assert.deepEqual(copied, [])
+})
+
+test('a send to another app copies the prompt, then opens the folder', async () => {
+  const order = []
+  const copy = async () => { order.push('copy'); return true }
+  const run = async (file) => { order.push(`run ${file}`) }
+  const r = await openIn('zed', '/Users/me/p', { ...mac(['/Applications/Zed.app']), run, copy, prompt: 'Merge conflict' })
+  assert.deepEqual(r, { copied: true, started: false })
+  assert.deepEqual(order, ['copy', 'run open'])
+})

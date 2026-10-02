@@ -196,8 +196,9 @@ export async function openIn (id, dir, opts = {}) {
     if (id === 'claude') return await openInClaude(dir, opts)
     const runFn = opts.run || run
     const copyFn = opts.copy || copyToClipboard
+    const command = openCommand(id, dir, opts) // throws for an unknown or missing app: the clipboard is left alone
     const copied = opts.prompt ? await copyFn(opts.prompt) : false
-    await runFn(...openCommand(id, dir, opts))
+    await runFn(...command)
     return { copied, started: false }
   } catch (err) {
     throw new Error(`Could not open it: ${err.message}`)
