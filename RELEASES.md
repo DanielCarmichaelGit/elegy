@@ -15,6 +15,7 @@ Settings from inside a session.
 
 - **Settings without leaving your session.** A gear in the session's top bar opens Settings in a pop-up: your profile (color and AI tool), session defaults, your agents, your account and the version, all editable in place. Saving keeps the pop-up open; the sidebar's profile card follows.
 - **Update Quilt from About.** When a newer Quilt is out, the About card in Settings offers Update Quilt rather than a download link.
+- **A local agent keeps out of your folder.** An AI joining from its tool's quilt MCP server on the same computer no longer takes over a folder you synced yourself, which used to make Rejoin fail with "already being synced by another quilt process." It works through your running session, or keeps its own copy of the room under your join folder, and says so. Its copies stay out of Recent.
 
 ## 0.3.2 — 2026-10-02
 
