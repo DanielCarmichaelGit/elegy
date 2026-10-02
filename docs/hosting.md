@@ -164,6 +164,9 @@ quota (`QUILT_MAX_ROOM_FILES_MB`) together with files shared in chat.
   their own disk.
 - **Updating.** Redeploy (`fly deploy`, a Render redeploy, or
   `docker compose pull && docker compose up -d`). Clients reconnect on their
-  own, and edits made during the restart sync once it's back.
+  own, and edits made during the restart sync once it's back. Quilt's own
+  relay deploys itself from GitHub Actions ("Relay deploy") on every push to
+  `main` that changes what it runs, or by hand from the Actions tab; the
+  workflow uses the `FLY_API_TOKEN` repository secret.
 - **One instance.** Don't scale the relay to several machines. People in the
   same session must reach the same process.
