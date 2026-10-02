@@ -1,6 +1,6 @@
 # 012: GitHub's default branch is a stale `claude/*` branch; v0.3.1 is tagged on September 27 code and the relay image never updates
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** github.com/DanielCarmichaelGit/heyquilt
+**Status:** **Fixed** (GitHub, 2026-10-02) · **Reported:** 2026-10-01 (audit) · **Seen on:** github.com/DanielCarmichaelGit/heyquilt
 
 ## What happens
 - The repository's default branch is `claude/loving-keller-z1okjr` at `f69b5bd`
@@ -34,3 +34,4 @@ on main, and `quilt-relay:latest` tracks main.
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: default branch set to `main`; `v0.3.1` moved to 98eb68b (Release 0.3.1) and force-pushed; Relay image workflow re-run on main so `quilt-relay:latest` tracks main; stale `claude/loving-keller-z1okjr` and `claude/deflake-sync-tests` deleted on origin (`claude/loving-boyd-2dd130` kept: it is checked out locally). The old `elegy-relay` package on ghcr still needs deleting by hand (the token here lacks the packages scope).
