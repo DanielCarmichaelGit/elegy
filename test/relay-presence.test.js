@@ -6,11 +6,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import WebSocket from 'ws'
+import * as Y from 'yjs'
 import { startServer, relayConfig } from '../src/server.js'
 import { generateIdentity, signChallenge } from '../src/identity.js'
+import { Connection } from '../src/connection.js'
 import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
 import { PRESENCE_FILE } from '../src/presence.js'
-import { PASS_KEYS, makePass } from './pass-helpers.js'
+import { PASS_KEYS, makePass, testPasses } from './pass-helpers.js'
 import { startTestApi } from './api-helpers.js'
 
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-home-'))
@@ -161,15 +163,28 @@ test('shutting down ends open visits and sends them', async (t) => {
   assert.deepEqual(api.events.map((e) => e.type), ['start', 'end'])
 })
 
-test('a room is saved even if the accounts API never answers at shutdown', async (t) => {
+test('a room is saved even if presence.close() never resolves', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-data-'))
-  // Never resolves: close() must not need it to finish saving the room.
-  const hang = { fetch: () => new Promise(() => {}), closeTimeoutMs: 50 }
-  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: dir, passPublicKey: PASS_KEYS.publicKey, apiUrl: 'http://api.test', relayApiSecret: SECRET, presenceOptions: hang })
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: dir, passPublicKey: PASS_KEYS.publicKey, apiUrl: 'http://api.test', relayApiSecret: SECRET })
   const r = room()
-  await connect(srv, r, as('Olive', 'user-olive'))
-  await srv.close()
-  assert.ok(fs.existsSync(path.join(dir, `${r}.json`)), "the room's metadata was saved despite the hung accounts API")
+  const doc = new Y.Doc()
+  const identity = generateIdentity()
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: r, secret: 's', name: 'Olive', identity, doc, passes: testPasses(identity, { name: 'Olive', sub: 'user-olive' }) })
+  t.after(() => { if (!c.closed) c.close() })
+  await c.waitForSync()
+  // A real edit: something only the shutdown save (not the one admit already did) can have written.
+  doc.getText('t').insert(0, 'kept')
+  await waitFor(() => srv.rooms.get(r)?.doc.getText('t').toString() === 'kept')
+  const ydocPath = path.join(dir, `${r}.ydoc`)
+  assert.equal(fs.existsSync(ydocPath), false, 'not on disk yet: only the debounced save or shutdown writes it')
+  // Stand in for a hung accounts API without waiting out any real timeout: a promise
+  // only this test resolves, once it has already checked what it came to check.
+  let resolveClose
+  srv.presence.close = () => new Promise((resolve) => { resolveClose = resolve })
+  const closing = srv.close()
+  assert.ok(fs.existsSync(ydocPath), "the room's edit was saved before presence.close() got a chance to resolve")
+  resolveClose()
+  await closing
 })
 
 test('renaming to the same name again saves nothing new and reports nothing new', async (t) => {

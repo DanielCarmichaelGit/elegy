@@ -138,21 +138,35 @@ export class PresenceReporter {
   /**
    * Drops the oldest tenth of the cap in one go, not one event at a time: at one per
    * event, a relay that's constantly over the cap would rewrite the whole queue file
-   * and log a line on every single enqueue. Never drops an `end`: losing one would
-   * leave that visit open forever, while a `start` or `name` is harmless to lose (an
-   * `end` whose `start` never arrived is ignored by the accounts API).
+   * and log a line on every single enqueue. Prefers dropping the oldest `start`
+   * together with its matching `end` (if that `end` is already queued too): the pair
+   * is a visit that's over and done with, the least useful thing to still be holding.
+   * A `name` is never dropped: renames are rare, and since the `name` op is now
+   * idempotent (a repeat is never re-queued), a dropped one is gone for good. If every
+   * `start` has already been paired off or dropped and more still needs to go, the
+   * oldest unmatched `end`s go next (an `end` whose `start` is gone is harmless: the
+   * accounts API ignores it). One `filter` pass over the queue, never a per-element
+   * shift: a drop must stay cheap even at ~100,000 events.
    */
   dropOldest () {
     const drop = Math.max(this.queue.length - this.maxQueue, Math.ceil(this.maxQueue / 10))
-    const keep = []
+    const endIndexByStart = new Map() // start event id -> index of its `end`, if queued
+    this.queue.forEach((x, i) => { if (x.ev.type === 'end') endIndexByStart.set(x.ev.start, i) })
+    const remove = new Set()
     let dropped = 0
-    for (const x of this.queue) {
-      if (dropped < drop && x.ev.type !== 'end') { dropped++; continue }
-      keep.push(x)
+    for (let i = 0; i < this.queue.length && dropped < drop; i++) {
+      const x = this.queue[i]
+      if (x.ev.type !== 'start' || remove.has(i)) continue
+      remove.add(i); dropped++
+      const endIndex = endIndexByStart.get(x.ev.id)
+      if (endIndex !== undefined && !remove.has(endIndex)) { remove.add(endIndex); dropped++ }
     }
-    // Only if the queue is nearly all `end`s (unusual) do we fall back to dropping one.
-    while (dropped < drop && keep.length) { keep.shift(); dropped++ }
-    this.queue = keep
+    // Nothing left to pair off a `start` with: the oldest leftover `end`s are next.
+    for (let i = 0; i < this.queue.length && dropped < drop; i++) {
+      const x = this.queue[i]
+      if (x.ev.type === 'end' && !remove.has(i)) { remove.add(i); dropped++ }
+    }
+    if (remove.size) this.queue = this.queue.filter((_, i) => !remove.has(i))
     this.rewrite = true
     if (!this.full) {
       this.full = true

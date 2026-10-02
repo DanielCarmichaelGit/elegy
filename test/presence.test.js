@@ -75,23 +75,34 @@ test('a failure keeps the events and backs off, doubling up to 10 minutes', asyn
   assert.equal(r.failures, 0)
 })
 
-test('beyond the cap, the oldest tenth drops in one go; an end is never dropped, and logging is once per episode', async () => {
+test('beyond the cap, the oldest tenth drops in one go, as whole start/end pairs; logging is once per episode', async () => {
   const api = fakeApi()
   const { r, logs } = reporter({ fetch: api.fetch, maxQueue: 20 })
-  // 19 old starts, never ended: the ones we expect to be dropped.
-  for (let i = 0; i < 19; i++) r.visitStart({ room: 'r1', account: `person:u${i}`, name: `n${i}` })
-  // A visit that starts and ends right away: its `end` must survive every drop.
-  const v = r.visitStart({ room: 'r1', account: 'person:keeper', name: 'Keeper' })
-  r.visitEnd(v)
+  // A name, queued first: the least disposable thing here, never a drop candidate.
+  r.rename({ room: 'r1', name: 'kept-name' })
+  // 10 old, finished visits: start+end pairs, the most disposable things in the queue.
+  for (let i = 0; i < 10; i++) {
+    const v = r.visitStart({ room: 'r1', account: `person:old${i}`, name: `old${i}` })
+    r.visitEnd(v)
+  }
+  // One still-open visit: its lone `start` has no matching `end` yet.
+  const open = r.visitStart({ room: 'r1', account: 'person:open', name: 'Open' })
   assert.ok(r.size <= 20, 'the first overflow already dropped more than one event')
   assert.equal(logs.length, 1)
   const m = logs[0].match(/presence: the queue is full \(20 events\); dropped (\d+) oldest event\(s\)/)
   assert.ok(m, logs[0])
   assert.ok(Number(m[1]) >= 2, 'drops a batch (a tenth of the cap), not one event at a time')
+  // The name and the still-open visit's start both survive every drop.
+  assert.ok(r.queue.some((x) => x.ev.type === 'name' && x.ev.name === 'kept-name'))
+  assert.ok(r.queue.some((x) => x.ev.id === open.start))
+  // Whatever's left is either a `name`, that one open `start`, or a matched pair: no orphan `end`.
+  for (const x of r.queue) {
+    if (x.ev.type !== 'end') continue
+    assert.ok(r.queue.some((y) => y.ev.id === x.ev.start), `end ${x.ev.id} has no matching start left in the queue`)
+  }
   // More overflows while nothing is sent: still the one log line, not one per event.
   for (let i = 0; i < 10; i++) r.rename({ room: 'r1', name: `more${i}` })
   assert.equal(logs.length, 1, 'the episode has not drained: no second log line')
-  assert.ok(r.queue.some((x) => x.ev.type === 'end' && x.ev.start === v.start), "the keeper visit's end was never dropped")
   await r.flush()
   assert.equal(r.size, 0)
   // Once the queue has actually drained (by sending), a fresh overflow logs again.
@@ -99,14 +110,52 @@ test('beyond the cap, the oldest tenth drops in one go; an end is never dropped,
   assert.equal(logs.length, 2, 'a new overflow episode after a drain logs again')
 })
 
+test('name events are never dropped, however badly the queue is overflowing', () => {
+  const { r } = reporter({ maxQueue: 5 })
+  r.rename({ room: 'r1', name: 'kept' })
+  for (let i = 0; i < 50; i++) r.visitStart({ room: 'r1', account: `person:u${i}`, name: `n${i}` })
+  assert.ok(r.size <= 5)
+  assert.ok(r.queue.some((x) => x.ev.type === 'name' && x.ev.name === 'kept'))
+})
+
+test('during a long outage, new starts keep being recorded while old start/end pairs are dropped first', () => {
+  const { r } = reporter({ maxQueue: 8 })
+  // 5 visits that already finished: no longer useful once the queue is full.
+  for (let i = 0; i < 5; i++) {
+    const v = r.visitStart({ room: 'r1', account: `person:old${i}`, name: `old${i}` })
+    r.visitEnd(v)
+  }
+  // 8 more visits start, none of them ending: the outage is still going.
+  const fresh = []
+  for (let i = 0; i < 8; i++) fresh.push(r.visitStart({ room: 'r1', account: `person:new${i}`, name: `new${i}` }).start)
+  // Every still-open, freshly started visit survived...
+  for (const id of fresh) assert.ok(r.queue.some((x) => x.ev.id === id), `fresh start ${id} should not have been dropped`)
+  // ...and nothing of the old, finished visits is left: a dropped pair leaves no orphan.
+  assert.ok(r.queue.every((x) => fresh.includes(x.ev.id)))
+})
+
+test('dropping from a queue of about 100,000 events is linear, not quadratic', () => {
+  const { r } = reporter({ maxQueue: 100_000 })
+  for (let i = 0; i < 100_000; i++) {
+    const v = r.visitStart({ room: 'r1', account: `person:u${i}`, name: `n${i}` })
+    if (i % 2 === 0) r.visitEnd(v) // half already finished pairs, half still open
+  }
+  assert.ok(r.size <= 100_000)
+  const started = Date.now()
+  r.rename({ room: 'r1', name: 'tip' }) // one more push: triggers exactly one drop of ~10,000 events
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 100, `dropping took ${elapsed}ms; should be well under 100ms`)
+})
+
 test('a full rewrite caused by a drop happens at most once a minute, not on every drop', () => {
   const file = tmp()
   const { r, advance } = reporter({ file, maxQueue: 10 })
-  for (let i = 0; i < 12; i++) r.rename({ room: 'r1', name: `a${i}` }) // overflows once: the first-ever rewrite is never throttled
+  // Unmatched starts: a `name` can't be dropped any more, so it can't stand in here.
+  for (let i = 0; i < 12; i++) r.visitStart({ room: 'r1', account: `person:a${i}`, name: `a${i}` }) // overflows once: the first-ever rewrite is never throttled
   r.persist()
   const linesAfterFirst = fs.readFileSync(file, 'utf8').trim().split('\n')
   assert.equal(linesAfterFirst.length, 11, '1 header line + the 10 that survived the drop')
-  for (let i = 0; i < 12; i++) r.rename({ room: 'r1', name: `b${i}` }) // overflows again, under a minute later
+  for (let i = 0; i < 12; i++) r.visitStart({ room: 'r1', account: `person:b${i}`, name: `b${i}` }) // overflows again, under a minute later
   r.persist()
   const linesAfterSecond = fs.readFileSync(file, 'utf8').trim().split('\n')
   assert.equal(linesAfterSecond.length, 23, 'new events are still appended; the drop itself is throttled, so stale lines stay')
