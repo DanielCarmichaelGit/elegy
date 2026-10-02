@@ -66,4 +66,4 @@ run('git', ['push', 'origin', 'main', tag])
 run('gh', ['release', 'create', tag, '--repo', REPO, '--title', `Quilt ${version}`, '--notes-file', notesFile, '--latest', ...assets])
 
 console.log(`\n${dry ? 'Would release' : 'Released'} Quilt ${version}: https://github.com/${REPO}/releases/tag/${tag}`)
-console.log('Apps on older versions show the update bar within an hour of opening.')
+console.log('Open apps on older versions offer to update within about ten minutes.')

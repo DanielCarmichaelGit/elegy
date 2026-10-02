@@ -11,5 +11,9 @@ contextBridge.exposeInMainWorld('quiltDesktop', {
     ipcRenderer.invoke('ready').then((link) => { if (link) fn(link) })
   },
   /** Calls `fn()` when "What's New in Quilt…" is chosen from the menu. */
-  onReleaseNotes: (fn) => { ipcRenderer.on('release-notes', () => fn()) }
+  onReleaseNotes: (fn) => { ipcRenderer.on('release-notes', () => fn()) },
+  /** Downloads and installs the newest Quilt, then restarts it. Rejects with a message when it can't. */
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+  /** Calls `fn({ phase, received, total })` as an update downloads and installs. */
+  onUpdateProgress: (fn) => { ipcRenderer.on('update-progress', (e, p) => fn(p)) }
 })
