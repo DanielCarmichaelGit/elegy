@@ -8,6 +8,20 @@ import { cleanSessionName, BAD_SESSION_NAME } from '../../session-name.js'
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const NO_SESSION = 'no such session'
 
+/** An account's dashboard: its sessions, with the people in each, and the totals. */
+export async function overviewOf (store, account, tz, t) {
+  // The latest sessions, plus every one active this week or month, for the totals.
+  const since = Math.min(weekStart(t, tz), monthStart(t, tz))
+  const sessions = await store.accountSessions(account, { since, limit: MAX_SESSIONS })
+  const visits = await store.visitsInRooms(sessions.map((s) => s.room))
+  return summarize({ me: account, sessions, visits, now: t, tz })
+}
+
+/** People and agents this account has worked with: [{ account, name, kind, lastTogetherAt }], most recent first. */
+export async function collaboratorsOf (store, account, t) {
+  return collaborators((await overviewOf(store, account, 'UTC', t)).sessions)
+}
+
 export function sessionRoutes ({ store, now, person }) {
   const me = async (req) => `person:${(await person(req)).userId}`
   const zoneOf = (req) => {
@@ -15,15 +29,7 @@ export function sessionRoutes ({ store, now, person }) {
     if (!isTimeZone(tz)) throw new HttpError(400, 'tz must be an IANA time zone, like Europe/London')
     return tz
   }
-
-  async function overview (account, tz) {
-    const t = now()
-    // The latest sessions, plus every one active this week or month, for the totals.
-    const since = Math.min(weekStart(t, tz), monthStart(t, tz))
-    const sessions = await store.accountSessions(account, { since, limit: MAX_SESSIONS })
-    const visits = await store.visitsInRooms(sessions.map((s) => s.room))
-    return summarize({ me: account, sessions, visits, now: t, tz })
-  }
+  const overview = (account, tz) => overviewOf(store, account, tz, now())
 
   /** A session I was in, with every visit to it; 404 otherwise, whether or not it exists. */
   async function mine (account, room) {
@@ -56,9 +62,6 @@ export function sessionRoutes ({ store, now, person }) {
     }],
 
     // People and agents you've worked with, for invites (most recent first, at most 30).
-    ['GET', /^\/v1\/me\/collaborators$/, async (req) => {
-      const { sessions } = await overview(await me(req), 'UTC')
-      return { collaborators: collaborators(sessions) }
-    }]
+    ['GET', /^\/v1\/me\/collaborators$/, async (req) => ({ collaborators: await collaboratorsOf(store, await me(req), now()) })]
   ]
 }

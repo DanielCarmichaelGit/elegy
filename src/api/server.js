@@ -18,6 +18,7 @@ import { relayRoutes } from './routes/relay.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { accessTypeRoutes } from './routes/access-types.js'
 import { grantRoutes } from './routes/grants.js'
+import { sessionInviteRoutes } from './routes/session-invites.js'
 import { HOSTED_RELAY } from '../settings.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
@@ -227,7 +228,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   // Org routes live in their own modules and share the caller check and the limiter.
   const ctx = { store, user, person, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx))
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)

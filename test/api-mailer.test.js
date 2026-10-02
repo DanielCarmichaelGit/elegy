@@ -9,6 +9,13 @@ test('the SMTP mailer sends from SMTP_FROM with the message it is given', async 
   assert.deepEqual(sent, [{ from: 'Quilt <invites@heyquilt.com>', to: 'a@acme.com', subject: 'Hi', text: 'Body' }])
 })
 
+test('a message can name its own sender', async () => {
+  const sent = []
+  const m = createSmtpMailer({ from: 'Quilt <invites@heyquilt.com>', transport: { sendMail: async (x) => { sent.push(x) } } })
+  await m.send({ to: 'a@acme.com', subject: 'Hi', text: 'Body', from: 'Quilt <hello@hq.heyquilt.com>' })
+  assert.equal(sent[0].from, 'Quilt <hello@hq.heyquilt.com>')
+})
+
 test('the SMTP mailer builds its transport from SMTP_URL without connecting', () => {
   const m = createSmtpMailer({ url: 'smtp://user:pass@127.0.0.1:2525', from: 'x@quilt.test' })
   assert.equal(typeof m.send, 'function')
