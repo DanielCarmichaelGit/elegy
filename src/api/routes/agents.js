@@ -5,7 +5,7 @@ import { keyStatus } from '../agent-auth.js'
 // Never the key itself, just whether it has one: that's what lets it get a session pass.
 const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: !!a.publicKey })
 
-export function agentRoutes ({ store, user, now, limitTokens, agentAuth }) {
+export function agentRoutes ({ store, user, person, now, limitTokens, agentAuth }) {
   return [
     ['POST', /^\/v1\/agents\/token$/, async (req, body) => {
       limitTokens(req)
@@ -25,8 +25,9 @@ export function agentRoutes ({ store, user, now, limitTokens, agentAuth }) {
       }
     }],
 
+    // Listed on the website and in the app (a linked computer's token counts as its person).
     ['GET', /^\/v1\/agents$/, async (req) => {
-      const u = await user(req)
+      const u = await person(req)
       const agents = await store.listPersonalAgents(u.userId)
       return {
         agents: await Promise.all(agents.map(async (a) => ({

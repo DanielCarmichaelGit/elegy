@@ -42,6 +42,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return d
   }
 
+  /** A signed-in person, from the website (JWT) or from the app on a linked computer (qd_ token). */
+  async function person (req) {
+    if (bearer(req).startsWith('qd_')) return { userId: (await device(req)).userId, email: '' }
+    return user(req)
+  }
+
   // A few tries per minute per address is plenty for a person. Behind Fly,
   // Fly-Client-IP is the real peer; X-Forwarded-For isn't used because Fly appends
   // to whatever the client sent, so its first entry is client-controlled.
@@ -205,7 +211,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth }
+  const ctx = { store, user, person, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx))
 
   async function openLink (code) {

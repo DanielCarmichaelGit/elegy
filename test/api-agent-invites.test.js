@@ -112,3 +112,32 @@ test('org invites are cancelled with Agents: Create, and only in their own org',
   assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/agent-invites/${invite.id}`, null, 'admin')).status, 200)
   assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/agent-invites/${invite.id}`, null, 'admin')).status, 409)
 })
+
+// The Quilt app invites agents too, with the computer's own qd_ token rather than a website JWT.
+test('a linked computer makes, lists and cancels personal invites, and lists agents, for its account', async () => {
+  const { linkDevice } = await import('./api-helpers.js')
+  const { token } = await linkDevice(t, 'mem')
+  const auth = { authorization: `Bearer ${token}` }
+  const made = await t.call('POST', '/v1/agent-invites', {}, null, auth)
+  assert.equal(made.status, 200, JSON.stringify(made.body))
+  assert.match(made.body.link, LINK)
+  assert.equal(made.body.invite.kind, 'personal')
+  const mine = (await t.call('GET', '/v1/agent-invites', null, 'mem')).body.invites
+  assert.ok(mine.some((i) => i.id === made.body.invite.id), 'the website sees the invite the app made')
+  assert.ok((await t.call('GET', '/v1/agent-invites', null, null, auth)).body.invites.some((i) => i.id === made.body.invite.id), 'and so does the app')
+  assert.equal((await t.call('GET', '/v1/agents', null, null, auth)).status, 200)
+  assert.equal((await t.call('DELETE', `/v1/agent-invites/${made.body.invite.id}`, null, null, auth)).status, 200)
+  // A revoked computer is signed out everywhere.
+  await t.call('POST', '/v1/me/signout', {}, null, auth)
+  assert.equal((await t.call('POST', '/v1/agent-invites', {}, null, auth)).status, 401)
+  assert.equal((await t.call('GET', '/v1/agents', null, null, auth)).status, 401)
+})
+
+test('org agent invites still need the website sign-in, not a computer token', async () => {
+  const { linkDevice } = await import('./api-helpers.js')
+  const o = await makeOrg(t, 'Device Bots Co')
+  const { token } = await linkDevice(t, 'admin')
+  const auth = { authorization: `Bearer ${token}` }
+  assert.equal((await t.call('POST', `/v1/orgs/${o.slug}/agent-invites`, {}, null, auth)).status, 401)
+  assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/agent-invites`, null, null, auth)).status, 401)
+})

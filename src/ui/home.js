@@ -1,7 +1,8 @@
 // Home and Settings: a sidebar with your profile and open sessions, next to
 // either the start/join page or your settings. Sessions themselves live in session.js.
 import { I, state, $, esc, basename, ago, toast, api, ask, decodeInvite, avatar, PALETTE } from './common.js'
-import { go, pickFolder, signedOutNow } from './app.js'
+import { go, pickFolder, signedOutNow, agentInviteHtml } from './app.js'
+import { agentPaste } from './invite.js'
 import { quiltMark } from './mark.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
@@ -463,6 +464,18 @@ function settingsHtml () {
     </div>
   </section>
 
+  <section class="card settings-sec" id="agents-sec">
+    <div class="sec-intro"><h2>Agents</h2><p>AIs that join your sessions as their own members, under your account.</p></div>
+    <div class="sec-body">
+      <div id="agents-list"><p class="hint">Loading…</p></div>
+      <div id="agents-invite">
+        <p class="hint">Make a one-time invite and paste the text into your AI (Claude Code, Cursor, Codex and others). It registers as your agent; from then on it can join any session you send it. Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a>.</p>
+        <p class="error" id="agents-error"></p>
+      </div>
+      <div class="sec-actions"><span class="hint">Inside a session, Invite also offers this with the session's link filled in.</span><button class="btn primary" type="button" id="agents-make">${I.bot}<span>Invite an agent</span></button></div>
+    </div>
+  </section>
+
   <form class="card settings-sec" id="profile-sec" autocomplete="off">
     <div class="sec-intro"><h2>Profile</h2><p>How you show up to the people you code with.</p></div>
     <div class="sec-body">
@@ -525,6 +538,39 @@ function settingsHtml () {
   </section>`
 }
 
+function agentRow (a) {
+  const signedOut = a.status === 'reused' || a.status === 'expired'
+  const state = signedOut ? '<span class="pill warn">signed out</span>' : a.canJoinSessions ? '' : '<span class="pill">registered only</span>'
+  const when = a.lastUsedAt ? `last used ${ago(a.lastUsedAt)}` : `added ${ago(a.createdAt)}`
+  return `<div class="kv agent-row"><span>${I.bot}</span><b>${esc(a.name)} ${state}</b><span class="hint">${esc(a.provider)} · ${esc(a.type)} · ${when}</span></div>`
+}
+
+/** The Agents card: your agents from the accounts API, and a one-time invite for a new one. */
+function bindAgents () {
+  const list = $('#agents-list')
+  api('GET', '/api/agents').then(({ agents }) => {
+    list.innerHTML = agents.length ? agents.map(agentRow).join('') : '<p class="hint">No agents yet. Invite one below.</p>'
+  }).catch((err) => { list.innerHTML = `<p class="hint warn">${esc(err.message)}</p>` })
+  const sec = $('#agents-sec')
+  sec.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]')
+    if (!b) return
+    try { await navigator.clipboard.writeText($(`#${b.dataset.copy}`, sec).textContent); toast('Copied') } catch { toast('Select the text and press ⌘/Ctrl+C to copy') }
+  })
+  $('#agents-make').onclick = async () => {
+    const btn = $('#agents-make')
+    btn.disabled = true
+    try {
+      const inv = await api('POST', '/api/agent-invites')
+      $('#agents-invite').innerHTML = agentInviteHtml(agentPaste({ link: inv.link }), 'agents-paste')
+      btn.innerHTML = `${I.bot}<span>Invite another</span>`
+    } catch (err) {
+      $('#agents-error').textContent = err.message
+    }
+    btn.disabled = false
+  }
+}
+
 function bindSettings () {
   const saveForm = (form, pick, done) => {
     form.onsubmit = async (e) => {
@@ -557,6 +603,8 @@ function bindSettings () {
   const sess = $('#sessions-sec')
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir'))
   saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
+
+  bindAgents()
 
   $('#sign-out').onclick = async () => {
     if (!await ask({ title: 'Sign out of Quilt?', message: 'This stops your sessions on this computer. Your files stay where they are.', ok: 'Sign out', danger: true })) return

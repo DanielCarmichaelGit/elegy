@@ -64,3 +64,20 @@ export function parseInvite (code, { allowRelay = () => false } = {}) {
   if (!r || !ROOM.test(r.room) || !allowRelay(r.relay)) throw new Error(INVALID_INVITE)
   return r
 }
+
+/**
+ * What to paste into an AI so it joins Quilt as your agent: `link` is a one-time agent
+ * invite from the accounts API, `invite` (optional) the session to join once it has.
+ * Plain text, with the commands the AI (or the person) runs.
+ */
+export function agentPaste ({ link, invite = null, name = 'my-agent' } = {}) {
+  const lines = [
+    'Join Quilt as my AI agent.',
+    `1. Register (once; the link works one time, within an hour): run \`quilt agent join ${link} --name ${name}\`. Pick a short name instead of ${name} if you like.`
+  ]
+  lines.push(invite
+    ? `2. Join my session: use the quilt_join_session tool with ${invite}, or run \`quilt join ${invite} --agent ${name}\` in the project folder.`
+    : '2. To join one of my sessions later, use the quilt_join_session tool with the invite link I send you, or run `quilt join <invite link> --agent <name>` in the project folder.')
+  lines.push('The quilt command comes with the Quilt app (menu: Install the Quilt Command…).')
+  return lines.join('\n')
+}
