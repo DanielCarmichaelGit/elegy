@@ -4,6 +4,7 @@
 // everyone in the session.
 import fs from 'node:fs'
 import path from 'node:path'
+import { hookSettings, HOOK_COMMAND } from './hooks.js'
 
 const START = '<!-- quilt:start -->'
 const END = '<!-- quilt:end -->'
@@ -20,10 +21,16 @@ with their own AI coding tool. Files can change underneath you at any time.
 - See what a partner's AI is doing with \`quilt_partner_feed\`, and where people
   are working with \`quilt_list_files\` (recent edits and claims).
 - Announce what you're working on (\`quilt_set_focus\` / \`quilt focus "..."\`).
-- Before a larger change, claim the files (\`quilt_claim\` / \`quilt claim <glob>\`)
-  and release them when done. Edits to files someone else has claimed are
-  undone automatically, so don't try; send them a message
-  (\`quilt_message\` / \`quilt say "..."\`) instead.
+- Files must be claimed before they are edited. In Claude Code this is automatic:
+  Quilt claims each file for you as you edit it and releases those claims when you
+  finish. In other tools, claim first (\`quilt_claim\` / \`quilt claim <path>\`) and
+  release when done (\`quilt_release\` / \`quilt release <path>\`).
+- If a file is claimed by someone else, your edit is refused or undone. Don't retry
+  or work around it: send them a direct message (\`quilt_message\` with "to" /
+  \`quilt say @name "..."\`) saying what you wanted to change and asking for help,
+  then carry on with other work.
+- Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
+  hand the file over, or say when you'll be done.
 - Always re-read a file right before editing it; never rely on an old copy.
 - Prefer small, focused edits over rewriting whole files.
 - Don't run git commands that rewrite the working tree (checkout, reset,
@@ -53,9 +60,40 @@ function upsertMcp (file, key = 'mcpServers') {
   return prev !== text
 }
 
+/** Where Quilt's Claude Code hooks live: this person's own settings, which never sync or get committed. */
+export const HOOKS_FILE = '.claude/settings.local.json'
+
+/**
+ * Puts Quilt's hooks into the project's .claude/settings.local.json, replacing earlier
+ * Quilt entries and leaving other hooks and settings alone. Returns true when the file changed.
+ */
+export function installHooks (root) {
+  const file = path.join(root, HOOKS_FILE)
+  let prev = ''
+  try { prev = fs.readFileSync(file, 'utf8') } catch {}
+  let json = {}
+  try { json = JSON.parse(prev) || {} } catch {}
+  if (typeof json !== 'object' || Array.isArray(json)) json = {}
+  const hooks = (json.hooks && typeof json.hooks === 'object' && !Array.isArray(json.hooks)) ? json.hooks : {}
+  const ours = (h) => h && typeof h.command === 'string' && h.command.startsWith(HOOK_COMMAND)
+  for (const [event, entries] of Object.entries(hookSettings())) {
+    const kept = (Array.isArray(hooks[event]) ? hooks[event] : [])
+      .map((e) => (e && Array.isArray(e.hooks) ? { ...e, hooks: e.hooks.filter((h) => !ours(h)) } : e))
+      .filter((e) => e && (!Array.isArray(e.hooks) || e.hooks.length))
+    hooks[event] = [...kept, ...entries]
+  }
+  json.hooks = hooks
+  const text = JSON.stringify(json, null, 2) + '\n'
+  if (prev === text) return false
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, text)
+  return true
+}
+
 export function setup (root) {
   const changed = []
   if (upsertMcp(path.join(root, '.mcp.json'))) changed.push('.mcp.json (Claude Code MCP server)')
+  if (installHooks(root)) changed.push(`${HOOKS_FILE} (Claude Code hooks: files are claimed as you edit them)`)
   if (upsertMcp(path.join(root, '.cursor', 'mcp.json'))) changed.push('.cursor/mcp.json (Cursor MCP server)')
   if (upsertBlock(path.join(root, 'AGENTS.md'), AGENT_GUIDE)) changed.push('AGENTS.md (Cursor, Codex, and other agents)')
   if (upsertBlock(path.join(root, 'CLAUDE.md'), AGENT_GUIDE)) changed.push('CLAUDE.md (Claude Code)')

@@ -13,6 +13,8 @@ import { createSummarizer } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
 import { JOIN_HOST, buildInvite, parseInvite } from './ui/invite.js'
+import { installHooks, HOOKS_FILE } from './setup.js'
+import { releaseLeftoverHookClaims } from './hooks.js'
 
 export { JOIN_HOST }
 
@@ -121,6 +123,11 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const control = await startControl(session, { invite, viewInvite, joined })
   remember({ dir, room: conn.room, server: conn.server, name: session.name, tool })
 
+  // Claude Code claims files as it edits them (src/hooks.js). The hooks go in this person's own
+  // settings file; everyone's session writes its own, so the rule holds for everyone in the room.
+  try { if (installHooks(dir)) session.log(`🪝 added Quilt's Claude Code hooks to ${HOOKS_FILE}: files are claimed as they are edited`) } catch {}
+  releaseLeftoverHookClaims(session).then((n) => { if (n) session.log(`🔓 released ${n} claim(s) left by an earlier AI session`) }).catch(() => {})
+
   // Share this person's AI chat (Claude Code, Cursor) with the room.
   const readers = agentFeed
     ? startAgentReaders({
@@ -149,15 +156,17 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   }
 }
 
-/** Keep .quilt/ out of git without editing the (synced) .gitignore. */
+/** Keep .quilt/ and this person's hook settings out of git without editing the (synced) .gitignore. */
 function ensureGitExclude (dir) {
   const exclude = path.join(dir, '.git', 'info', 'exclude')
   try {
     if (!fs.existsSync(path.join(dir, '.git'))) return
-    const text = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
-    if (!text.split('\n').includes('.quilt/')) {
+    let text = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
+    for (const line of ['.quilt/', HOOKS_FILE]) {
+      if (text.split('\n').includes(line)) continue
       fs.mkdirSync(path.dirname(exclude), { recursive: true })
-      fs.appendFileSync(exclude, `${text && !text.endsWith('\n') ? '\n' : ''}.quilt/\n`)
+      text = `${text && !text.endsWith('\n') ? `${text}\n` : text}${line}\n`
+      fs.writeFileSync(exclude, text)
     }
   } catch {}
 }
