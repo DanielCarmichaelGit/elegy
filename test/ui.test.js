@@ -123,7 +123,7 @@ test('task board: add, move, rename, delete', async () => {
   assert.equal(bad.status, 400)
 
   const removed = await api('POST', `/api/sessions/${id}/tasks/delete`, { id: taskId })
-  assert.deepEqual(removed.body.tasks, [])
+  assert.deepEqual(removed.body.tasks.map((t) => t.title), ['Pricing page'], 'only the deleted task is gone')
   const empty = await api('POST', `/api/sessions/${id}/tasks`, { title: '   ' })
   assert.equal(empty.status, 400)
   await api('POST', `/api/sessions/${id}/stop`)
