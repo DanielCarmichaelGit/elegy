@@ -2,6 +2,9 @@
 // The Quilt accounts API: links desktop apps to accounts (a device-code flow, like
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
 import { parsePublicKey, verifyDeviceLink } from '../identity.js'
 import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
@@ -15,6 +18,9 @@ import { makeAgentAuth } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
 import { issueRoutes } from './routes/issues.js'
+import { routeName, cleanEvent } from './issues.js'
+
+const API_VERSION = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')).version
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -22,7 +28,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, reportKey = '', reportLimit = 10 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000 }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -225,16 +231,34 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return link
   }
 
+  // The API's own trouble, straight into the store: unknown routes, crashes (5xx) and
+  // slow requests. The 4xx a route throws on purpose is the API working, so it isn't kept.
+  // Never awaited by the request, and a failure to record is only logged.
+  function recordOwn ({ method, pathname, status, startedAt, message }) {
+    const durationMs = now() - startedAt
+    const slow = durationMs > slowMs
+    if (status < 500 && status !== 404 && !slow) return
+    const event = cleanEvent({
+      kind: status === 404 ? 'http404' : 'action',
+      name: routeName(method, pathname),
+      outcome: status >= 400 ? 'error' : 'slow',
+      status, durationMs, message
+    }, { surface: 'api', appVersion: API_VERSION, now })
+    Promise.resolve().then(() => store.recordEvents([event])).catch((err) => log(`issue record failed: ${err?.message || err}`))
+  }
+
   const server = http.createServer(async (req, res) => {
+    const startedAt = now()
     // The parsed pathname (not the raw url string) decides this: it's what a route
     // actually matches against, so "/v1/../v1/join/x" counts as a join link too.
     let pathname
     try { pathname = new URL(req.url, 'http://x').pathname } catch { pathname = '' }
     // Join links are secrets in a URL: never cache them, and ask crawlers not to index them.
     const extra = pathname.startsWith('/v1/join/') ? { 'x-robots-tag': 'noindex' } : {}
-    const send = (status, data, type = 'application/json') => {
+    const send = (status, data, type = 'application/json', message = '') => {
       res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...extra, ...cors(req) })
       res.end(type === 'application/json' ? JSON.stringify(data) : data)
+      recordOwn({ method: req.method, pathname, status, startedAt, message })
     }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { 'cache-control': 'no-store', ...extra, ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' })
@@ -260,7 +284,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (err?.code === '23503') return send(409, { error: 'that is still in use' })
       // Supabase errors are plain objects, so fall back to their JSON.
       if (!(err instanceof HttpError)) log(`api error: ${err?.stack || err?.message || JSON.stringify(err)}`)
-      send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' })
+      send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' }, 'application/json', err instanceof HttpError ? err.message : String(err?.message || err?.stack || JSON.stringify(err) || 'error'))
     }
   })
 
@@ -269,9 +293,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return site && req.headers.origin === site ? { 'access-control-allow-origin': site, vary: 'origin' } : {}
   }
 
+  const prune = setInterval(() => { Promise.resolve().then(() => store.pruneEvents(now() - keepEventsMs)).catch((err) => log(`issue prune failed: ${err?.message || err}`)) }, pruneEveryMs)
+  prune.unref()
+
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)), startKeys: () => limitStarts.size() })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size() })
   }))
 }
 

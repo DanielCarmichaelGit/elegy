@@ -100,3 +100,56 @@ test('with no report key configured, the website header is just a missing key', 
     assert.equal(r.status, 401)
   } finally { await bare.close() }
 })
+
+test('the API records an unknown route as a 404 event, grouped by its path shape', async () => {
+  await t.call('GET', '/v1/nothing/3f2504e0-4f89-11d3-9a0c-0305e82c3301')
+  await t.call('GET', '/v1/nothing/7c9e6679-7425-40de-944b-e07fc1f90ae7')
+  await new Promise((r) => setTimeout(r, 20)) // recording is fire-and-forget
+  const own = t.store.listEvents().filter((e) => e.surface === 'api' && e.kind === 'http404')
+  assert.equal(own.length, 2)
+  assert.equal(own[0].name, 'GET /v1/nothing/:id'); assert.equal(own[0].status, 404); assert.equal(own[0].outcome, 'error')
+  assert.equal(t.store.listIssues().find((i) => i.name === 'GET /v1/nothing/:id').count, 2)
+})
+
+test('the API records a crash in a handler as a 500 event with the real message, and still answers "internal error"', async () => {
+  const saved = t.store.linkByDeviceCode
+  t.store.linkByDeviceCode = async () => { throw new Error('db down') }
+  try {
+    const r = await t.call('POST', '/v1/device/poll', { deviceCode: 'dc_x' })
+    assert.deepEqual([r.status, r.body], [500, { error: 'internal error' }])
+  } finally { t.store.linkByDeviceCode = saved }
+  await new Promise((r) => setTimeout(r, 20))
+  const e = t.store.listEvents().find((x) => x.surface === 'api' && x.name === 'POST /v1/device/poll')
+  assert.equal(e.status, 500); assert.equal(e.outcome, 'error'); assert.equal(e.message, 'db down'); assert.equal(e.kind, 'action')
+})
+
+test('the API does not record the 4xx it answers on purpose', async () => {
+  await t.call('GET', '/v1/me') // 401: no token
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(t.store.listEvents().filter((e) => e.surface === 'api' && e.name === 'GET /v1/me').length, 0)
+})
+
+test('a request over the slow threshold is recorded as slow, and a store that fails to record never fails the request', async () => {
+  const slow = await startTestApi({ slowMs: -1 }) // everything is "slow"
+  try {
+    const r = await slow.call('GET', '/healthz')
+    assert.equal(r.status, 200)
+    await new Promise((res) => setTimeout(res, 20))
+    const e = slow.store.listEvents().find((x) => x.name === 'GET /healthz')
+    assert.equal(e.outcome, 'slow'); assert.equal(e.status, 200); assert.equal(typeof e.durationMs, 'number')
+    slow.store.recordEvents = async () => { throw new Error('no db') }
+    assert.equal((await slow.call('GET', '/healthz')).status, 200)
+  } finally { await slow.close() }
+})
+
+test('old events are pruned on the API\'s timer', async () => {
+  let n = 0
+  const store = { pruneEvents: async () => { n++; return 0 } }
+  const api = await startTestApi({ pruneEveryMs: 10 })
+  // startTestApi builds its own store; swap the prune method so the timer is observable.
+  api.store.pruneEvents = store.pruneEvents
+  try {
+    await new Promise((r) => setTimeout(r, 60))
+    assert.ok(n >= 1, 'pruneEvents ran on the timer')
+  } finally { await api.close() }
+})
