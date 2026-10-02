@@ -49,6 +49,9 @@ const NOT_LINKED = 'Your user is not in a quilt session in their browser right n
 const NOT_JOINED = 'You are not in a session. Call quilt_join_session with an invite link (https://join.heyquilt.com/<room>#<secret>).'
 const WAITING = 'The session owner has not let you in yet. They see you on their list; call quilt_session_info to check again.'
 const REMOVED = 'You are no longer in that session. Ask for a new invite and call quilt_join_session again.'
+// Let in by a grant, but the pass named no room: the accounts API retries with one for the
+// room in x-quilt-room. A client that reaches the relay some other way just calls again.
+const NEEDS_ROOM_PASS = 'Reconnecting you to the session. Call the same tool again.'
 
 const id = () => crypto.randomBytes(8).toString('hex')
 const text = (t) => ({ content: [{ type: 'text', text: t }] })
@@ -333,6 +336,10 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     touched.add(room)
     if (!room.exists) { relay.hosted.delete(account); relay.saveHosted(); return { error: REMOVED } }
     const access = room.hostedAccess(pass)
+    if (access.needsRoomPass) {
+      if (!res.headersSent) res.setHeader('x-quilt-retry', 'room-pass')
+      return { error: NEEDS_ROOM_PASS, room, access }
+    }
     if (access.state !== 'approved') return { error: h.pending ? WAITING : REMOVED, room, access }
     h.seenAt = Date.now()
     relay.saveHosted()

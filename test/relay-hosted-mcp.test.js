@@ -172,6 +172,20 @@ test('a hosted agent whose room pass has a grant gets straight in, with that acc
   } finally { await gem.close() }
 })
 
+test('a granted agent whose pass names no room is asked to call again, never told it was removed', async () => {
+  // Gem joined hm-1 by its grant (above). Its pass from an API that just restarted names no room.
+  const rpc = (name, args = {}) => fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': hostedPass({ sub: 'agent-gem', name: 'Gem' }), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) })
+  const res = await rpc('quilt_status')
+  assert.equal(res.headers.get('x-quilt-room'), 'hm-1')
+  assert.equal(res.headers.get('x-quilt-retry'), 'room-pass', 'the API retries with a pass for that room')
+  const body = await res.text()
+  assert.match(body, /Call the same tool again/)
+  assert.doesNotMatch(body, /no longer in that session/)
+  // With a pass for the room, the same call works.
+  const gem = await client(hostedPass({ sub: 'agent-gem', name: 'Gem', room: 'hm-1', access: { files: 'edit', folders: [], foldersExcept: ['secrets'], talk: false } }))
+  try { assert.match(out(await gem.callTool({ name: 'quilt_status', arguments: {} })), /Carl/) } finally { await gem.close() }
+})
+
 test('the relay tells the accounts API which session a hosted agent is in', async () => {
   const pass = hostedPass({ sub: 'agent-gem', name: 'Gem' })
   const res = await fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': pass, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })

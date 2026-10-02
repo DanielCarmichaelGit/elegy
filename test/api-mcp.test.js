@@ -94,6 +94,21 @@ test('an agent the owner granted joins straight in through /mcp, and its grant h
     assert.equal(out(await c.callTool({ name: 'quilt_message', arguments: { text: 'hi' } })), "You can't post in this session.")
     await c.callTool({ name: 'quilt_write_file', arguments: { path: 'gem.txt', content: 'from Gem' } })
     await waitFor(() => { try { return fs.readFileSync(path.join(moDir, 'gem.txt'), 'utf8') === 'from Gem' } catch { return false } })
+    // quilt-api restarts: it no longer knows which room Gem is in. Gem's next call still works,
+    // the API asking the relay again with a pass for the room the relay names.
+    // The agent's client was set up before the restart, so its first call is a tool call.
+    const restarted = await startTestApi({ passKey: keys.privateKey, relayUrl: `ws://127.0.0.1:${relay.port}`, store: t.store })
+    try {
+      const res = await fetch(`${restarted.api.url}/mcp`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${accessKey}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'quilt_write_file', arguments: { path: 'gem2.txt', content: 'after a restart' } } })
+      })
+      const text = await res.text()
+      assert.equal(res.status, 200)
+      assert.match(text, /Created gem2\.txt/)
+      await waitFor(() => { try { return fs.readFileSync(path.join(moDir, 'gem2.txt'), 'utf8') === 'after a restart' } catch { return false } })
+    } finally { await restarted.close() }
   } finally { await c.close(); await mo.stop() }
 })
 

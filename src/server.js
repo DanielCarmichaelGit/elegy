@@ -391,6 +391,9 @@ class Room {
       if (m.name !== pass.name) { m.name = pass.name; this.saveMeta() }
       return { state: 'approved', ...memberAccess(m), owner: false, id }
     }
+    // Let in as a type, but this pass isn't for this room (the accounts API didn't know which
+    // room the agent is in, after a restart): a pass for this room will let it in.
+    if (this.meta.members[id]?.granted) return { state: 'pending', id, needsRoomPass: true }
     return { state: 'pending', id }
   }
 

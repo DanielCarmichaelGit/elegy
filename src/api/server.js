@@ -315,25 +315,38 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const { agent } = await agentAuth.agentFromRequest(req)
     limitMcp(agent.id)
     const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, MAX_MCP_BODY) : undefined
-    const room = joiningRoom(body) || agentRooms.get(agent.id) || ''
-    const cacheKey = `${agent.id}\n${room}`
-    let minted = mintedPasses.get(cacheKey)
-    if (!minted || minted.exp - now() < PASS_REUSE_MARGIN_MS) {
-      const holder = { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
-      const { pass, expiresAt } = await mintPass(holder, room)
-      minted = { pass, exp: expiresAt }
-      mintedPasses.set(cacheKey, minted)
-      if (mintedPasses.size > maxStartKeys) for (const [k, v] of mintedPasses) if (v.exp <= now()) mintedPasses.delete(k)
-      forget(mintedPasses)
+    const holder = { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
+    const passFor = async (room) => {
+      const cacheKey = `${agent.id}\n${room}`
+      let minted = mintedPasses.get(cacheKey)
+      if (!minted || minted.exp - now() < PASS_REUSE_MARGIN_MS) {
+        const { pass, expiresAt } = await mintPass(holder, room)
+        minted = { pass, exp: expiresAt }
+        mintedPasses.set(cacheKey, minted)
+        if (mintedPasses.size > maxStartKeys) for (const [k, v] of mintedPasses) if (v.exp <= now()) mintedPasses.delete(k)
+        forget(mintedPasses)
+      }
+      return minted.pass
     }
-    const headers = { 'x-quilt-pass': minted.pass }
-    for (const h of ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'last-event-id']) if (req.headers[h]) headers[h] = String(req.headers[h])
-    let upstream
-    try {
-      upstream = await fetch(`${relay}/mcp`, { method: req.method, headers, body, signal: AbortSignal.timeout(MCP_TIMEOUT_MS) })
-    } catch (err) {
-      log(`mcp relay error: ${err.message}`)
-      throw new HttpError(502, 'the session relay did not answer; try again in a moment')
+    const ask = async (room) => {
+      const headers = { 'x-quilt-pass': await passFor(room) }
+      for (const h of ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'last-event-id']) if (req.headers[h]) headers[h] = String(req.headers[h])
+      try {
+        return await fetch(`${relay}/mcp`, { method: req.method, headers, body, signal: AbortSignal.timeout(MCP_TIMEOUT_MS) })
+      } catch (err) {
+        log(`mcp relay error: ${err.message}`)
+        throw new HttpError(502, 'the session relay did not answer; try again in a moment')
+      }
+    }
+    const room = joiningRoom(body) || agentRooms.get(agent.id) || ''
+    let upstream = await ask(room)
+    // The relay needs a pass for the room the agent is in (this server forgot it, after a
+    // restart): ask again, once, with one for the room it names. Tool calls are only refused
+    // there, never carried out, so the same call is safe to send again.
+    const named = upstream.headers.get('x-quilt-room') || ''
+    if (upstream.headers.get('x-quilt-retry') === 'room-pass' && ROOM.test(named) && named !== room) {
+      await upstream.arrayBuffer().catch(() => {})
+      upstream = await ask(named)
     }
     if (upstream.ok) {
       const inRoom = upstream.headers.get('x-quilt-room') || ''
