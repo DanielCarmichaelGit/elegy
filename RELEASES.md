@@ -9,6 +9,13 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.3 — 2026-10-02
+
+Settings from inside a session.
+
+- **Settings without leaving your session.** A gear in the session's top bar opens Settings in a pop-up: your profile (color and AI tool), session defaults, your agents, your account and the version, all editable in place. Saving keeps the pop-up open; the sidebar's profile card follows.
+- **Update Quilt from About.** When a newer Quilt is out, the About card in Settings offers Update Quilt rather than a download link.
+
 ## 0.3.2 — 2026-10-02
 
 Invite links open the app in one click, and you can invite your AI from the app.
