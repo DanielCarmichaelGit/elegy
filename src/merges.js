@@ -20,7 +20,7 @@ export function publicMerge (v) {
   if (typeof v.id !== 'string' || !HEX_ID.test(v.id)) return null
   if (!str(v.path, 1024) || !v.path) return null
   if (!str(v.by, 80) || !optStr(v.byId, 128)) return null
-  if (!Array.isArray(v.others) || !v.others.every((n) => str(n, 80))) return null
+  if (!Array.isArray(v.others) || v.others.length > 20 || !v.others.every((n) => str(n, 80))) return null
   if (typeof v.ts !== 'number' || !Number.isFinite(v.ts)) return null
   if (!KINDS.includes(v.kind) || !STATES.includes(v.state)) return null
   if (!optStr(v.ours, MAX_RECORD_TEXT) || !optStr(v.base, MAX_RECORD_TEXT) || !optStr(v.theirsHash, 64)) return null
@@ -28,7 +28,7 @@ export function publicMerge (v) {
   if (v.how != null && !HOWS.includes(v.how)) return null
   if (v.doneTs != null && typeof v.doneTs !== 'number') return null
   return {
-    id: v.id, path: v.path, by: v.by, byId: v.byId ?? null, others: v.others.slice(0, 20), ts: v.ts,
+    id: v.id, path: v.path, by: v.by, byId: v.byId ?? null, others: v.others, ts: v.ts,
     kind: v.kind, state: v.state, ours: v.ours ?? null, base: v.base ?? null, theirsHash: v.theirsHash ?? null,
     binary: !!v.binary, local: !!v.local, claimedBy: v.claimedBy ?? null, resolvedBy: v.resolvedBy ?? null,
     how: v.how ?? null, doneTs: v.doneTs ?? null, reason: v.reason ?? null
@@ -77,7 +77,7 @@ export function openMerge (doc, map, { path, by, byId = null, others = [], kind,
 export function updateMerge (doc, map, id, patch, origin) {
   const cur = publicMerge(map.get(id))
   if (!cur) throw new Error('no such merge')
-  const next = { ...map.get(id) }
+  const next = { ...cur }
   if (patch.state !== undefined) {
     if (!STATES.includes(patch.state)) throw new Error('bad merge state')
     next.state = patch.state

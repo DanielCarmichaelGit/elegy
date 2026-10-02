@@ -34,6 +34,22 @@ test('update patches a record and refuses unknown ids', () => {
   assert.throws(() => updateMerge(doc, map, r.id, { state: 'bogus' }, null), /state/)
 })
 
+test('publicMerge rejects an others array over the 20-entry bound', () => {
+  const { doc, map } = fresh()
+  const r = openMerge(doc, map, fields, null)
+  const tooMany = Array.from({ length: 21 }, (_, i) => `n${i}`)
+  assert.equal(publicMerge({ ...r, others: tooMany }), null)
+})
+
+test('updateMerge drops a junk field that was in the stored value', () => {
+  const { doc, map } = fresh()
+  const r = openMerge(doc, map, fields, null)
+  map.set(r.id, { ...map.get(r.id), hacked: 'nope' })
+  const out = updateMerge(doc, map, r.id, { reason: 'because' }, null)
+  assert.equal(out.hacked, undefined)
+  assert.equal(map.get(r.id).hacked, undefined)
+})
+
 test('open records come first; done ones are pruned by age and count', () => {
   const { doc, map } = fresh()
   const old = openMerge(doc, map, fields, null)
