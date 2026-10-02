@@ -7,6 +7,9 @@
 #   fly deploy
 app = "cowove-relay"
 primary_region = "iad"
+# Shutdown saves every room, then gives presence reports up to 5 s to reach the accounts
+# API: more than Fly's default 5 s before it kills the machine.
+kill_timeout = 10
 
 [env]
   QUILT_DATA = "/data"
