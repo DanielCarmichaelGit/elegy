@@ -104,8 +104,12 @@ function connectEvents () {
     state.messages.delete(id)
     state.feeds.delete(id)
     state.trees.delete(id)
-    if (state.view === id) { state.view = 'home'; refreshRecent() }
+    if (state.view === id) state.view = 'home'
     render()
+    // The folder moves from "open" to "recent", but the recent list is the
+    // server's: draw Home again once the fresh one arrives, or the session you
+    // just left is missing from it until the next visit.
+    refreshRecent().then(() => { if (state.view === 'home') render() })
   })
   es.addEventListener('signed-out', (e) => {
     const { reason } = JSON.parse(e.data)
