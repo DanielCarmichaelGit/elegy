@@ -75,14 +75,53 @@ test('a failure keeps the events and backs off, doubling up to 10 minutes', asyn
   assert.equal(r.failures, 0)
 })
 
-test('the queue is capped: beyond it the oldest events go, with a log line', async () => {
+test('beyond the cap, the oldest tenth drops in one go; an end is never dropped, and logging is once per episode', async () => {
   const api = fakeApi()
-  const { r, logs } = reporter({ fetch: api.fetch, maxQueue: 3 })
-  for (const n of ['a', 'b', 'c', 'd', 'e']) r.rename({ room: 'r1', name: n })
-  assert.equal(r.size, 3)
-  assert.match(logs[0], /queue is full \(3 events\); dropped the 1 oldest/)
+  const { r, logs } = reporter({ fetch: api.fetch, maxQueue: 20 })
+  // 19 old starts, never ended: the ones we expect to be dropped.
+  for (let i = 0; i < 19; i++) r.visitStart({ room: 'r1', account: `person:u${i}`, name: `n${i}` })
+  // A visit that starts and ends right away: its `end` must survive every drop.
+  const v = r.visitStart({ room: 'r1', account: 'person:keeper', name: 'Keeper' })
+  r.visitEnd(v)
+  assert.ok(r.size <= 20, 'the first overflow already dropped more than one event')
+  assert.equal(logs.length, 1)
+  const m = logs[0].match(/presence: the queue is full \(20 events\); dropped (\d+) oldest event\(s\)/)
+  assert.ok(m, logs[0])
+  assert.ok(Number(m[1]) >= 2, 'drops a batch (a tenth of the cap), not one event at a time')
+  // More overflows while nothing is sent: still the one log line, not one per event.
+  for (let i = 0; i < 10; i++) r.rename({ room: 'r1', name: `more${i}` })
+  assert.equal(logs.length, 1, 'the episode has not drained: no second log line')
+  assert.ok(r.queue.some((x) => x.ev.type === 'end' && x.ev.start === v.start), "the keeper visit's end was never dropped")
   await r.flush()
-  assert.deepEqual(api.events().map((e) => e.name), ['c', 'd', 'e'])
+  assert.equal(r.size, 0)
+  // Once the queue has actually drained (by sending), a fresh overflow logs again.
+  for (let i = 0; i < 25; i++) r.rename({ room: 'r1', name: `again${i}` })
+  assert.equal(logs.length, 2, 'a new overflow episode after a drain logs again')
+})
+
+test('a full rewrite caused by a drop happens at most once a minute, not on every drop', () => {
+  const file = tmp()
+  const { r, advance } = reporter({ file, maxQueue: 10 })
+  for (let i = 0; i < 12; i++) r.rename({ room: 'r1', name: `a${i}` }) // overflows once: the first-ever rewrite is never throttled
+  r.persist()
+  const linesAfterFirst = fs.readFileSync(file, 'utf8').trim().split('\n')
+  assert.equal(linesAfterFirst.length, 11, '1 header line + the 10 that survived the drop')
+  for (let i = 0; i < 12; i++) r.rename({ room: 'r1', name: `b${i}` }) // overflows again, under a minute later
+  r.persist()
+  const linesAfterSecond = fs.readFileSync(file, 'utf8').trim().split('\n')
+  assert.equal(linesAfterSecond.length, 23, 'new events are still appended; the drop itself is throttled, so stale lines stay')
+  advance(60_000)
+  r.persist()
+  const linesAfterCatchup = fs.readFileSync(file, 'utf8').trim().split('\n')
+  assert.equal(linesAfterCatchup.length, 11, 'a minute later, the deferred rewrite catches up and the stale lines are gone')
+})
+
+test('a queue file line that parses but is not an event object (null, a number, a string) is skipped, not fatal', () => {
+  const file = tmp()
+  fs.writeFileSync(file, ['null', '42', '"oops"', '{"open":[]}'].join('\n') + '\n')
+  const { r, logs } = reporter({ file })
+  assert.equal(r.load(), 0)
+  assert.match(logs[0], /skipped 3 unreadable line/)
 })
 
 test('the queue survives a restart, and visits left open are ended at startup', async () => {

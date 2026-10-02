@@ -367,9 +367,13 @@ class Room {
       // The owner's app names the session after its folder, and the owner can rename it.
       const name = cleanSessionName(req.name)
       if (!name) throw new Error(BAD_SESSION_NAME)
-      this.meta.name = name
-      this.saveMeta()
-      if (this.presence) this.presence.rename({ room: this.name, name })
+      // Re-sending the same name (the app does this on every launch) should write nothing
+      // and report nothing: only an actual rename is news.
+      if (name !== this.meta.name) {
+        this.meta.name = name
+        this.saveMeta()
+        if (this.presence) this.presence.rename({ room: this.name, name })
+      }
       return { ok: true }
     }
     if (req.op === 'end') {
@@ -1180,12 +1184,16 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         close: async () => {
           clearInterval(heartbeat)
           clearInterval(sweeper)
-          // Every open visit ends now, and the queue gets one last try at the accounts API.
-          if (presence) await presence.close()
+          // Rooms are saved first, synchronously: Fly's kill timeout is about as long as
+          // presence gets to reach the accounts API, so a hung or slow API must never be
+          // able to delay saving a room's data.
           for (const ws of wss.clients) ws.terminate()
           for (const room of rooms.values()) room.destroy()
           rooms.clear()
           wss.close()
+          // Every open visit ends now (even ones no `leave` got to yet), and the queue
+          // gets one last, bounded try at the accounts API.
+          if (presence) await presence.close()
           await new Promise((resolve) => httpServer.close(() => resolve()))
         }
       })

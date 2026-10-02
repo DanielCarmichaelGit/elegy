@@ -12,6 +12,9 @@ export const PRESENCE_FLUSH_MS = 60 * 1000
 export const PRESENCE_BATCH = 500
 export const PRESENCE_MAX_QUEUE = 100_000
 export const PRESENCE_MAX_BACKOFF_MS = 10 * 60 * 1000
+// A full rewrite of the queue file is O(queue size): worth doing right after load() or
+// close(), but not on every drop or send while the relay is under load.
+export const PRESENCE_REWRITE_MS = 60 * 1000
 const SYNC_MS = 1000
 const SEND_TIMEOUT_MS = 15 * 1000
 const CLOSE_TIMEOUT_MS = 5 * 1000
@@ -23,7 +26,7 @@ export class PresenceReporter {
    * @param {string} o.secret   RELAY_API_SECRET. Never logged.
    * @param {string|null} [o.file]  the queue file; null keeps the queue in memory only
    */
-  constructor ({ apiUrl, secret, file = null, log = () => {}, now = Date.now, fetch = globalThis.fetch, flushMs = PRESENCE_FLUSH_MS, batch = PRESENCE_BATCH, maxQueue = PRESENCE_MAX_QUEUE, maxBackoffMs = PRESENCE_MAX_BACKOFF_MS, syncMs = SYNC_MS, timeoutMs = SEND_TIMEOUT_MS }) {
+  constructor ({ apiUrl, secret, file = null, log = () => {}, now = Date.now, fetch = globalThis.fetch, flushMs = PRESENCE_FLUSH_MS, batch = PRESENCE_BATCH, maxQueue = PRESENCE_MAX_QUEUE, maxBackoffMs = PRESENCE_MAX_BACKOFF_MS, syncMs = SYNC_MS, timeoutMs = SEND_TIMEOUT_MS, rewriteMs = PRESENCE_REWRITE_MS, closeTimeoutMs = CLOSE_TIMEOUT_MS }) {
     this.url = `${String(apiUrl).replace(/\/+$/, '')}/v1/relay/presence`
     this.secret = secret
     this.file = file
@@ -36,11 +39,16 @@ export class PresenceReporter {
     this.maxBackoffMs = maxBackoffMs
     this.syncMs = syncMs
     this.timeoutMs = timeoutMs
+    this.rewriteMs = rewriteMs
+    this.closeTimeoutMs = closeTimeoutMs
     this.queue = [] // { seq, ev }, oldest first
     this.seq = 0
     this.open = new Map() // start event id -> { start, room, account }: visits not ended yet
     this.unwritten = [] // queue lines not yet appended to the file
     this.rewrite = false // the file no longer matches the queue: write it whole next time
+    this.lastRewriteAt = -Infinity // so the first rewrite (from load(), or the first drop) is never throttled
+    this.urgent = false // a rewrite a successful send is waiting on: never throttled
+    this.full = false // logged once per overflow episode; cleared once the queue drains below the cap
     this.failures = 0
     this.retryAt = 0
     this.sending = null
@@ -61,11 +69,13 @@ export class PresenceReporter {
       if (!line.trim()) continue
       let row
       try { row = JSON.parse(line) } catch { bad++; continue } // a line cut off by a crash
+      // JSON.parse accepts bare null/numbers/strings too: never trust the shape before checking it.
+      if (!row || typeof row !== 'object') { bad++; continue }
       if (Array.isArray(row.open)) {
         for (const v of row.open) if (v && v.start) this.open.set(v.start, v)
         continue
       }
-      if (!row || !row.id || !row.type) { bad++; continue }
+      if (!row.id || !row.type) { bad++; continue }
       this.queue.push({ seq: ++this.seq, ev: row })
       if (row.type === 'start') this.open.set(row.id, { start: row.id, room: row.room, account: row.account })
       if (row.type === 'end') this.open.delete(row.start)
@@ -74,7 +84,7 @@ export class PresenceReporter {
     const ended = this.open.size
     this.endAll()
     this.rewrite = true
-    this.persist()
+    this.persist(true) // startup: write the cleaned-up state now, not whenever the throttle allows
     return ended
   }
 
@@ -122,31 +132,68 @@ export class PresenceReporter {
   enqueue (ev) {
     this.queue.push({ seq: ++this.seq, ev })
     this.unwritten.push(ev)
-    if (this.queue.length > this.maxQueue) {
-      const drop = this.queue.length - this.maxQueue
-      this.queue.splice(0, drop)
-      this.rewrite = true
-      this.log(`presence: the queue is full (${this.maxQueue} events); dropped the ${drop} oldest`)
+    if (this.queue.length > this.maxQueue) this.dropOldest()
+  }
+
+  /**
+   * Drops the oldest tenth of the cap in one go, not one event at a time: at one per
+   * event, a relay that's constantly over the cap would rewrite the whole queue file
+   * and log a line on every single enqueue. Never drops an `end`: losing one would
+   * leave that visit open forever, while a `start` or `name` is harmless to lose (an
+   * `end` whose `start` never arrived is ignored by the accounts API).
+   */
+  dropOldest () {
+    const drop = Math.max(this.queue.length - this.maxQueue, Math.ceil(this.maxQueue / 10))
+    const keep = []
+    let dropped = 0
+    for (const x of this.queue) {
+      if (dropped < drop && x.ev.type !== 'end') { dropped++; continue }
+      keep.push(x)
+    }
+    // Only if the queue is nearly all `end`s (unusual) do we fall back to dropping one.
+    while (dropped < drop && keep.length) { keep.shift(); dropped++ }
+    this.queue = keep
+    this.rewrite = true
+    if (!this.full) {
+      this.full = true
+      this.log(`presence: the queue is full (${this.maxQueue} events); dropped ${dropped} oldest event(s)`)
     }
   }
 
-  /** Saves what's new in the queue: appended and fsynced, or the whole file when it has to be. */
-  persist () {
-    if (!this.file || (!this.rewrite && !this.unwritten.length)) return
+  /** Once the queue has drained back under the cap, the next overflow logs again. */
+  checkDrained () {
+    if (this.full && this.queue.length < this.maxQueue) this.full = false
+  }
+
+  /**
+   * Saves what's new in the queue: appended and fsynced, or the whole file when it has
+   * to be (dropped or sent events leave the file out of sync with the queue, since
+   * appending can only add lines, never remove them). A whole-file rewrite is O(queue
+   * size): a drop's rewrite can wait up to `rewriteMs` (events keep being appended
+   * meanwhile, so nothing is lost), but one a successful send asked for (`urgent`) never
+   * waits, or a restart could re-read and re-send events the accounts API already has.
+   */
+  persist (force = false) {
+    if (!this.file) return
+    const rewriteNow = this.rewrite && (force || this.urgent || this.now() - this.lastRewriteAt >= this.rewriteMs)
+    if (!rewriteNow && !this.unwritten.length) return
     try {
-      if (this.rewrite) {
+      if (rewriteNow) {
         // Written whole, then renamed: a crash mid-write leaves the old file, never half of one.
         const tmp = `${this.file}.tmp`
         const lines = [JSON.stringify({ open: [...this.open.values()] }), ...this.queue.map((x) => JSON.stringify(x.ev))]
         const fd = fs.openSync(tmp, 'w')
         try { fs.writeSync(fd, lines.join('\n') + '\n'); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
         fs.renameSync(tmp, this.file)
-      } else {
+        this.rewrite = false
+        this.urgent = false
+        this.lastRewriteAt = this.now()
+        this.unwritten = [] // the rewrite above already includes every queued event
+      } else if (this.unwritten.length) {
         const fd = fs.openSync(this.file, 'a')
         try { fs.writeSync(fd, this.unwritten.map((ev) => JSON.stringify(ev)).join('\n') + '\n'); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+        this.unwritten = []
       }
-      this.unwritten = []
-      this.rewrite = false
     } catch (err) {
       this.log(`presence: could not save the queue: ${err.message}`)
     }
@@ -183,6 +230,7 @@ export class PresenceReporter {
         const last = chunk[chunk.length - 1].seq
         const i = this.queue.findIndex((x) => x.seq > last)
         this.queue = i < 0 ? [] : this.queue.slice(i)
+        this.checkDrained()
         sent = true
       }
       this.failures = 0
@@ -195,21 +243,21 @@ export class PresenceReporter {
       this.log(`presence: could not report to the accounts API (${err.cause?.code || err.message}); trying again in ${Math.round(wait / 1000)} s`)
       return false
     } finally {
-      if (sent) { this.rewrite = true; this.persist() }
+      if (sent) { this.rewrite = true; this.urgent = true; this.persist() }
     }
   }
 
-  /** On shutdown: ends every open visit, stops the timers, saves the queue, and tries one last send (for at most 5 s). */
+  /** On shutdown: ends every open visit, stops the timers, saves the queue, and tries one last send (bounded by closeTimeoutMs). */
   async close () {
     if (this.closed) return
     for (const t of this.timers) clearInterval(t)
     this.timers = []
     this.endAll()
-    this.persist()
+    this.persist(true)
     this.closed = true
     let timer
-    await Promise.race([this.flush(), new Promise((resolve) => { timer = setTimeout(resolve, CLOSE_TIMEOUT_MS) })])
+    await Promise.race([this.flush(), new Promise((resolve) => { timer = setTimeout(resolve, this.closeTimeoutMs) })])
     clearTimeout(timer)
-    this.persist()
+    this.persist(true)
   }
 }

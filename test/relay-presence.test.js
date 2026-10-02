@@ -161,6 +161,28 @@ test('shutting down ends open visits and sends them', async (t) => {
   assert.deepEqual(api.events.map((e) => e.type), ['start', 'end'])
 })
 
+test('a room is saved even if the accounts API never answers at shutdown', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-data-'))
+  // Never resolves: close() must not need it to finish saving the room.
+  const hang = { fetch: () => new Promise(() => {}), closeTimeoutMs: 50 }
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, dataDir: dir, passPublicKey: PASS_KEYS.publicKey, apiUrl: 'http://api.test', relayApiSecret: SECRET, presenceOptions: hang })
+  const r = room()
+  await connect(srv, r, as('Olive', 'user-olive'))
+  await srv.close()
+  assert.ok(fs.existsSync(path.join(dir, `${r}.json`)), "the room's metadata was saved despite the hung accounts API")
+})
+
+test('renaming to the same name again saves nothing new and reports nothing new', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  assert.equal((await admin(o, { op: 'name', name: 'quilt-site' })).ok, true)
+  assert.equal((await admin(o, { op: 'name', name: '  quilt-site  ' })).ok, true) // same name, just re-trimmed
+  await srv.presence.flush()
+  assert.deepEqual(api.events.filter((e) => e.type === 'name').map((e) => e.name), ['quilt-site'])
+})
+
 test('end to end: two accounts in one session see each other on their dashboards', async (t) => {
   const accounts = await startTestApi({ relaySecret: SECRET })
   t.after(() => accounts.close())
