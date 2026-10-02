@@ -515,26 +515,36 @@ export class Session extends EventEmitter {
     if (this.stopped) { for (const e of entries) this.merging.delete(e.rel); return } // the next start captures them again
     const counts = { pushed: 0, merged: 0, ai: 0, conflict: 0 }
     const queue = entries.slice()
+    // Still to merge, as merging.json has them: a path drops out once merged,
+    // and stays if its merge failed or the session stopped first.
+    const held = new Map(entries.map((e) => [e.rel, e]))
     const worker = async () => {
       while (queue.length && !this.stopped) {
         const e = queue.shift()
         try {
           const r = await this.mergeOne(e)
           if (r) counts[r]++
+          if (this.stopped) continue // it may have stopped part way: keep its base
+          held.delete(e.rel)
         } catch (err) {
           this.merging.delete(e.rel)
           this.log(`could not merge ${e.rel}: ${err.message}`)
+          this.setAside(e.rel)
+          counts.conflict++
         }
+        this.saveHeldBases([...held.values()])
       }
     }
     await Promise.all([worker(), worker()])
     for (const e of entries) this.merging.delete(e.rel)
-    if (this.stopped) return // merging.json stays: the next start merges what's left from the same bases
-    this.saveHeldBases([])
+    if (this.stopped) return // merging.json keeps what's left, for the next start
     // After the merges, not before: a take write can create a folder where a
     // file deleted offline was, and that deletion must be shared first.
     for (const rel of take) this.tryWrite(rel)
-    for (const rel of downloads) this.downloadLarge(rel, this.blobs.get(rel))
+    for (const rel of downloads) {
+      const b = this.blobs.get(rel)
+      if (b && b.stored) this.downloadLarge(rel, b) // the session may have deleted or replaced it meanwhile
+    }
     pruneMerges(this.doc, this.merges, LOCAL)
     const parts = []
     if (counts.pushed) parts.push(`${counts.pushed} shared`)
@@ -544,6 +554,23 @@ export class Session extends EventEmitter {
     if (parts.length) this.log(`${counts.conflict ? '⚠️ ' : '✅ '}your offline changes: ${parts.join(', ')}`)
     this.emit('merges', this.mergeList())
     this.scheduleStatusWrite()
+  }
+
+  /**
+   * A merge that failed part way: ours goes to .quilt/conflicts and the
+   * session's version onto the disk, so a later edit never pushes ours raw.
+   */
+  setAside (rel) {
+    try {
+      const disk = this.readDisk(rel)
+      if (disk && disk.key !== undefined && disk.key !== this.sharedKey(rel)) {
+        this.keepConflict(rel, disk)
+        this.lastKnown.set(rel, disk.key) // already kept: writeOut needn't copy it again
+      }
+      this.tryWrite(rel)
+    } catch (err) {
+      this.log(`could not put the session's version of ${rel} back: ${err.message}`)
+    }
   }
 
   /** This machine's public key, for merge records (Connection loads it when the session wasn't given one). */
@@ -588,17 +615,22 @@ export class Session extends EventEmitter {
     const ai = await aiMerge({ path: rel, base: base || '', ours, theirs, mine: this.name, theirsBy, cli })
     // Stopped while the AI ran: leave the disk and the doc alone; the next start merges it again.
     if (this.stopped) { release(); return null }
-    if (ai.text) {
+    // The AI merged the version it was shown. If the session changed it again
+    // meanwhile, applying that merge would undo those edits: a person decides.
+    const now = this.sharedKey(rel)
+    if (ai.text && now === theirs) {
       // The AI can take a while: if the file changed again meanwhile, keep that copy before replacing it.
-      const now = this.readDisk(rel)
-      if (now && now.key !== undefined && now.key !== ours) this.keepConflict(rel, now)
-      this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`)
+      const onDisk = this.readDisk(rel)
+      if (onDisk && onDisk.key !== undefined && onDisk.key !== ours) this.keepConflict(rel, onDisk)
+      // The record first, so an applied AI merge always has one to review.
       const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [theirsBy] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false }, LOCAL)
       this.writeMergeFiles(rec.id, { base, ours, theirs })
+      this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`)
       release()
       return 'ai'
     }
-    return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', reason: ai.refused, binary: false })
+    const reason = ai.text ? 'the session changed it again while the AI was merging' : ai.refused
+    return this.openConflict({ rel, base, ours, theirs: now, theirsBy: this.lastEditorOf(rel), disk, kind: 'conflict', reason, binary: false })
   }
 
   /** Writes a merged text to the shared doc and the disk as one edit of ours. */

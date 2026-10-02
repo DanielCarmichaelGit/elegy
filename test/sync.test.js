@@ -463,6 +463,65 @@ test('a merge interrupted by quitting keeps its base, and the next start merges 
   await waitFor(() => read(path.join(p.dirB, '.quilt'), 'merging.json') === null)
 })
 
+test('an AI merge is not applied when the session changed the file again while the AI ran', async (t) => {
+  const p = await pair(t, { 'moving.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'moving.txt') === 'top\nmiddle\nbottom\n')
+  const answer = path.join(tmp('answer'), 'merged.txt')
+  fs.writeFileSync(answer, 'top\nmiddle (bob and alice)\nbottom\n')
+  const log = path.join(tmp('log'), 'calls.txt')
+  process.env.MERGE_FAKE_ANSWER = answer
+  process.env.MERGE_FAKE_LOG = log
+  process.env.MERGE_FAKE_DELAY_MS = '1500'
+  t.after(() => { delete process.env.MERGE_FAKE_ANSWER; delete process.env.MERGE_FAKE_LOG; delete process.env.MERGE_FAKE_DELAY_MS })
+  const B = await rejoinAfter(t, p, { bob: { 'moving.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'moving.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  await waitFor(() => fs.existsSync(log)) // the AI is thinking
+  const latest = 'top\nmiddle (alice, again)\nbottom\n'
+  write(p.dirA, 'moving.txt', latest)
+  await waitFor(() => B.sharedKey('moving.txt') === latest)
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'moving.txt'), 5000)
+  assert.equal(rec.kind, 'conflict')
+  assert.match(rec.reason, /changed it again while the AI was merging/)
+  assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n')
+  await waitFor(() => read(p.dirB, 'moving.txt') === latest)
+  assert.equal(read(p.dirA, 'moving.txt'), latest, "alice's latest edit is not undone")
+  assert.equal(p.A.sharedKey('moving.txt'), latest)
+})
+
+test('a large file the session deleted while away is not downloaded, and nothing crashes', async (t) => {
+  const p = await pair(t)
+  assert.equal(p.B.blobs.get('gone.bin'), undefined)
+  await p.B.mergeOffline({ entries: [], take: [], downloads: ['gone.bin'] })
+  await new Promise((resolve) => setImmediate(resolve)) // an unhandled rejection would surface here
+})
+
+test('a merge that fails part way keeps ours in conflicts, puts the session version back, and keeps its base', async (t) => {
+  const p = await pair(t, { 'boom.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'boom.txt') === 'top\nmiddle\nbottom\n')
+  const real = Session.prototype.writeMergeFiles
+  Session.prototype.writeMergeFiles = function () { throw new Error('disk full (test)') }
+  t.after(() => { Session.prototype.writeMergeFiles = real })
+  const B = await rejoinAfter(t, p, { bob: { 'boom.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'boom.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  await waitFor(() => read(p.dirB, 'boom.txt') === 'top\nmiddle (alice)\nbottom\n')
+  const conflicts = path.join(p.dirB, '.quilt', 'conflicts')
+  const kept = fs.readdirSync(conflicts).map((d) => read(path.join(conflicts, d), 'boom.txt'))
+  assert.deepEqual(kept, ['top\nmiddle (bob)\nbottom\n'])
+  assert.deepEqual(JSON.parse(read(path.join(p.dirB, '.quilt'), 'merging.json')), { 'boom.txt': 'top\nmiddle\nbottom\n' })
+  assert.equal(read(p.dirA, 'boom.txt'), 'top\nmiddle (alice)\nbottom\n', "bob's version was not pushed")
+  assert.equal(B.merging.size, 0)
+})
+
+test('a file claimed while bob was away becomes a claimed merge', async (t) => {
+  const p = await pair(t, { 'later.txt': 'original\n' })
+  await waitFor(() => read(p.dirB, 'later.txt') === 'original\n')
+  await close(p.B)
+  await p.A.claim('later.txt', 'mine now')
+  const B = await rejoinAfter(t, { ...p, B: p.B }, { bob: { 'later.txt': 'original\nbob\n' }, alice: { 'later.txt': 'original, alice\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'later.txt'))
+  assert.equal(rec.kind, 'claimed')
+  assert.equal(rec.claimedBy, 'alice')
+  assert.equal(read(p.dirB, 'later.txt'), 'original, alice\n')
+})
+
 test('a file deleted offline but changed in the session is a conflict, and stays', async (t) => {
   const p = await pair(t, { 'gone.txt': 'keep me\n' })
   await waitFor(() => read(p.dirB, 'gone.txt') === 'keep me\n')
