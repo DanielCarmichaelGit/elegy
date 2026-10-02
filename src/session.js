@@ -25,9 +25,9 @@ import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
-import { merge3 } from './merge3.js'
+import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
-import { openMerge, readMerges, pruneMerges } from './merges.js'
+import { openMerge, updateMerge, readMerges, pruneMerges } from './merges.js'
 
 export { applyTextDiff }
 
@@ -864,6 +864,7 @@ export class Session extends EventEmitter {
       // Storage refused it, but it's small enough to share inside the document.
     }
 
+    if (!disk.binary) this.closeHandMerge(rel, disk.text)
     let detail = ''
     this.doc.transact(() => {
       const existed = this.files.has(rel) || this.blobs.has(rel)
@@ -1864,6 +1865,113 @@ export class Session extends EventEmitter {
 
   /** Where this machine keeps a merge's base, ours and theirs (and PROMPT.md for Send to…). */
   mergeDir (id) { return path.join(this.stateDir, 'merges', id) }
+
+  /** The three versions of a merge: from the record, or from this machine's merge folder when they were too big to share. */
+  mergeTexts (rec) {
+    const dir = this.mergeDir(rec.id)
+    const local = (name) => { try { return fs.readFileSync(path.join(dir, name), 'utf8') } catch { return null } }
+    const ours = rec.ours ?? (rec.local ? local('ours') : null)
+    const base = rec.base ?? (rec.local ? local('base') : null)
+    const theirs = this.files.get(rec.path)?.toString() ?? null
+    return { ours, base, theirs }
+  }
+
+  /**
+   * Settles a merge: `mine` writes the returning person's version, `theirs`
+   * keeps the session's, `hand` puts conflict markers in the file for someone
+   * to edit (the record closes when the file next syncs without them),
+   * `agent` and `review` just close it (the file is already as wanted).
+   */
+  resolveMerge (id, { how } = {}) {
+    const rec = this.mergeList().find((m) => m.id === id)
+    if (!rec) throw new Error('no such merge')
+    if (rec.state === 'done') throw new Error('that merge is already settled')
+    if (!['mine', 'theirs', 'hand', 'agent', 'review'].includes(how)) throw new Error('say how: mine, theirs, hand, agent or review')
+    // Settling is an edit of the session: viewers (and agents outside their folders) only see the record.
+    const refusal = this.writeRefusal(rec.path)
+    if (refusal) throw new Error(refusal)
+    if (how === 'mine' || how === 'hand') {
+      const claim = this.claimFor(rec.path)
+      if (claim && claim.by !== this.name) throw new Error(`${rec.path} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}; ask them, or wait for the release`)
+    }
+    const onlyThere = () => new Error(`${rec.by === this.name ? 'your' : `${rec.by}'s`} version of ${rec.path} is only in the merge folder on ${rec.by === this.name ? 'the computer you merged on' : 'their computer'}`)
+    const { ours, base, theirs } = this.mergeTexts(rec)
+    if (how === 'mine') {
+      if (rec.binary) {
+        // Binary versions never go in the record: only the opener's machine has ours.
+        const buf = (() => { try { return fs.readFileSync(path.join(this.mergeDir(rec.id), 'ours')) } catch { return null } })()
+        if (!buf) throw onlyThere()
+        const abs = resolveInside(this.root, rec.path)
+        fs.mkdirSync(path.dirname(abs), { recursive: true })
+        this.writeFile(rec.path, abs, buf)
+        this.merging.delete(rec.path)
+        this.ingest(rec.path)
+      } else if (ours === null) {
+        if (rec.local) throw onlyThere()
+        // Deleted while away: keeping mine deletes it in the session too.
+        const abs = resolveInside(this.root, rec.path)
+        fs.rmSync(abs, { force: true })
+        removeEmptyParents(this.root, path.dirname(abs))
+        this.ingest(rec.path)
+      } else {
+        this.applyMerged(rec.path, ours, `keeping ${rec.by === this.name ? 'my' : `${rec.by}'s`} version`)
+      }
+    } else if (how === 'theirs') {
+      this.tryWrite(rec.path)
+    } else if (how === 'hand') {
+      if (!rec.binary && rec.local && ours === null) throw onlyThere()
+      if (rec.binary || ours === null || theirs === null) throw new Error('markers only work when both sides have a text version: keep mine or keep theirs instead')
+      this.applyMerged(rec.path, withMarkers(base || '', ours, theirs, { mine: rec.by, theirs: rec.others[0] || 'session' }), 'with conflict markers to edit by hand')
+      return updateMerge(this.doc, this.merges, id, { state: 'editing', how: 'hand', resolvedBy: this.name }, LOCAL)
+    }
+    const out = updateMerge(this.doc, this.merges, id, { state: 'done', how, resolvedBy: this.name }, LOCAL)
+    this.log(`✅ ${rec.path}: merge settled (${how === 'mine' ? `${rec.by}'s version` : how === 'theirs' ? "the session's version" : how === 'agent' ? 'merged by an AI' : 'reviewed'})`)
+    this.scheduleStatusWrite()
+    return out
+  }
+
+  /** A file being edited by hand lost its markers: that merge is settled. */
+  closeHandMerge (rel, text) {
+    const rec = this.mergeList().find((m) => m.path === rel && m.state === 'editing')
+    if (!rec || hasMarkers(text)) return
+    updateMerge(this.doc, this.merges, rec.id, { state: 'done', how: 'hand', resolvedBy: this.name }, LOCAL)
+    this.log(`✅ ${rel}: merged by hand`)
+  }
+
+  /** What a coding tool is asked to do for Send to…: names the three files, the path and the merge id. */
+  mergePromptFor (rec) {
+    const dir = path.relative(this.root, this.mergeDir(rec.id)).split(path.sep).join('/')
+    const other = rec.others[0] || 'someone in the session'
+    return `Merge conflict in \`${rec.path}\` (Quilt merge ${rec.id}).
+
+${rec.by} changed this file while away from the session; meanwhile ${other} changed it in the session. Quilt could not combine the two on its own. Please merge them:
+
+- \`${dir}/base\`: the version both started from
+- \`${dir}/ours\`: ${rec.by}'s version (offline)${rec.ours === null && !rec.local && !rec.binary ? ' — deleted' : ''}
+- \`${dir}/theirs\`: the session's version (${other})${rec.theirsHash === null ? ' — deleted' : ''}
+- \`${rec.path}\`: currently the session's version
+
+Write the merged result to \`${rec.path}\`, keeping every change from both sides and changing no behaviour. If the two really cannot both be true, say so and ask ${rec.by} and ${other} in the chat (quilt_message) rather than picking one.
+When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id}\` and how \`agent\` (or tell the person to click Resolved in Quilt).
+`
+  }
+
+  /** Writes the three versions and PROMPT.md for a tool to work from; returns the prompt. */
+  prepareMergeSend (id) {
+    const rec = this.mergeList().find((m) => m.id === id)
+    if (!rec) throw new Error('no such merge')
+    const dir = this.mergeDir(id)
+    fs.mkdirSync(dir, { recursive: true })
+    const { ours, base, theirs } = this.mergeTexts(rec)
+    // base and ours never change; theirs is rewritten, as the session may have moved on.
+    const put = (name, text) => { if (text !== null && !fs.existsSync(path.join(dir, name))) fs.writeFileSync(path.join(dir, name), text) }
+    put('base', base)
+    put('ours', ours)
+    if (theirs !== null) fs.writeFileSync(path.join(dir, 'theirs'), theirs)
+    const prompt = this.mergePromptFor(rec)
+    fs.writeFileSync(path.join(dir, 'PROMPT.md'), prompt)
+    return { prompt, dir }
+  }
 
   // ------------------------------------------------------------ AI feed --
 

@@ -881,3 +881,100 @@ test('each person\'s changes are tallied per file, and everyone sees the same br
   const st = A.status()
   assert.equal(st.changes.find((p) => p.name === 'bob').files[0].path, 'src/app.js')
 })
+
+/** A room where bob has an open conflict on same.txt. */
+async function conflicted (t) {
+  const p = await pair(t, { 'same.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'same.txt') === 'top\nmiddle\nbottom\n')
+  const B = await rejoinAfter(t, p, { bob: { 'same.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'same.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'same.txt'))
+  return { ...p, B, rec }
+}
+
+test('keep mine writes my version everywhere and closes the record', async (t) => {
+  const { A, B, dirA, dirB, rec } = await conflicted(t)
+  const done = B.resolveMerge(rec.id, { how: 'mine' })
+  assert.equal(done.state, 'done')
+  assert.equal(done.how, 'mine')
+  assert.equal(done.resolvedBy, 'bob')
+  await waitFor(() => read(dirA, 'same.txt') === 'top\nmiddle (bob)\nbottom\n' && read(dirB, 'same.txt') === 'top\nmiddle (bob)\nbottom\n')
+  await waitFor(() => A.mergeList().find((m) => m.id === rec.id)?.state === 'done')
+  assert.throws(() => B.resolveMerge(rec.id, { how: 'theirs' }), /already/)
+})
+
+test('keep theirs leaves the session version and closes the record', async (t) => {
+  const { B, dirB, rec } = await conflicted(t)
+  B.resolveMerge(rec.id, { how: 'theirs' })
+  assert.equal(read(dirB, 'same.txt'), 'top\nmiddle (alice)\nbottom\n')
+  assert.equal(B.mergeList().find((m) => m.id === rec.id).state, 'done')
+})
+
+test('the other person can resolve it too, from the record alone', async (t) => {
+  const { A, B, dirA, rec } = await conflicted(t)
+  await waitFor(() => A.mergeList().some((m) => m.id === rec.id))
+  A.resolveMerge(rec.id, { how: 'mine' })
+  await waitFor(() => read(dirA, 'same.txt') === 'top\nmiddle (bob)\nbottom\n')
+  await waitFor(() => B.mergeList().find((m) => m.id === rec.id)?.resolvedBy === 'alice')
+})
+
+test('edit by hand puts markers in the file; saving it without them closes the record', async (t) => {
+  const { A, B, dirA, dirB, rec } = await conflicted(t)
+  B.resolveMerge(rec.id, { how: 'hand' })
+  const marked = 'top\n<<<<<<< mine (bob)\nmiddle (bob)\n=======\nmiddle (alice)\n>>>>>>> session (alice)\nbottom\n'
+  await waitFor(() => read(dirB, 'same.txt') === marked && read(dirA, 'same.txt') === marked)
+  assert.equal(B.mergeList().find((m) => m.id === rec.id).state, 'editing')
+  write(dirB, 'same.txt', 'top\nmiddle (both)\nbottom\n')
+  await waitFor(() => B.mergeList().find((m) => m.id === rec.id)?.state === 'done')
+  assert.equal(B.mergeList().find((m) => m.id === rec.id).how, 'hand')
+  await waitFor(() => read(dirA, 'same.txt') === 'top\nmiddle (both)\nbottom\n')
+})
+
+test('send to a tool writes the three versions and a prompt; the agent then marks it resolved', async (t) => {
+  const { B, dirB, rec } = await conflicted(t)
+  const { prompt, dir } = B.prepareMergeSend(rec.id)
+  assert.equal(dir, path.join(dirB, '.quilt', 'merges', rec.id))
+  assert.equal(read(dir, 'base'), 'top\nmiddle\nbottom\n')
+  assert.equal(read(dir, 'ours'), 'top\nmiddle (bob)\nbottom\n')
+  assert.equal(read(dir, 'theirs'), 'top\nmiddle (alice)\nbottom\n')
+  assert.equal(read(dir, 'PROMPT.md'), prompt)
+  assert.match(prompt, /same\.txt/)
+  assert.match(prompt, /quilt_resolve_merge/)
+  assert.match(prompt, new RegExp(rec.id))
+  write(dirB, 'same.txt', 'top\nmiddle (agent)\nbottom\n')
+  const done = B.resolveMerge(rec.id, { how: 'agent' })
+  assert.equal(done.state, 'done')
+})
+
+test('keep mine on a file someone else claimed is refused', async (t) => {
+  const p = await pair(t, { 'locked.txt': 'original\n' })
+  await waitFor(() => read(p.dirB, 'locked.txt') === 'original\n')
+  await p.A.claim('locked.txt', 'mine')
+  await waitFor(() => p.B.claimFor('locked.txt'))
+  const B = await rejoinAfter(t, p, { bob: { 'locked.txt': 'bob\n' }, alice: { 'locked.txt': 'alice\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'locked.txt'))
+  assert.throws(() => B.resolveMerge(rec.id, { how: 'mine' }), /claimed by alice/)
+  await p.A.release('*')
+  await waitFor(() => B.claims.size === 0)
+  B.resolveMerge(rec.id, { how: 'mine' })
+  await waitFor(() => read(p.dirA, 'locked.txt') === 'bob\n')
+})
+
+test('an AI merge listed for review is closed with "review"', async (t) => {
+  const p = await pair(t, { 'ai.txt': 'top\nmiddle\nbottom\n' })
+  await waitFor(() => read(p.dirB, 'ai.txt') === 'top\nmiddle\nbottom\n')
+  const answer = path.join(tmp('answer'), 'merged.txt')
+  fs.writeFileSync(answer, 'top\nmiddle (both)\nbottom\n')
+  process.env.MERGE_FAKE_ANSWER = answer
+  t.after(() => { delete process.env.MERGE_FAKE_ANSWER })
+  const B = await rejoinAfter(t, p, { bob: { 'ai.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'ai.txt': 'top\nmiddle (alice)\nbottom\n' } })
+  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'ai.txt' && m.kind === 'ai'))
+  assert.equal(B.resolveMerge(rec.id, { how: 'review' }).state, 'done')
+})
+
+test('a viewer sees a merge but cannot settle it, not even as reviewed', async (t) => {
+  const { B, dirB, rec } = await conflicted(t)
+  B.access = { state: 'approved', role: 'viewer' } // as the relay sets it for a view-only member
+  for (const how of ['mine', 'theirs', 'hand', 'agent', 'review']) assert.throws(() => B.resolveMerge(rec.id, { how }), /only view/)
+  assert.equal(B.mergeList().find((m) => m.id === rec.id).state, 'open')
+  assert.equal(read(dirB, 'same.txt'), 'top\nmiddle (alice)\nbottom\n')
+})
