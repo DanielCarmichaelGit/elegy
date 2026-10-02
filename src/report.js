@@ -17,6 +17,10 @@ export function scrub (text) {
   return String(text ?? '')
     .replace(INVITE, '[invite]')
     .replace(TOKEN, '[secret]')
+    // PATH can absorb a few words of trailing prose past the path's last separator (nothing
+    // stops it there) — that's harmless: .pop() returns whatever follows the last separator
+    // verbatim, spaces and all, so absorbed prose comes back unchanged. The safety invariant
+    // lives here, in the replacement, not in how precisely the regex draws the line.
     .replace(PATH, (m) => m.split(/[\\/]/).filter(Boolean).pop() || '[path]')
 }
 
@@ -35,7 +39,7 @@ export function createReporter ({
 
   function record (event) {
     try {
-      if (!enabled()) return
+      if (closed || !enabled()) return
       const { kind, name, outcome = 'ok', status, durationMs, message = '', context = {} } = event || {}
       waiting.push({ kind, name: String(name || '').slice(0, 80), outcome, status, durationMs, message: scrub(message).slice(0, 500), context: scrubContext(context), occurredAt: now() })
       if (waiting.length > maxWaiting) waiting.splice(0, waiting.length - maxWaiting)
@@ -82,13 +86,22 @@ export function createReporter ({
     }
   }
 
-  /** Sends what is waiting now, batch after batch, until nothing is left or `timeoutMs` runs out. */
+  /**
+   * Sends what is waiting now, batch after batch, until nothing is left or `timeoutMs` runs
+   * out. If a send has nothing to wait on — paused by backoff, or nothing left to send — it
+   * stops right there rather than spin: at shutdown a failed batch is dropped, not retried,
+   * same as any other time.
+   */
   async function flush ({ timeoutMs = 2000 } = {}) {
     const deadline = Date.now() + timeoutMs
     pausedUntil = 0
     while ((waiting.length || inflight) && Date.now() < deadline) {
-      const step = inflight || send() || Promise.resolve()
-      await Promise.race([step, new Promise((res) => setTimeout(res, Math.max(0, deadline - Date.now())))]).catch(() => {})
+      const step = inflight || send()
+      if (!step) break
+      let timeoutId
+      const timeout = new Promise((res) => { timeoutId = setTimeout(res, Math.max(0, deadline - Date.now())) })
+      await Promise.race([step, timeout]).catch(() => {})
+      clearTimeout(timeoutId)
     }
   }
 

@@ -153,3 +153,25 @@ test('flush drains every waiting batch, and close leaves no timer armed', async 
   assert.equal(h.r.waiting(), 0)
   assert.equal(h.timers.length, 0)
 })
+
+test('flush gives up as soon as a send fails, without spinning', async () => {
+  const fetch = async () => { throw new Error('offline') }
+  const r = createReporter({ token: () => null, fetch, api: 'https://api.test', version: '0', platform: 'p', delayMs: 0 })
+  for (let i = 0; i < 25; i++) r.record({ kind: 'error', name: `n${i}` })
+  let ticks = 0
+  const iv = setInterval(() => { ticks++ }, 0)
+  const t0 = Date.now()
+  await r.flush({ timeoutMs: 1000 })
+  assert.ok(Date.now() - t0 < 500, 'flush gave up instead of spinning to the deadline')
+  await new Promise((res) => setTimeout(res, 20))
+  assert.ok(ticks > 0, 'the event loop kept ticking instead of being starved')
+  clearInterval(iv)
+  await r.close() // leaves no real timer dangling past this test
+})
+
+test('record after close keeps nothing', async () => {
+  const h = harness()
+  await h.r.close()
+  h.r.record({ kind: 'error', name: 'late' })
+  assert.equal(h.r.waiting(), 0)
+})
