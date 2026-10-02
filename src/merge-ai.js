@@ -16,11 +16,13 @@ export const MERGE_AI_LIMITS = { maxBytes: 200_000, maxHunks: 20, timeoutMs: 90_
 // The merge runs on its own when someone rejoins, on text a peer wrote: the
 // AI only has to answer, so it gets no tools (claude --tools "") or a
 // read-only sandbox (codex). cursor-agent has no such switch: its -p mode has
-// every tool, so it runs without --force, as before.
+// every tool, so it runs without --force, as before. Its -p mode also
+// defaults to a stream-json transcript, which the fenced-file parser can't
+// read, so --output-format text is asked for explicitly.
 const CLIS = [
   { exe: 'claude', args: ['-p', '--no-session-persistence', '--tools', ''] },
   { exe: 'codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-'] },
-  { exe: 'cursor-agent', args: ['-p'] }
+  { exe: 'cursor-agent', args: ['-p', '--output-format', 'text'] }
 ]
 
 /** The headless command to merge with: QUILT_MERGE_CMD, else the first of claude, codex, cursor-agent that is installed. */

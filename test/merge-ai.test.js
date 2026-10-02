@@ -63,6 +63,12 @@ test('QUILT_MERGE_CMD wins; otherwise the first installed CLI', () => {
   assert.deepEqual(findMergeCli({ env: { PATH: '/usr/bin' }, exists, claude: () => null }), { cmd: '/usr/bin/codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-'] })
   assert.deepEqual(findMergeCli({ env: {}, exists: () => false, claude: () => '/bin/claude' }), { cmd: '/bin/claude', args: ['-p', '--no-session-persistence', '--tools', ''] })
   assert.equal(findMergeCli({ env: { PATH: '/usr/bin' }, exists: () => false, claude: () => null }), null)
+  // cursor-agent's -p defaults to stream-json, which the fenced-file parser can't read: ask for plain text.
+  const cursorOnly = (p) => p.endsWith('/cursor-agent')
+  assert.deepEqual(
+    findMergeCli({ env: { PATH: '/usr/bin' }, exists: cursorOnly, claude: () => null }),
+    { cmd: '/usr/bin/cursor-agent', args: ['-p', '--output-format', 'text'] }
+  )
 })
 
 // A Markdown file with a fenced block of its own, as the AI should wrap it: in a longer fence.
