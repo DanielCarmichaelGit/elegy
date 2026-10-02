@@ -12,6 +12,7 @@ import { openSettings } from './home.js'
 import { fileCardHref, renderable } from './chat.js'
 import { renderBoard } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
+import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 
 let current = null // session id being shown
 let timers = []
@@ -19,7 +20,7 @@ let grantLoad = grantsLoading() // this session's grants (the owner's view, from
 let mounted = null // AbortController for document-level listeners of this mount
 
 // ------------------------------------------------------------ layout state --
-// Per session: mode ('ai' | 'files'), open tabs per mode, expanded folders.
+// Per session: mode ('ai' | 'files' | 'merge'), open tabs per mode, expanded folders.
 function ws (id) {
   if (!state.ws.has(id)) {
     let saved = null
@@ -31,6 +32,7 @@ function ws (id) {
       convSel: {}, // person -> pinned conversation id (absent: follow the newest)
       fileTabs: [],
       fileSel: null,
+      mergeSel: null, // merge id shown in the compare view
       expanded: {},
       stale: {}, // file path -> changed while not visible
       ...(saved || {}),
@@ -98,6 +100,7 @@ export function mountSession (id) {
       </aside>
       <main class="ws-main">
         <div class="requests" id="requests" hidden></div>
+        <div class="requests merges" id="merges" hidden></div>
         <div class="ws-mainbar" id="mainbar" hidden>
           <div class="ws-tabs" id="main-tabs" role="tablist"></div>
         </div>
@@ -124,6 +127,7 @@ export function mountSession (id) {
 
   bindTop()
   bindAccess()
+  for (const el of [$('#merges'), $('#main')]) bindMerges(el, { sessionId: () => current, onCompare: openMerge, editors: editorsByPreference })
   bindGit(id, mounted.signal)
   bindMain()
   bindTreeEvents()
@@ -141,6 +145,8 @@ export function mountSession (id) {
   loadAccessTypes().then(() => { if (current === id) { renderAccess(); if (!$('#people-menu').hidden) renderPeopleMenu() } })
   loadTree()
   loadFeeds()
+  const shown = ws(id).mode === 'merge' && shownMerge()
+  if (shown && !shown.binary) refreshFile(shown.path, false) // the cached copy may be from before
   autoOpenNewPeople(id) // everyone already here gets a tab on first visit
   // Relative times ("4s ago") and recent-edit badges age out.
   timers.push(setInterval(() => { renderTreePane(); renderTop() }, 15000))
@@ -207,6 +213,7 @@ export function sessionFileChanged (id, { path }) {
   scheduleTree()
   gitFilesChanged()
   const w = ws(id)
+  if (w.mode === 'merge' && shownMerge()?.path === path) refreshFile(path, false)
   if (w.fileTabs.includes(path)) {
     if (w.mode === 'files' && w.fileSel === path) refreshFile(path, true)
     else { w.stale[path] = true; renderMainBar() }
@@ -458,6 +465,7 @@ function renderTop () {
   $('#people-btn').setAttribute('aria-label', `${people.length} ${people.length === 1 ? 'person' : 'people'} in this session${st.connected ? '' : ', reconnecting'}`)
   if (!$('#people-menu').hidden) renderPeopleMenu()
   renderAccess()
+  renderMerges()
   renderCommitChip()
   $('#rename-btn').hidden = !st.access?.owner
   renderTaskButton()
@@ -563,6 +571,32 @@ async function renameSession () {
   const name = await ask({ title: 'Rename this session', message: 'Everyone in it sees the new name, here and on heyquilt.com.', ok: 'Rename', input: { label: 'Name', value: s.status.sessionName || basename(s.dir) } })
   if (!name) return
   try { await api('POST', `/api/sessions/${current}/rename`, { name }); toast('Renamed') } catch (err) { toast(err.message) }
+}
+
+// ----------------------------------------------------------------- merges --
+const isViewer = () => { const a = sum().status.access || {}; return !!(a.controlled && a.role === 'viewer') }
+const shownMerge = () => (sum().status.merges || []).find((m) => m.id === ws(current).mergeSel) || null
+
+/** The merge bar, and the compare view when it's showing (it only redraws on a change). */
+function renderMerges () {
+  const bar = $('#merges')
+  if (!bar) return
+  renderMergeBar(bar, { merges: sum().status.merges || [], me: me(), editors: editorsByPreference(), viewer: isViewer() })
+  const w = ws(current)
+  if (w.mode === 'merge' && w.mergeSel) renderMain()
+}
+
+function openMerge (id) {
+  const w = ws(current)
+  w.mergeSel = id
+  w.mode = 'merge'
+  saveWs(current)
+  renderMainBar()
+  renderMain()
+  renderTreePane()
+  // Always fetch: a cached copy may be from before the session moved on.
+  const m = shownMerge()
+  if (m && !m.binary) refreshFile(m.path, false)
 }
 
 /** Owner controls for everyone who has been let in, shown in the people menu. */
@@ -696,6 +730,17 @@ function bindMain () {
     const close = e.target.closest('[data-close]')
     const tab = e.target.closest('[data-tab]')
     const w = ws(current)
+    if (close && close.dataset.kind === 'merge') {
+      e.stopPropagation()
+      w.mergeSel = null
+      if (w.mode === 'merge') w.mode = w.fileSel ? 'files' : 'ai'
+      saveWs(current)
+      renderMainBar()
+      renderMain()
+      renderTreePane()
+      return
+    }
+    if (tab && tab.dataset.kind === 'merge') { openMerge(tab.dataset.tab); return }
     if (close) {
       e.stopPropagation()
       const key = close.dataset.close
@@ -793,8 +838,18 @@ function renderMainBar () {
   }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : '') +
   w.fileTabs.map((path) => `<div class="ws-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
       <span class="ico">${I.file}</span><span class="nm">${esc(basename(path))}</span>${w.stale[path] ? '<span class="changed" title="Changed"></span>' : ''}
-      <button class="x" data-kind="file" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('')
-  $('#mainbar').hidden = !w.aiTabs.length && !w.fileTabs.length
+      <button class="x" data-kind="file" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('') +
+  (w.mergeSel ? mergeTabHtml(w) : '')
+  $('#mainbar').hidden = !w.aiTabs.length && !w.fileTabs.length && !w.mergeSel
+}
+
+function mergeTabHtml (w) {
+  const m = shownMerge()
+  const on = w.mode === 'merge'
+  const name = m ? `Merge ${basename(m.path)}` : 'Merge'
+  return `${w.aiTabs.length || w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : ''}<div class="ws-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
+      <span class="ico">${I.branch}</span><span class="nm">${esc(name)}</span>
+      <button class="x" data-kind="merge" data-close="${esc(w.mergeSel)}" aria-label="Close merge">${I.x}</button></div>`
 }
 
 // A card being renamed, or a drag in progress, must not be rebuilt under the pointer.
@@ -1019,6 +1074,16 @@ function renderMain () {
     </div>`
     return
   }
+  if (w.mode === 'merge' && !w.mergeSel) w.mode = 'ai'
+  if (w.mode === 'merge') {
+    const m = shownMerge()
+    const cached = m ? state.files.get(fileKey(m.path)) : null
+    const f = cached && cached.file
+    const theirs = !cached ? undefined : f.missing || f.binary ? null : f.text
+    renderMergeView(el, { merge: m, theirs, me: me(), editors: editorsByPreference(), viewer: isViewer() })
+    if (m && !m.binary && !cached) refreshFile(m.path, false)
+    return
+  }
   if (w.mode === 'ai') {
     if (!w.aiSel) {
       const people = st.peers
@@ -1091,7 +1156,7 @@ async function refreshFile (path, highlight) {
   if (id !== current) return
   state.files.set(key, { file, prevText })
   const w = ws(current)
-  if (w.mode === 'files' && w.fileSel === path) renderMain()
+  if ((w.mode === 'files' && w.fileSel === path) || (w.mode === 'merge' && shownMerge()?.path === path)) renderMain()
 }
 
 async function loadFeed (name) {

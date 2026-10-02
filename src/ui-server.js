@@ -100,6 +100,7 @@ export const STATIC = {
   '/tool-logo.js': ['tool-logo.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
+  '/merges.js': ['merges.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/git.js': ['git.js', 'text/javascript; charset=utf-8'],

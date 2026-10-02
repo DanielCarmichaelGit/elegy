@@ -391,6 +391,13 @@ test('the app page carries a Content-Security-Policy that blocks inline script',
   assert.match(csp, /img-src[^;]*https:\/\/www\.google\.com/)
   assert.match(csp, /img-src[^;]*https:\/\/\*\.gstatic\.com/)
   assert.equal((await fetch(base + '/chat.js')).status, 200, 'the chat helpers are served to the page')
+  // Every module the page imports is served (a missing one blanks the whole app).
+  const uiDir = new URL('../src/ui/', import.meta.url)
+  for (const f of fs.readdirSync(uiDir).filter((n) => n.endsWith('.js'))) {
+    for (const [, dep] of fs.readFileSync(new URL(f, uiDir), 'utf8').matchAll(/^import [^'\n]*'\.\/([^']+)'/gm)) {
+      assert.equal((await fetch(`${base}/${dep}`)).status, 200, `${f} imports ${dep}, which the server must serve`)
+    }
+  }
 })
 
 test('GET /api/version: this version, its notes, and whether GitHub has a newer build', async () => {
