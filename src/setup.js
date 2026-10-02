@@ -60,13 +60,15 @@ function upsertMcp (file, key = 'mcpServers') {
   return prev !== text
 }
 
+/** Where Quilt's Claude Code hooks live: this person's own settings, which never sync or get committed. */
+export const HOOKS_FILE = '.claude/settings.local.json'
+
 /**
- * Puts Quilt's hooks into the project's .claude/settings.json (shared with everyone
- * in the session), replacing earlier Quilt entries and leaving other hooks alone.
- * Returns true when the file changed.
+ * Puts Quilt's hooks into the project's .claude/settings.local.json, replacing earlier
+ * Quilt entries and leaving other hooks and settings alone. Returns true when the file changed.
  */
 export function installHooks (root) {
-  const file = path.join(root, '.claude', 'settings.json')
+  const file = path.join(root, HOOKS_FILE)
   let prev = ''
   try { prev = fs.readFileSync(file, 'utf8') } catch {}
   let json = {}
@@ -91,7 +93,7 @@ export function installHooks (root) {
 export function setup (root) {
   const changed = []
   if (upsertMcp(path.join(root, '.mcp.json'))) changed.push('.mcp.json (Claude Code MCP server)')
-  if (installHooks(root)) changed.push('.claude/settings.json (Claude Code hooks: claim files as you edit them)')
+  if (installHooks(root)) changed.push(`${HOOKS_FILE} (Claude Code hooks: files are claimed as you edit them)`)
   if (upsertMcp(path.join(root, '.cursor', 'mcp.json'))) changed.push('.cursor/mcp.json (Cursor MCP server)')
   if (upsertBlock(path.join(root, 'AGENTS.md'), AGENT_GUIDE)) changed.push('AGENTS.md (Cursor, Codex, and other agents)')
   if (upsertBlock(path.join(root, 'CLAUDE.md'), AGENT_GUIDE)) changed.push('CLAUDE.md (Claude Code)')

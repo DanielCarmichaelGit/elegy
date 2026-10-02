@@ -22,7 +22,7 @@ release, and the conversation between the two AIs.
 | Release | Claims the hooks made are released when Claude finishes its turn (`Stop`) and when the session ends (`SessionEnd`). Claims made explicitly with `quilt_claim` / `quilt claim` are never touched. |
 | When refused | The refusal tells the AI who holds the file and why, and to send them a direct message with `quilt_message` saying what it wanted to change and asking for help, then carry on with other work. |
 | The holder's AI sees it | Unread direct messages are handed to the holder's Claude as extra context after its next edit, and if it tries to finish with an unanswered one, the `Stop` hook asks it to reply first (once). |
-| Installing the hooks | Written into the project's `.claude/settings.json` when a session starts and by `quilt setup`. The file is shared, so everyone in the session gets the same rule. |
+| Installing the hooks | Written into `.claude/settings.local.json` when a session starts for the folder, and by `quilt setup`. That file is each person's own (Quilt never syncs it, and it's kept out of git), so a repo never depends on `quilt` being installed; everyone running Quilt gets the rule from their own session. |
 | Stale claims | Hook claims are also released when a session for the folder starts (leftovers from a crashed Claude). People can always release from the app's file menu or `quilt release '*'`. |
 
 ## Pieces
@@ -63,11 +63,13 @@ still shows them as unread for the human.
 
 ### Installing (`src/setup.js`, `src/runner.js`)
 
-`installHooks(root)` upserts Quilt's entries into `.claude/settings.json` under
+`installHooks(root)` upserts Quilt's entries into `.claude/settings.local.json` under
 `hooks`, replacing any earlier Quilt entries (recognised by their command starting
-with `quilt hook`) and leaving other hooks alone. `setup()` calls it; `runSession`
-calls it after the session starts, logging once when it changed anything, and releases
-leftover hook claims from `.quilt/hooks/*.json`.
+with `quilt hook`) and leaving other hooks and settings alone. `setup()` calls it;
+`runSession` calls it after the session starts, logging once when it changed anything,
+and releases leftover hook claims from `.quilt/hooks/*.json`. `.claude/settings.local.json`
+joins the always-ignored sync paths (it holds personal permissions too) and
+`.git/info/exclude`, next to `.quilt/`.
 
 The agent guide text says that in Claude Code claims happen automatically, and
 describes the ask-for-help step.

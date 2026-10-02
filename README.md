@@ -138,6 +138,11 @@ This registers the `quilt` MCP server in `.mcp.json` (Claude Code) and
 claimed files; re-read files before editing"). Restart or reload your tool to
 pick up the MCP server.
 
+Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`,
+written whenever a session starts for the folder): every file is claimed for you
+the moment Claude edits it, and those claims are released when Claude finishes.
+See [Claims](#claims).
+
 ## Commands
 
 | Command | What it does |
@@ -174,7 +179,7 @@ pick up the MCP server.
 | `quilt_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
-| `quilt_claim` / `quilt_release` | Claim or release files before and after larger changes |
+| `quilt_claim` / `quilt_release` | Claim or release files by hand (Claude Code does this automatically as it edits) |
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
 | `quilt_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
@@ -195,9 +200,32 @@ In a session, the app's main area has two modes:
 - **Files:** read-only tabs for shared files, with who edited each one and
   whether it's claimed. Lines light up as your partner's AI changes them.
 
+### Claims
+
 The file tree on the left shows orange badges on files edited in the last two
 minutes and purple badges on claims. Use a file's or folder's ⋯ menu to claim
 or release it.
+
+**No AI edits a file without claiming it first.** In Claude Code, Quilt's hooks
+make this automatic, so nobody has to remember:
+
+- Before every edit, the file is claimed for you (note: `editing`, or your current
+  focus). Files you already hold, files Quilt doesn't sync, and files outside the
+  project need no claim.
+- If someone else holds the file, the edit is refused before it happens. Claude is
+  told who holds it and why, and to send them a direct message saying what it wanted
+  to change and asking for help, then carry on with other work.
+- The holder's Claude sees that message after its next edit, and if it tries to
+  finish with an unanswered one it is asked to reply first: help with the change,
+  hand the file over, or say when it will be done. The person still sees the message
+  as unread in the app.
+- Claims the hooks made are released when Claude finishes its turn and when its
+  session ends. Claims you made yourself (`quilt claim`, the ⋯ menu, `quilt_claim`)
+  are never touched. If a Claude crashes, the next session for the folder releases
+  what it left behind.
+
+Other tools keep the written rule (claim first, release when done) and the
+enforcement below.
 
 Claims are enforced in code, not just by asking agents nicely:
 

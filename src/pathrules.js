@@ -14,6 +14,8 @@ export const MAX_STORED_BINARY_BYTES = 100 * 1024 * 1024
 // copies of the project.
 export const ALWAYS_IGNORED = [
   '.git', '.quilt', '.cowove', 'node_modules', '.DS_Store', 'Thumbs.db', '.claude/worktrees',
+  // Each person's own Claude Code settings (permissions, Quilt's hooks) stay on their machine.
+  '.claude/settings.local.json',
   // Build output and caches: large, machine-specific, and rebuilt by each person.
   '.next', '.turbo', '.nuxt', '.svelte-kit', '.parcel-cache', '.vercel',
   '.env', '.env.*', '!.env.example',

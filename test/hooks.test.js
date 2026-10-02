@@ -176,7 +176,7 @@ test('a new session releases claims left by a Claude that never said goodbye', a
 test('installHooks writes the hooks, keeps other hooks, and is idempotent', () => {
   const dir = tmp('settings')
   assert.equal(installHooks(dir), true)
-  const file = path.join(dir, '.claude', 'settings.json')
+  const file = path.join(dir, '.claude', 'settings.local.json')
   let json = JSON.parse(fs.readFileSync(file, 'utf8'))
   for (const ev of ['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']) assert.ok(json.hooks[ev], ev)
   assert.equal(json.hooks.PreToolUse[0].matcher, 'Edit|Write|MultiEdit|NotebookEdit')
