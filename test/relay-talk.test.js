@@ -111,3 +111,36 @@ test('changes that arrive together: only the refused ones are undone', async () 
   assert.equal(rm.files.get('README.md').toString().startsWith('two one '), true, 'the allowed edit stays')
   assert.equal(rm.guard.undoStack.length, 0)
 })
+
+test('a claim keeps its pattern but not its note', async () => {
+  await quiet.claim('docs/**', 'read this, everyone')
+  const c = srv.rooms.get(room).meta.claims['docs/**']
+  assert.deepEqual([c.by, c.note], ['Quinn', ''])
+  await quiet.release('docs/**')
+})
+
+test('the activity log takes their file changes, but not words of their own', async () => {
+  const rm = srv.rooms.get(room)
+  fs.writeFileSync(path.join(quietDir, 'log-me.md'), 'a line\n')
+  await waitFor(() => rm.doc.getArray('activity').toArray().some((x) => x.by === 'Quinn' && x.path === 'log-me.md'))
+  quiet.doc.transact(() => quiet.activity.push([{ by: 'Quinn', path: 'README.md', kind: 'edited', detail: 'everyone, read this', ts: Date.now() }]))
+  await waitFor(() => !quiet.activity.toArray().some((x) => x.detail === 'everyone, read this'))
+  assert.equal(rm.doc.getArray('activity').toArray().some((x) => x.detail === 'everyone, read this'), false)
+  assert.equal(owner.activity.toArray().some((x) => x.detail === 'everyone, read this'), false)
+  assert.equal(rm.doc.getArray('activity').toArray().some((x) => x.path === 'log-me.md'), true, 'their real entry stays')
+})
+
+test('they cannot ask for a commit, which is a message too', async () => {
+  assert.throws(() => quiet.requestCommit('ship it'), /can't post/)
+  const rm = srv.rooms.get(room)
+  quiet.doc.transact(() => quiet.commitRequests.set('c1', { id: 'c1', by: 'Quinn', message: 'hello all', ts: Date.now(), state: 'open' }))
+  await waitFor(() => !quiet.commitRequests.has('c1'))
+  assert.equal(rm.doc.getMap('commitRequests').has('c1'), false)
+})
+
+test('someone who may only view cannot use up the room\'s storage, even with the edit link', async () => {
+  const vid = generateIdentity()
+  const pass = makePass({ identity: vid, name: 'Vic', sub: 'vic', room, access: { ...QUIET, files: 'view', talk: true } })
+  const res = await fetch(`http://127.0.0.1:${srv.port}/blobs/${room}/${'b'.repeat(32)}/upload`, { method: 'POST', headers: { 'x-quilt-secret': 'e', 'x-quilt-pass': pass, 'content-type': 'application/json' }, body: JSON.stringify({ size: 4 }) })
+  assert.equal(res.status, 403)
+})

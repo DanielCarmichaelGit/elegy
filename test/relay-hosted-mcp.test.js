@@ -167,6 +167,8 @@ test('a hosted agent whose room pass has a grant gets straight in, with that acc
     assert.equal(out(await gemCall('quilt_write_file', { path: 'secrets/token.txt', content: 'x' })), 'You may not change files in secrets.')
     assert.match(out(await gemCall('quilt_write_file', { path: 'gem.txt', content: 'from Gem' })), /Created gem.txt/)
     await waitFor(() => read(carlDir, 'gem.txt') === 'from Gem')
+    assert.match(out(await gemCall('quilt_claim', { pattern: 'gem/**', note: 'everyone, read this' })), /Claimed gem/)
+    assert.equal(srv.rooms.get('hm-1').meta.claims['gem/**'].note, '', 'a claim, but not its note')
   } finally { await gem.close() }
 })
 

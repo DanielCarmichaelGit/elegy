@@ -133,13 +133,23 @@ class Room {
     this.fileKeys = this.doc.getMap('fileKeys')
     this.chat = this.doc.getArray('chat')
     this.feed = this.doc.getArray('agentFeed')
+    this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
+    this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state, ... }
     // Undoes changes from people who may not make them: file changes from viewers and from
-    // people outside their folders, and posts from people who may not post. Only their
-    // connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed], { trackedOrigins: new Set(), captureTimeout: 0 })
+    // people outside their folders, and posts from people who may not post (chat, the feed,
+    // words of their own in the activity log, commit requests). Only their connections are tracked.
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
     this.recorded = null // the change the guard recorded last, for checkChange
     this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.recorded = stackItem })
+    // What a tracked change added to the activity log, read before Yjs merges the new entries
+    // into older ones (after which a change event can no longer tell them apart).
+    this.activityAdded = new WeakMap()
+    this.doc.on('afterTransaction', (tr) => {
+      const events = tr.changedParentTypes.get(this.activity)
+      if (!events || !this.guard.trackedOrigins.has(tr.origin)) return
+      this.activityAdded.set(tr, events.flatMap((e) => [...e.changes.added].flatMap((item) => item.content.getContent())))
+    })
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
@@ -434,6 +444,17 @@ class Room {
         if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : 'the feed'); undo.add(type) }
         continue
       }
+      if (type === this.commitRequests) {
+        // Asking for a commit is a message to the host; marking one done (same message) isn't.
+        if (a?.talk !== false) continue
+        for (const e of events) {
+          for (const [id, c] of e.changes.keys) {
+            const now = type.get(id)
+            if (c.action === 'add' || (c.action === 'update' && now?.message !== c.oldValue?.message)) { posts.push('a commit request'); undo.add(type); break }
+          }
+        }
+        continue
+      }
       if (type === this.fileKeys) {
         // Keys to stored files: viewers may not touch them, and others may
         // only add new ones, so nobody can lock people out of stored files.
@@ -459,6 +480,17 @@ class Room {
       if (this.mayWrite(a, rel)) continue
       refused.push(rel)
       for (const t of types) undo.add(t)
+      // The log entry for a change that's undone would describe something that never happened.
+      if (tr.changedParentTypes.has(this.activity)) undo.add(this.activity)
+    }
+    // The activity log is written by apps as files change. Someone who may not post may add
+    // only those entries, for files this same change touched, never words of their own.
+    if (a?.talk === false && tr.changedParentTypes.has(this.activity) && !undo.has(this.activity)) {
+      const plain = (x) => x && typeof x === 'object' && Object.keys(x).every((k) => ACTIVITY_FIELDS.includes(k)) &&
+        x.by === a.name && ACTIVITY_KINDS.includes(x.kind) && touched.has(x.path) &&
+        (x.detail === undefined || ACTIVITY_DETAIL.test(x.detail)) && typeof x.ts === 'number'
+      const added = this.activityAdded.get(tr) || []
+      if (!added.every(plain)) { posts.push('the activity log'); undo.add(this.activity) }
     }
     refused.push(...posts)
     // The guard recorded this change just before this 'update' (its stack-item-added): only
@@ -708,7 +740,7 @@ class Room {
     const name = this.names.get(ws)
     if (!ws.pass) return { name }
     const a = this.access.get(ws)
-    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner) }
+    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) }
   }
 
   claimList () {
@@ -735,7 +767,7 @@ class Room {
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
       const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: String(req.note ?? '').slice(0, 500), ts: Date.now() }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now() }
       return { ok: true }
     }
     if (req.op === 'release') {
@@ -969,6 +1001,10 @@ class Room {
 }
 
 const TALK_WHY = "you can't post in this session"
+// What an app's activity entries look like (session.js recordActivity, relay-mcp.js quilt_write).
+const ACTIVITY_FIELDS = ['by', 'path', 'kind', 'detail', 'ts']
+const ACTIVITY_KINDS = ['created', 'edited', 'deleted']
+const ACTIVITY_DETAIL = /^(\+\d+ -\d+|\d+ bytes)?$/
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
 
 /** A saved member's access, in the relay's shape (members saved before access types may talk and have no exceptions). */
@@ -1292,7 +1328,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
             if (!room.meta.blobs[id]) return text(404, 'no such file')
             return json(200, await store.downloadTarget(name, id))
           }
-          if (auth !== 'editor') return text(403, 'you can only view this session')
+          // The room secret and, with sign-in on, the person's own access: a view-only grant
+          // with the edit link may not use up the room's storage.
+          if (auth !== 'editor' || (passKey && room.httpAccess(pass)?.role === 'viewer')) return text(403, 'you can only view this session')
           const size = Number(body && body.size)
           if (!(size >= 0)) return text(400, 'size required')
           if (size > cfg.maxStoredFileBytes) return text(413, `files over ${Math.round(cfg.maxStoredFileBytes / MB)} MB can't be shared`)

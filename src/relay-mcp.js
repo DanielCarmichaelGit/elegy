@@ -273,7 +273,8 @@ function sessionTools (server, ctx) {
     const err = writable(room)
     if (err) return fail(err)
     try {
-      const r = room.claimRequest(ctx.who(room), { op: 'claim', pattern: pattern.trim(), note: note || '' })
+      // Someone who may not post keeps their claim but not its note, which everyone reads.
+      const r = room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: pattern.trim(), note: note || '' })
       if (r.ok === false) return fail(r.error || 'Could not claim that.')
     } catch (e) { return fail(e.message) }
     room.broadcastClaims()

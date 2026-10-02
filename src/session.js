@@ -1172,6 +1172,8 @@ export class Session extends EventEmitter {
     message = String(message || '').trim().slice(0, 500)
     if (!message) throw new Error('say what the commit is for')
     if (this.access && this.access.state === 'approved' && this.access.role === 'viewer') throw new Error('viewers can’t ask for commits')
+    // A commit request is a message to the host: the relay undoes it from someone who may not post.
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     const r = { id: crypto.randomBytes(6).toString('hex'), by: this.name, message, ts: Date.now(), state: 'open' }
     this.doc.transact(() => {
       this.commitRequests.set(r.id, r)
