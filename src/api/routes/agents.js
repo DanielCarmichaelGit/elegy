@@ -2,7 +2,8 @@
 import { HttpError, needId } from '../http.js'
 import { keyStatus } from '../agent-auth.js'
 
-const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description })
+// Never the key itself, just whether it has one: that's what lets it get a session pass.
+const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: !!a.publicKey })
 
 export function agentRoutes ({ store, user, now, limitTokens, agentAuth }) {
   return [

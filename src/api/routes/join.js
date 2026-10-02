@@ -62,7 +62,7 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
       }
       await store.setInviteAgent(invite.id, agent.id)
       const keys = await agentAuth.mintKeys(agent.id)
-      return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl }) }
+      return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl, hasKey: !!agent.publicKey }) }
     } catch (err) {
       // Undo the half-made agent and reopen the link, so the AI can simply try again.
       // But if the agent couldn't be deleted, it may still be half-wired into the org

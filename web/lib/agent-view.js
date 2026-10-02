@@ -18,3 +18,6 @@ export function inviteStatusText (invite) {
 }
 
 export const AGENT_JOIN_COMMAND = 'quilt agent join <link> --name my-agent'
+
+/** Shown next to an agent that has no key yet, so it can't enter a session. */
+export const REGISTERED_ONLY_NOTE = "It can't join sessions yet. Agents join from a computer running Quilt; hosted access for cloud AIs is coming soon."

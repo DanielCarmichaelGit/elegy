@@ -282,7 +282,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return all(members, (m) => m.orgId === orgId)
         .map((m) => {
           const a = m.agentId ? agents.get(m.agentId) : null
-          return { ...copy(m), name: memberName(m), provider: a?.provider ?? null, type: a?.type ?? null }
+          return { ...copy(m), name: memberName(m), provider: a?.provider ?? null, type: a?.type ?? null, publicKey: a?.publicKey ?? null }
         })
         .sort((a, b) => a.joinedAt - b.joinedAt)
     },

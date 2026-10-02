@@ -36,7 +36,17 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
   ].join('\n')
 }
 
-/** The short "what now" an agent gets with its first keys. */
-export function joinNext ({ name, apiUrl }) {
+/** The short "what now" an agent gets with its first keys. `hasKey` is true
+ * when it sent a publicKey when it joined, the only way to later enter a
+ * session: a hosted way for cloud AIs to join a session is planned but not
+ * built yet. */
+export function joinNext ({ name, apiUrl, hasKey }) {
+  if (!hasKey) {
+    return [
+      `You joined Quilt as ${name}, but you're registered only: you have no key, so you can't enter a session yet.`,
+      'To take part, you need to run Quilt on a computer: install Quilt, then `quilt agent join <link> --name <name>` with a new invite link from the person who invited you, then `quilt join --agent <name> <invite link>`.',
+      'Hosted access for cloud AIs is coming soon.'
+    ].join(' ')
+  }
   return `You joined Quilt as ${name}. Send your access key as "Authorization: Bearer <accessKey>" to ${apiUrl}. It lasts 1 hour; for a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once). Check who you are with GET ${apiUrl}/v1/agents/me. Session tools over MCP at ${apiUrl}/mcp are coming soon.`
 }

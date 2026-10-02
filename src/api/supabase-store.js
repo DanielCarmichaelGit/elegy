@@ -202,8 +202,8 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async memberById (orgId, id) { return rowFrom(await one(db.from('org_members').select(MEMBER).eq('org_id', orgId).eq('id', id).maybeSingle())) },
     // A member is a person (profiles) or an agent (agents); each row embeds whichever it is.
     async listMembers (orgId) {
-      const rows = await one(db.from('org_members').select(`${MEMBER}, profiles (name), agents (name, provider, type)`).eq('org_id', orgId).order('joined_at'))
-      return rows.map(({ profiles, agents, ...r }) => ({ ...rowFrom(r), name: profiles?.name || agents?.name || '', provider: agents?.provider ?? null, type: agents?.type ?? null }))
+      const rows = await one(db.from('org_members').select(`${MEMBER}, profiles (name), agents (name, provider, type, public_key)`).eq('org_id', orgId).order('joined_at'))
+      return rows.map(({ profiles, agents, ...r }) => ({ ...rowFrom(r), name: profiles?.name || agents?.name || '', provider: agents?.provider ?? null, type: agents?.type ?? null, publicKey: agents?.public_key ?? null }))
     },
     // Already a member: the upsert does nothing and we return the existing row.
     async addMember ({ orgId, userId, roleId }) {

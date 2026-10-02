@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startTestApi, makeOrg, makeAgent } from './api-helpers.js'
+import { generateIdentity } from '../src/identity.js'
 
 let t
 before(async () => { t = await startTestApi() })
@@ -20,14 +21,26 @@ test('org agents are listed with people as kind agent, with their profile, for t
     ['agent', 'Bot', 'OpenAI', 'coding agent', agent.id, '', null, null, false, false]
   )
   assert.deepEqual(bot.teams, [{ id: core.id, name: 'Core', access: 'viewer', scopes: ['src'] }])
+  assert.equal(bot.canJoinSessions, false, 'no key yet, so it never joins a session')
+  assert.equal('publicKey' in bot, false, 'never expose the key itself')
   const mo = r.body.members.find((x) => x.userId === 'mem')
-  assert.deepEqual([mo.kind, mo.provider, mo.type], ['person', null, null])
+  assert.deepEqual([mo.kind, mo.provider, mo.type, mo.canJoinSessions], ['person', null, null, null])
   const watcher = await t.store.createRole({ orgId: o.org.id, name: 'Watcher', grants: { agents: { r: true } } })
   await t.store.setMemberRole(o.mem.id, watcher.id)
   assert.deepEqual((await t.call('GET', `/v1/orgs/${o.slug}/members`, null, 'mem')).body.members.map((x) => x.kind), ['agent'], 'Agents: Read alone shows only agents')
   const people = await t.store.createRole({ orgId: o.org.id, name: 'People', grants: { members: { r: true } } })
   await t.store.setMemberRole(o.mem.id, people.id)
   assert.equal((await t.call('GET', `/v1/orgs/${o.slug}/members`, null, 'mem')).body.members.some((x) => x.kind === 'agent'), false, 'Members: Read alone shows only people')
+})
+
+test('an org agent with a public key shows canJoinSessions true in the member list', async () => {
+  const o = await makeOrg(t, 'Keyed Listing Co')
+  const id = generateIdentity()
+  const { agent } = await makeAgent(t, { name: 'KeyedBot', provider: 'Anthropic', publicKey: id.publicKey, orgId: o.org.id })
+  const m = await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id })
+  const r = await t.call('GET', `/v1/orgs/${o.slug}/members`, null, 'admin')
+  const bot = r.body.members.find((x) => x.id === m.id)
+  assert.equal(bot.canJoinSessions, true)
 })
 
 test("an org agent's role needs Agents: Update and stays within your grid; no role is allowed", async () => {

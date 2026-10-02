@@ -2,6 +2,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startTestApi, makeOrg, makeAgent } from './api-helpers.js'
 import { keyStatus, REUSED } from '../src/api/agent-auth.js'
+import { generateIdentity } from '../src/identity.js'
 
 let t
 before(async () => { t = await startTestApi() })
@@ -21,7 +22,7 @@ test('an access key signs a personal agent in; /me says who it is', async () => 
   const { agent, accessKey } = await makeAgent(t, { name: 'Larry', description: 'Writes tests', ownerUserId: 'mem' })
   const r = await me(accessKey)
   assert.equal(r.status, 200)
-  assert.deepEqual(r.body, { agent: { id: agent.id, name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: 'Writes tests', kind: 'personal', org: null }, teams: [], role: null })
+  assert.deepEqual(r.body, { agent: { id: agent.id, name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: 'Writes tests', canJoinSessions: false, kind: 'personal', org: null }, teams: [], role: null })
   assert.ok((await t.store.agentById(agent.id)).lastUsedAt > 0, 'last used is recorded')
   assert.equal((await me('qa_nope')).status, 401)
   assert.equal((await t.call('GET', '/v1/agents/me', null, 'mem')).status, 401, "a person's sign-in is not an agent's")
@@ -46,7 +47,7 @@ test('/me for an org agent lists its org, role and teams with folders', async ()
   const core = await t.store.createTeam({ orgId: o.org.id, name: 'Core' })
   await t.store.addTeamMember({ teamId: core.id, memberId: m.id, access: 'editor', scopes: ['src'] })
   assert.deepEqual((await me(accessKey)).body, {
-    agent: { id: agent.id, name: 'Bot', provider: 'OpenAI', type: 'coding agent', description: '', kind: 'org', org: { slug: o.slug, name: 'Agent Me Co' } },
+    agent: { id: agent.id, name: 'Bot', provider: 'OpenAI', type: 'coding agent', description: '', canJoinSessions: false, kind: 'org', org: { slug: o.slug, name: 'Agent Me Co' } },
     teams: [{ id: core.id, name: 'Core', access: 'editor', scopes: ['src'] }],
     role: { name: 'Lead' }
   })
@@ -161,6 +162,17 @@ test('the personal agents list shows the profile, when each was added and last u
   const [a] = (await t.call('GET', '/v1/agents', null, 'out')).body.agents
   assert.deepEqual([a.id, a.name, a.provider, a.type, a.description, a.status, a.lastUsedAt], [agent.id, 'Listed', 'Cursor', 'editor agent', 'Fixes lint', 'active', null])
   assert.ok(a.createdAt > 0)
+})
+
+test('the personal agents list says whether each agent has a key, never the key itself', async () => {
+  const id = generateIdentity()
+  await makeAgent(t, { name: 'Keyed', publicKey: id.publicKey, ownerUserId: 'noKeyOwner' })
+  await makeAgent(t, { name: 'Keyless', ownerUserId: 'noKeyOwner' })
+  const agents = (await t.call('GET', '/v1/agents', null, 'noKeyOwner')).body.agents
+  const byName = (n) => agents.find((a) => a.name === n)
+  assert.equal(byName('Keyed').canJoinSessions, true)
+  assert.equal(byName('Keyless').canJoinSessions, false)
+  for (const a of agents) assert.equal('publicKey' in a, false, 'never expose the key itself')
 })
 
 test('key refreshes are rate-limited per address', async () => {

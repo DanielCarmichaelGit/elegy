@@ -47,6 +47,8 @@ export function memberRoutes ({ store, user }) {
           name: m.name,
           provider: m.provider ?? null,
           type: m.type ?? null,
+          // Only for an agent; whether it has a key, never the key itself.
+          canJoinSessions: m.agentId ? !!m.publicKey : null,
           email: emails[i]?.email || '',
           roleId: m.roleId,
           role: roleName.get(m.roleId) || null,

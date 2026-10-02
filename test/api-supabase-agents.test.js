@@ -67,7 +67,7 @@ test('supabase member lists name agents from the agents table, with their profil
   const s = createSupabaseStore({ client })
   const [m] = await s.listMembers('o1')
   assert.deepEqual([m.name, m.provider, m.type, m.agentId, 'agents' in m, 'profiles' in m], ['Bot', 'OpenAI', 'coding agent', 'a1', false, false])
-  assert.match(calls[0].ops.find(([op]) => op === 'select')[1], /agents \(name, provider, type\)/)
+  assert.match(calls[0].ops.find(([op]) => op === 'select')[1], /agents \(name, provider, type, public_key\)/)
   const [tm] = await s.listTeamMembers('t1')
   assert.deepEqual([tm.name, tm.kind, tm.scopes], ['Bot', 'agent', ['src']])
 })

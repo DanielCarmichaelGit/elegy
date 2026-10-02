@@ -33,10 +33,17 @@ test('the instructions explain both ways to join, with no em dashes', () => {
   for (const [status, line] of [['used', /already used/], ['expired', /has expired/], ['cancelled', /was cancelled/], ['unknown', /isn't valid/]]) {
     assert.match(joinInstructions({ link: 'l', apiUrl: 'a', status }), line, status)
   }
-  const next = joinNext({ name: 'Larry', apiUrl: 'https://api.x' })
+  const next = joinNext({ name: 'Larry', apiUrl: 'https://api.x', hasKey: true })
   assert.match(next, /Larry/)
   assert.match(next, /https:\/\/api\.x\/v1\/agents\/me/)
-  for (const s of [text, next]) assert.equal(s.includes('—'), false, 'no em dash')
+  const noKey = joinNext({ name: 'Larry', apiUrl: 'https://api.x', hasKey: false })
+  assert.match(noKey, /Larry/)
+  assert.match(noKey, /registered only/)
+  assert.match(noKey, /can't enter a session yet/)
+  assert.match(noKey, /quilt agent join <link> --name <name>/)
+  assert.match(noKey, /quilt join --agent <name> <invite link>/)
+  assert.match(noKey, /coming soon/)
+  for (const s of [text, next, noKey]) assert.equal(s.includes('—'), false, 'no em dash')
 })
 
 test('an AI joins with POST: a personal agent with its profile and its first keys, once', async () => {
@@ -125,8 +132,19 @@ test('an agent may bring its own public key, which belongs to one agent only', a
   const a = await invite('mem'); const b = await invite('mem')
   const r = await join(a.token, { ...PROFILE, publicKey: id.publicKey })
   assert.equal((await t.store.agentById(r.body.agentId)).publicKey, id.publicKey)
+  assert.match(r.body.next, /Session tools over MCP/, 'with a key, the usual session guidance')
   assert.equal((await join(b.token, { ...PROFILE, publicKey: id.publicKey })).status, 409)
   assert.equal(await statusOf('mem', b.id), 'waiting')
+})
+
+test('joining without a public key is told it is registered only and how to run Quilt on a computer', async () => {
+  const { token } = await invite('mem')
+  const r = await join(token)
+  assert.equal(r.status, 200)
+  assert.match(r.body.next, /registered only/)
+  assert.match(r.body.next, /quilt agent join <link> --name <name>/)
+  assert.match(r.body.next, /quilt join --agent <name> <invite link>/)
+  assert.match(r.body.next, /coming soon/)
 })
 
 test('two joins racing with the same public key: the one the pre-check misses still gets a clear 409 from the store itself', async () => {
