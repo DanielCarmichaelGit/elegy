@@ -9,7 +9,7 @@ import { renderFileView } from './fileview.js'
 import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
-import { fileCardHref, renderable } from './chat.js'
+import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention } from './chat.js'
 import { renderBoard } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
@@ -113,6 +113,7 @@ export function mountSession (id) {
         <form class="composer" id="composer">
           <div class="to"><label for="to-select">To</label><select id="to-select"></select></div>
           <div class="attachments" id="attachments"></div>
+          <div class="mention-menu" id="mention-menu" role="listbox" aria-label="Mention someone" hidden></div>
           <div class="box">
             <button type="button" class="btn ghost icon" id="attach-btn" title="Send a file" aria-label="Send a file">${I.clip}</button>
             <input type="file" id="file-input" multiple hidden>
@@ -1317,8 +1318,9 @@ function bindChat () {
   const input = $('#msg-input')
   const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 160)}px` }
   input.addEventListener('input', grow)
+  bindMentions(input)
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit() }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.defaultPrevented) { e.preventDefault(); $('#composer').requestSubmit() }
   })
   $('#to-select').onchange = (e) => { state.to = e.target.value; updatePlaceholder() }
   $('#attach-btn').onclick = () => $('#file-input').click()
@@ -1437,6 +1439,63 @@ function renderRecipients () {
   updatePlaceholder()
 }
 
+/** Everyone who can be mentioned in this session: members, people online, and whoever has written. */
+function mentionNames (s) {
+  const names = new Set()
+  if (s.status.me?.name) names.add(s.status.me.name)
+  for (const p of s.status.peers || []) if (p.name) names.add(p.name)
+  for (const m of s.status.members || []) if (m.name) names.add(m.name)
+  for (const m of renderable(state.messages.get(current))) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+  return [...names]
+}
+
+/**
+ * Typing @ in the composer offers the session's members; arrows pick, Enter or Tab
+ * completes, Escape closes. Agents wake on a mention of their name, so it has to be exact.
+ */
+function bindMentions (input) {
+  const menu = $('#mention-menu')
+  let items = []
+  let at = null
+  let on = 0
+  const close = () => { items = []; at = null; menu.hidden = true; menu.innerHTML = '' }
+  const render = () => {
+    menu.innerHTML = items.map((n, i) => `<button type="button" role="option" aria-selected="${i === on}" class="${i === on ? 'on' : ''}" data-name="${esc(n)}">${avatar(n, sum()?.status.peers.find((p) => p.name === n)?.color)}<span>${esc(n)}</span></button>`).join('')
+    menu.hidden = false
+  }
+  const pick = (name) => {
+    if (!at) return
+    const r = completeMention(input.value, at, name)
+    input.value = r.text
+    input.setSelectionRange(r.caret, r.caret)
+    close()
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.focus()
+  }
+  const update = () => {
+    const s = sum()
+    const found = s ? mentionAt(input.value, input.selectionStart) : null
+    if (!found) return close()
+    const me = s.status.me?.name
+    const list = mentionCandidates(mentionNames(s).filter((n) => n !== me), found.query)
+    if (!list.length) return close()
+    at = found
+    if (JSON.stringify(list) !== JSON.stringify(items)) on = 0
+    items = list
+    render()
+  }
+  input.addEventListener('input', update)
+  input.addEventListener('click', update)
+  input.addEventListener('keyup', (e) => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) update() })
+  input.addEventListener('keydown', (e) => {
+    if (!items.length) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); on = (on + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length; render() } else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(items[on]) } else if (e.key === 'Escape') { e.preventDefault(); close() }
+  }, true)
+  input.addEventListener('blur', () => setTimeout(close, 150))
+  menu.addEventListener('mousedown', (e) => e.preventDefault()) // keep the textarea focused
+  menu.addEventListener('click', (e) => { const b = e.target.closest('[data-name]'); if (b) pick(b.dataset.name) })
+}
+
 function renderMessages (incoming = false, force = false) {
   const el = $('#messages')
   const s = sum()
@@ -1446,6 +1505,7 @@ function renderMessages (incoming = false, force = false) {
   const name = s.status.me.name
   const colors = new Map(s.status.peers.map((p) => [p.name, p.color]))
   colors.set(name, s.status.me.color)
+  const names = mentionNames(s)
   el.innerHTML = list.length
     ? list.map((m) => {
       const mine = m.by === name
@@ -1454,7 +1514,7 @@ function renderMessages (incoming = false, force = false) {
           <span class="fi">${I.file}</span><span style="min-width:0"><div class="fn">${esc(m.file.name)}</div><div class="fs">${bytes(m.file.size)} · ${mine ? 'sent' : 'download'}</div></span></a>` : ''
       return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(m.by, colors.get(m.by))}
         <div style="min-width:0"><div class="head"><b>${mine ? 'You' : esc(m.by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
-        <div class="bubble">${m.text ? `<div class="text">${esc(m.text)}</div>` : ''}${file}</div></div></div>`
+        <div class="bubble">${m.text ? `<div class="text">${textHtml(m.text, names, name)}</div>` : ''}${file}</div></div></div>`
     }).join('')
     : '<div class="day-empty"><div><b>Say hi.</b></div><div class="hint">Messages, direct messages and files you share appear here. Drop a file on this panel to send it.</div></div>'
   if (force || nearBottom || (incoming && list[list.length - 1]?.by === name)) el.scrollTop = el.scrollHeight

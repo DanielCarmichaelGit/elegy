@@ -187,6 +187,8 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .msg .head b { color: var(--text); font-weight: 650; }
 .dm { font-size: 11px; font-weight: 700; color: var(--violet); background: color-mix(in srgb, var(--violet) 14%, transparent); padding: 0 6px; border-radius: 5px; }
 .text { white-space: pre-wrap; }
+.mention { color: var(--accent); font-weight: 600; }
+.mention.me { background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 4px; padding: 0 3px; }
 .file-card { display: flex; align-items: center; gap: 10px; margin-top: 6px; padding: 8px 10px; border-radius: 4px; background: var(--panel-2); text-decoration: none; color: var(--text); border: 1px solid var(--border); }
 .msg.mine .file-card { background: var(--panel); }
 .file-card:hover { border-color: var(--accent); }
@@ -197,7 +199,11 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .day-empty { margin: auto; text-align: center; color: var(--faint); max-width: 320px; }
 .day-empty img { width: 48px; opacity: .9; margin-bottom: 8px; }
 
-.composer { border-top: 1px solid var(--border); padding: 12px 16px 16px; background: var(--bg); }
+.composer { border-top: 1px solid var(--border); padding: 12px 16px 16px; background: var(--bg); position: relative; }
+.mention-menu { position: absolute; left: 16px; right: 16px; bottom: calc(100% - 1px); z-index: 6; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px; box-shadow: var(--shadow-pop); padding: 4px; max-height: 240px; overflow-y: auto; }
+.mention-menu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--text); font: inherit; cursor: pointer; }
+.mention-menu button .avatar { width: 22px; height: 22px; font-size: 10px; }
+.mention-menu button.on, .mention-menu button:hover { background: var(--panel-2); }
 .composer .to { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12.5px; color: var(--muted); }
 .composer .to select { height: 28px; padding: 0 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel); }
 .composer .box { display: flex; align-items: flex-end; gap: 8px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px; }

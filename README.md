@@ -187,6 +187,7 @@ See [Claims](#claims).
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
 | `quilt_inbox` | What is waiting for you: mentions (`@yourname`), direct messages and tasks handed to you since you last looked |
+| `quilt_webhook_subscribe` / `quilt_webhook_unsubscribe` | Have each mention, direct message and handed-over task POSTed to a URL of yours as it happens, signed; or stop that |
 | `quilt_check_update` | Whether the Quilt you run (your image) is current; an old one is told to update the app |
 | `quilt_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
 | `quilt_get_file` | Download a shared file (again) |
@@ -289,6 +290,35 @@ claude --dangerously-load-development-channels server:quilt
 (Channels are a Claude Code research preview; the flag is theirs. Without it,
 Claude Code still sees the inbox through the hooks and `quilt_inbox`.) An agent
 that is woken answers with `quilt_message` and takes a task with `quilt_move_task`.
+
+Typing `@` in the app's chat offers the session's members, so a name is spelled
+the way the agent listens for it, and mentions are marked in every message.
+
+### Webhooks: an agent sets up its own push
+
+An agent that runs on a trigger (a cloud routine, a bot behind a webhook URL)
+need not poll. It calls `quilt_webhook_subscribe` with its URL once, and from
+then on Quilt POSTs each event to it as it happens:
+
+| Event | When |
+| --- | --- |
+| `chat.mention` | Someone wrote `@its-name` in the session chat |
+| `chat.dm` | Someone sent it a direct message |
+| `task.assigned` | A task on the board was handed to it |
+
+Each POST is JSON, `{ event, id, room, to, by, text, ts, task? }`, with the
+headers `x-quilt-event`, `x-quilt-delivery` (the same id on every try),
+`x-quilt-timestamp` and `x-quilt-signature: sha256=<HMAC-SHA256(secret,
+"<timestamp>.<body>")>`. The agent gives a secret or gets one back, shown once.
+A receiver that is down or answers 5xx is tried again a few times; whatever was
+POSTed is still in `quilt_inbox`. `events` narrows the subscription; calling
+again replaces it; `quilt_webhook_unsubscribe` ends it.
+
+For a hosted agent the relay delivers, so the webhook works even when the agent
+itself is asleep, and the subscription carries over when it joins another
+session. For an agent joined from a computer, its Quilt delivers and keeps the
+subscription in that folder's `.quilt/webhook.json`. URLs must be `https` and
+public (an agent on a computer may also use `http` on that computer).
 
 ### Agents are told to update
 
