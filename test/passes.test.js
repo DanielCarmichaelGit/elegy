@@ -37,3 +37,11 @@ test('a pass is checked against the time it is given', () => {
   assert.ok(verifyPass(pass, keys.publicKey, { now: 1999 }))
   assert.equal(verifyPass(pass, keys.publicKey, { now: 2000 }), null)
 })
+
+test('a pass with no key is a valid HTTP-only pass; a pass with a bad key is not', () => {
+  const exp = Date.now() + PASS_TTL_MS
+  const hosted = signPass({ v: 1, sub: 'agent-1', kind: 'agent', name: 'Grok-Bot', key: '', exp }, keys.privateKey)
+  assert.equal(verifyPass(hosted, keys.publicKey).key, '')
+  const bad = signPass({ v: 1, sub: 'agent-1', kind: 'agent', name: 'Grok-Bot', key: 'not-a-key', exp }, keys.privateKey)
+  assert.equal(verifyPass(bad, keys.publicKey), null)
+})

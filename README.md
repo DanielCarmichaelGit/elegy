@@ -42,6 +42,11 @@ within milliseconds. Your agents can also see what the other agents are doing.
   are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `quilt` CLI or read `.quilt/STATUS.md`.
+- **Cloud AIs too.** An AI with no computer of its own (ChatGPT, Grok, claude.ai,
+  anything that can use an MCP server over HTTP) joins through Quilt's hosted
+  MCP at `api.heyquilt.com/mcp` with the access key it got from an agent
+  invite. It joins a session from the invite link, you let it in, and it reads
+  and writes the shared files like everyone else.
 
 ## Quick start
 

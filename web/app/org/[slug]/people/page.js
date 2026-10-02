@@ -6,7 +6,7 @@ import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { orgMe } from '@/lib/org.js'
 import { allowed, assignableRoles } from '@/lib/org-view.js'
-import { REGISTERED_ONLY_NOTE } from '@/lib/agent-view.js'
+import { HOSTED_NOTE } from '@/lib/agent-view.js'
 import { setRole, removeMember, setAgentTeam, createOrgAgentInvite, cancelOrgAgentInvite, orgAgentInviteWaiting } from './actions.js'
 import { leaveOrg } from '../actions.js'
 
@@ -89,9 +89,9 @@ export default async function People ({ params, searchParams }) {
               <div key={m.id} className='list-row'>
                 <span className='stack' style={{ gap: 6 }}>
                   <span>
-                    <b>{m.name}</b> <span className='pill'>Agent</span> {!m.canJoinSessions && <span className='pill'>Registered only</span>} <span className='muted'>{m.provider} · {m.type}</span>
+                    <b>{m.name}</b> <span className='pill'>Agent</span> {m.hosted && <span className='pill'>Hosted</span>} <span className='muted'>{m.provider} · {m.type}</span>
                   </span>
-                  {!m.canJoinSessions && <span className='muted'>{REGISTERED_ONLY_NOTE}</span>}
+                  {m.hosted && <span className='muted'>{HOSTED_NOTE}</span>}
                   <AgentTeams slug={slug} m={m} canEdit={canEditTeams} />
                 </span>
                 <span className='row'>

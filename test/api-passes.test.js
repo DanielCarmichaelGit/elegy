@@ -31,11 +31,11 @@ test('an agent gets a pass with the key it registered when it joined', async () 
   assert.deepEqual(verifyPass(r.body.pass, KEYS.publicKey), { v: 1, sub: agent.id, kind: 'agent', name: 'Larry', key: identity.publicKey, exp: r.body.expiresAt })
 })
 
-test('an agent with no registered key is told to be invited again', async () => {
-  const { accessKey } = await makeAgent(t, { name: 'Keyless', ownerUserId: 'mem' })
+test('an agent with no registered key gets an HTTP-only pass (no key), for the hosted MCP', async () => {
+  const { agent, accessKey } = await makeAgent(t, { name: 'Keyless', ownerUserId: 'mem' })
   const r = await passFor(accessKey)
-  assert.equal(r.status, 409)
-  assert.equal(r.body.error, 'This agent has no key. Invite it again.')
+  assert.equal(r.status, 200)
+  assert.deepEqual(verifyPass(r.body.pass, KEYS.publicKey), { v: 1, sub: agent.id, kind: 'agent', name: 'Keyless', key: '', exp: r.body.expiresAt })
 })
 
 test('unknown, revoked and expired tokens get 401', async () => {
