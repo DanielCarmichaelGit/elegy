@@ -679,7 +679,7 @@ function renderMain () {
         el.innerHTML = `<div class="main-empty invite-empty">
           <div class="ill">${I.link}</div>
           <h3>Invite someone to code with you</h3>
-          <p class="hint">Send a link. They paste it into <b>Join a session</b> in quilt${viewInvite ? ', and you approve them before they get in' : ''}.</p>
+          <p class="hint">Send a link. Clicking it opens this session in Quilt${viewInvite ? ', and you approve them before they get in' : ''}. To add an AI, use <b>Invite</b> above.</p>
           ${viewInvite ? `
           <div class="invite-pair">
             <div><div class="label">Can edit</div><div class="codebox"><code>${esc(invite)}</code></div><button class="btn primary" data-copy-invite="edit">${I.copy}<span>Copy edit link</span></button></div>
