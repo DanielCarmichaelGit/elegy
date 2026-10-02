@@ -14,6 +14,7 @@ import { agentRoutes } from './routes/agents.js'
 import { makeAgentAuth } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
+import { issueRoutes } from './routes/issues.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -21,7 +22,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, reportKey = '', reportLimit = 10 }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -75,6 +76,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const limitJoin = makeLimiter(joinLimit, 'too many tries; wait a minute and try again')
   // Passes, per token (keyed on its hash, counted once the token checks out).
   const limitPasses = makeLimiter(passLimit, 'too many passes; try again in a minute', { keyOf: (tokenHash) => tokenHash })
+  // Reports with no sign-in (the app before it's linked): a few batches a minute per address.
+  const limitReports = makeLimiter(reportLimit, 'too many reports; try again in a minute')
   const agentAuth = makeAgentAuth({ store, now, bearer })
 
   /** Who a pass is for: a linked computer's account, or an agent and the key it registered. */
@@ -211,8 +214,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, person, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx))
+  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports }
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...issueRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
