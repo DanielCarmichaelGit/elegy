@@ -21,6 +21,7 @@ import { grantRoutes } from './routes/grants.js'
 import { sessionInviteRoutes } from './routes/session-invites.js'
 import { HOSTED_RELAY } from '../settings.js'
 import { roomAccess } from './access.js'
+import { parseInvite } from '../ui/invite.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
@@ -31,8 +32,9 @@ const MAX_BODY = 16 * 1024
 // A hosted agent's MCP request (a whole file, at most) and how long it may take on the relay.
 const MAX_MCP_BODY = 2 * 1024 * 1024
 const MCP_TIMEOUT_MS = 30 * 1000
-// A pass minted for a hosted agent is reused until this close to its end.
-const PASS_REUSE_MARGIN_MS = 2 * 60 * 1000
+// A pass minted for a hosted agent is reused until this close to its end: 5 minutes, so
+// a change to its grant reaches it as soon as it reaches a connected app.
+const PASS_REUSE_MARGIN_MS = 5 * 60 * 1000
 
 export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, relaySecret = '' }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
@@ -301,21 +303,29 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   // Hosted agents' MCP: the agent's access key signs it in here; the relay gets the same
   // request with a pass for the agent, and its answer comes straight back. Stateless on
-  // both sides, so each request stands alone.
-  const mintedPasses = new Map() // agent id -> { pass, exp }
+  // both sides, so each request stands alone. The pass is for the room the agent is joining
+  // (named in quilt_join_session) or is in (the relay says which in x-quilt-room), so it
+  // carries the agent's grant there.
+  const mintedPasses = new Map() // `${agent id}\n${room}` -> { pass, exp }
+  const agentRooms = new Map() // agent id -> the room the relay last said it is in
+  const forget = (map) => { if (map.size > maxStartKeys) map.delete(map.keys().next().value) }
   async function proxyMcp (req, res, send) {
     needPassKey()
     if (!bearer(req).startsWith('qa_')) throw new HttpError(401, 'send your agent access key as "Authorization: Bearer <accessKey>"')
     const { agent } = await agentAuth.agentFromRequest(req)
     limitMcp(agent.id)
-    let minted = mintedPasses.get(agent.id)
-    if (!minted || minted.exp - now() < PASS_REUSE_MARGIN_MS) {
-      const exp = now() + PASS_TTL_MS
-      minted = { pass: signPass({ v: PASS_VERSION, sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '', exp }, passKey), exp }
-      mintedPasses.set(agent.id, minted)
-      if (mintedPasses.size > maxStartKeys) for (const [k, v] of mintedPasses) if (v.exp <= now()) mintedPasses.delete(k)
-    }
     const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, MAX_MCP_BODY) : undefined
+    const room = joiningRoom(body) || agentRooms.get(agent.id) || ''
+    const cacheKey = `${agent.id}\n${room}`
+    let minted = mintedPasses.get(cacheKey)
+    if (!minted || minted.exp - now() < PASS_REUSE_MARGIN_MS) {
+      const holder = { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
+      const { pass, expiresAt } = await mintPass(holder, room)
+      minted = { pass, exp: expiresAt }
+      mintedPasses.set(cacheKey, minted)
+      if (mintedPasses.size > maxStartKeys) for (const [k, v] of mintedPasses) if (v.exp <= now()) mintedPasses.delete(k)
+      forget(mintedPasses)
+    }
     const headers = { 'x-quilt-pass': minted.pass }
     for (const h of ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'last-event-id']) if (req.headers[h]) headers[h] = String(req.headers[h])
     let upstream
@@ -324,6 +334,10 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     } catch (err) {
       log(`mcp relay error: ${err.message}`)
       throw new HttpError(502, 'the session relay did not answer; try again in a moment')
+    }
+    if (upstream.ok) {
+      const inRoom = upstream.headers.get('x-quilt-room') || ''
+      if (ROOM.test(inRoom)) { agentRooms.set(agent.id, inRoom); forget(agentRooms) } else agentRooms.delete(agent.id)
     }
     const type = upstream.headers.get('content-type') || 'application/json'
     const out = Buffer.from(await upstream.arrayBuffer())
@@ -340,6 +354,18 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const p = server.address().port
     resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)), startKeys: () => limitStarts.size() })
   }))
+}
+
+/** The room a quilt_join_session call in this MCP request joins, or '' (any other request). */
+export function joiningRoom (body) {
+  if (!body || !body.length) return ''
+  try {
+    const msg = JSON.parse(body.toString('utf8'))
+    for (const m of Array.isArray(msg) ? msg : [msg]) {
+      if (m?.method === 'tools/call' && m.params?.name === 'quilt_join_session') return parseInvite(String(m.params.arguments?.invite || ''), { allowRelay: () => true }).room
+    }
+  } catch {}
+  return ''
 }
 
 function decodePart (s) {

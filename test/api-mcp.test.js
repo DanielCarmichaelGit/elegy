@@ -10,8 +10,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { startTestApi, makeAgent } from './api-helpers.js'
 import { startServer } from '../src/server.js'
+import { joiningRoom } from '../src/api/server.js'
 import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
+import crypto from 'node:crypto'
 import { newPassKeys } from '../src/passes.js'
 import { testPasses } from './pass-helpers.js'
 
@@ -72,4 +74,34 @@ test('a revoked agent is turned away at /mcp', async () => {
   const { agent, accessKey } = await makeAgent(t, { name: 'Gone', ownerUserId: 'mem' })
   await t.store.revokeAgent(agent.id)
   await assert.rejects(client(accessKey), /revoked/)
+})
+
+test('an agent the owner granted joins straight in through /mcp, and its grant holds for its later calls', async () => {
+  // Mo owns a session with an owner (a view secret); heyquilt.com knows he owns it.
+  const id = generateIdentity()
+  const moDir = tmp('mo')
+  const mo = new Session({ dir: moDir, server: `ws://127.0.0.1:${relay.port}`, room: 'am-2', secret: 's', viewSecret: 'v', name: 'Mo', identity: id, passes: testPasses(id, { keys, sub: 'mem', name: 'Mo' }) })
+  await mo.start({ waitTimeoutMs: 5000 })
+  await t.store.ingestPresence([{ id: crypto.randomUUID(), type: 'start', room: 'am-2', account: 'person:mem', name: 'Mo', owner: true, at: Date.now() }], Date.now())
+  const { agent, accessKey } = await makeAgent(t, { name: 'Gem', ownerUserId: 'mem' })
+  const granted = await t.call('PUT', `/v1/sessions/am-2/grants/agent:${agent.id}`, { typeId: 'builtin:edit', tighten: { talk: false } }, 'mem')
+  assert.equal(granted.status, 200)
+  const c = await client(accessKey)
+  try {
+    assert.match(out(await c.callTool({ name: 'quilt_join_session', arguments: { invite: 'https://join.heyquilt.com/am-2#v' } })), /Joined room am-2 as Gem \(editor\)/)
+    assert.equal(mo.waiting.length, 0)
+    // Later calls name no room: the API passes the one the relay said the agent is in (x-quilt-room).
+    assert.equal(out(await c.callTool({ name: 'quilt_message', arguments: { text: 'hi' } })), "You can't post in this session.")
+    await c.callTool({ name: 'quilt_write_file', arguments: { path: 'gem.txt', content: 'from Gem' } })
+    await waitFor(() => { try { return fs.readFileSync(path.join(moDir, 'gem.txt'), 'utf8') === 'from Gem' } catch { return false } })
+  } finally { await c.close(); await mo.stop() }
+})
+
+test('the pass for a quilt_join_session call is for the room it joins', () => {
+  const call = (name, args) => Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: args } }))
+  assert.equal(joiningRoom(call('quilt_join_session', { invite: 'https://join.heyquilt.com/am-9#s' })), 'am-9')
+  assert.equal(joiningRoom(call('quilt_status', {})), '')
+  assert.equal(joiningRoom(call('quilt_join_session', { invite: 'nonsense' })), '')
+  assert.equal(joiningRoom(Buffer.from('not json')), '')
+  assert.equal(joiningRoom(undefined), '')
 })

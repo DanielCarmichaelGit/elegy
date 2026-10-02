@@ -350,11 +350,19 @@ class Room {
     return { state: 'pending', invitedAs }
   }
 
-  /** A hosted agent's current standing, changing nothing: approved (role, scopes) or pending. */
+  /**
+   * A hosted agent's current standing: approved (with its access) or pending. A room pass
+   * with a grant approves it, and puts it on the member list.
+   */
   hostedAccess (pass) {
     const id = `${pass.kind}:${pass.sub}`
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false, id }
     if (this.meta.owner && this.isOwner(pass.key || '', id)) return { state: 'approved', role: 'editor', scopes: [], owner: true, id }
+    const granted = this.passGrant(pass)
+    if (granted) {
+      this.noteGranted(id, pass.name, pass.kind === 'agent' ? 'agent' : 'human', granted)
+      return { state: 'approved', ...relayAccess(granted), owner: false, id }
+    }
     const m = this.meta.members[id]
     if (m) {
       if (m.name !== pass.name) { m.name = pass.name; this.saveMeta() }
