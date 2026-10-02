@@ -26,14 +26,15 @@ ${TASK_WORKFLOW_MD}
 - See what a partner's AI is doing with \`quilt_partner_feed\`, and where people
   are working with \`quilt_list_files\` (recent edits and claims).
 - Announce what you're working on (\`quilt_set_focus\` / \`quilt focus "..."\`).
-- Files must be claimed before they are edited. In Claude Code this is automatic:
-  Quilt claims each file for you as you edit it and releases those claims when you
-  finish. In other tools, claim first (\`quilt_claim\` / \`quilt claim <path>\`) and
-  release when done (\`quilt_release\` / \`quilt release <path>\`).
-- If a file is claimed by someone else, your edit is refused or undone. Don't retry
-  or work around it: send them a direct message (\`quilt_message\` with "to" /
-  \`quilt say @name "..."\`) saying what you wanted to change and asking for help,
-  then carry on with other work.
+- Claims follow edits, whatever tool you are: the moment you change a file nobody
+  holds, Quilt claims it for you, and lets go when you finish (your AI goes idle, or
+  the file has been quiet for a few minutes). Claim ahead only for a larger change
+  across several files (\`quilt_claim\` / \`quilt claim <path>\`) and release it when
+  done (\`quilt_release\` / \`quilt release <path>\`).
+- If a file is claimed by someone else, your edit is refused or undone, and the next
+  quilt tool you call tells you so. Don't retry or work around it: send them a direct
+  message (\`quilt_message\` with "to" / \`quilt say @name "..."\`) saying what you
+  wanted to change and asking for help, then carry on with other work.
 - Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
   hand the file over, or say when you'll be done.
 - \`quilt_inbox\` lists what is waiting for you: mentions of you (@yourname), direct

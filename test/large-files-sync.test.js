@@ -26,6 +26,7 @@ async function open (dir, name, extra) {
   const s = new Session({ dir, server, secret: 'edit', name, identity: generateIdentity(), ...extra })
   sessions.push(s)
   await s.start({ waitTimeoutMs: 5000 })
+  s.setAgentState({ tool: null, status: 'idle' }) // people typing by hand; their edits are not claimed for them
   return s
 }
 let n = 0
@@ -378,6 +379,7 @@ test('a download never writes through a link, and keeps a local file it cannot r
 
   const logs = []
   const B2 = new Session({ dir: dirB, server, secret: 'edit', name: 'bob', room, identity: B.identity })
+  B2.setAgentState({ tool: null, status: 'idle' })
   sessions.push(B2)
   B2.on('log', (m) => logs.push(m))
   await B2.start({ waitTimeoutMs: 5000 })

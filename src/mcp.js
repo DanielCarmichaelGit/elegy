@@ -52,7 +52,9 @@ export const MCP_INSTRUCTIONS =
   'and move a task with quilt_move_task when you start or finish it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
-  'Claim files or folders before larger changes and do not edit files someone else has claimed. ' +
+  'Claims follow your edits: a file you change that nobody holds is claimed for you until you finish, so partners are refused instead of overwriting you. ' +
+  'If an edit of yours was undone because someone else holds the file, your next quilt answer says so: do not retry; message them with quilt_message and carry on with other work. ' +
+  'Claim ahead (quilt_claim) only for a larger change across several files. ' +
   'Always re-read a file right before you edit it. ' +
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
@@ -75,13 +77,21 @@ export async function runMcp () {
   const updates = new UpdateCheck().start()
   const stale = () => { const n = updates.notice(); return n ? `\n\n⚠️ ${n}` : '' }
 
+  // Quilt undoes edits to files a partner holds; the agent that made them hears about it with its next answer.
+  const notices = async (d) => {
+    try {
+      const { notices } = await call(d, 'POST', '/notices', {})
+      return notices.length ? `⚠️ Quilt:\n${notices.map((n) => `- ${n}`).join('\n')}\n\n` : ''
+    } catch { return '' }
+  }
   const withDaemon = async (fn) => {
     const d = findDaemon(joined ? joined.dir : undefined)
     if (!d) return { content: [{ type: 'text', text: NOT_RUNNING + stale() }], isError: true }
     try {
-      return { content: [{ type: 'text', text: (await fn(d)) + stale() }] }
+      const body = await fn(d)
+      return { content: [{ type: 'text', text: (await notices(d)) + body + stale() }] }
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true }
+      return { content: [{ type: 'text', text: (await notices(d)) + `Error: ${err.message}` }], isError: true }
     }
   }
 

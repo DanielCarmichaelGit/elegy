@@ -40,6 +40,7 @@ async function open (t, dir, name, extra) {
   const s = new Session({ dir, server, secret: 'pw', name, identity: identityOf(name), ...extra })
   t.after(() => close(s))
   await s.start({ waitTimeoutMs: 5000 })
+  s.setAgentState({ tool: s.tool, status: 'idle' }) // people typing by hand; their edits are not claimed for them
   return s
 }
 

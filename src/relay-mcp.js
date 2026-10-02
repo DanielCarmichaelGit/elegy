@@ -28,6 +28,7 @@ const FEED_CAP = 300
 const ACTIVITY_CAP = 300
 const TAB_STALE_MS = 3 * 60 * 1000
 const MAX_WRITE_BYTES = 1024 * 1024
+const HOSTED_AUTO_CLAIM_QUIET_MS = 10 * 60 * 1000 // a file a hosted agent stopped writing this long ago is let go of
 const MAX_READ_CHARS = 200 * 1024
 const AGENT = 'agent-mcp' // transaction origin
 
@@ -39,18 +40,18 @@ export const INSTRUCTIONS =
   'Before starting a task, call quilt_status to see who is working on what, and quilt_tasks for the shared board ' +
   '(open tasks assigned to you are listed first). Assign work with quilt_assign_task. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
-  'Do not edit files someone else has claimed; ' +
-  'message them with quilt_message instead. Claim files before larger changes. Always re-read a file right before editing it. ' +
+  'Claims follow your edits: a file you change that nobody holds is claimed for you until you finish. ' +
+  'Do not edit files someone else has claimed; message them with quilt_message instead. Claim ahead only for a larger change across several files. Always re-read a file right before editing it. ' +
   TASK_WORKFLOW
 
 export const HOSTED_INSTRUCTIONS =
   'You are an AI agent in Quilt, where people and agents build one project together in real time. ' +
   'Join a session with quilt_join_session and the invite link you were given; the session owner may have to let you in first ' +
   '(quilt_session_info tells you). Then: quilt_status to see who is doing what, quilt_list_files and quilt_read_file to look ' +
-  'around, quilt_write_file to change a file (always read it right before), quilt_claim before larger changes, quilt_share to ' +
+  'around, quilt_write_file to change a file (always read it right before; the file is claimed for you while you work on it, release it with quilt_release when done), quilt_claim ahead of a larger change across several files, quilt_share to ' +
   'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
-  'Do not edit files someone else has claimed. ' +
+  'Do not edit files someone else has claimed: a refused write tells you who holds the file; message them with quilt_message and carry on with other work. ' +
   'Everyone sees your changes on their own disk within moments. ' +
   TASK_WORKFLOW
 
@@ -122,6 +123,26 @@ function sessionTools (server, ctx) {
     return out
   }
   const claimsOf = (room) => room.claimList ? room.claimList() : []
+  // Claims follow this agent's writes: a file it changes that nobody holds is claimed for it, and let
+  // go when it hasn't written the file for a while (it has no end of turn Quilt can see).
+  const autoHeld = new Map() // `${roomId}\0${rel}` -> timer
+  const roomKey = (room) => room.id || room.name || ''
+  const autoClaim = (room, rel) => {
+    const key = `${roomKey(room)}\0${rel}`
+    clearTimeout(autoHeld.get(key))
+    if (!autoHeld.has(key)) {
+      try { room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: rel, note: 'editing' }) } catch { return false }
+      room.broadcastClaims()
+    }
+    const timer = setTimeout(() => {
+      autoHeld.delete(key)
+      if (!claimsOf(room).some((c) => c.pattern === rel && c.by === me)) return
+      try { room.claimRequest(ctx.who(room), { op: 'release', pattern: rel }); room.broadcastClaims() } catch {}
+    }, HOSTED_AUTO_CLAIM_QUIET_MS)
+    if (timer.unref) timer.unref()
+    autoHeld.set(key, timer)
+    return true
+  }
   // One chronology writer per room, shared by every hosted agent's connection.
   const historyOf = (room) => {
     if (!room.historyLog) room.historyLog = new HistoryLog(room.doc, room.doc.getArray('history'), { origin: AGENT })
@@ -415,8 +436,11 @@ function sessionTools (server, ctx) {
     const refusal = a && changeRefusal(a, rel)
     if (refusal) return fail(`${refusal[0].toUpperCase()}${refusal.slice(1)}.`)
     const claim = claimsOf(room).find((c) => c.by !== me && globMatcher(c.pattern)(rel))
-    if (claim) return fail(`${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}. Message them instead of editing it.`)
+    if (claim) return fail(`${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}. Do not retry: send ${claim.by} a direct message with quilt_message saying what you wanted to change and why, then carry on with other work.`)
     if (blobs.get(rel)?.stored) return fail(`${rel} is a large file kept in storage; it can't be changed here.`)
+    const held = claimsOf(room).some((c) => c.by === me && globMatcher(c.pattern)(rel))
+    const claimedNow = !held && autoClaim(room, rel)
+    if (held && autoHeld.has(`${roomKey(room)}\0${rel}`)) autoClaim(room, rel) // still writing it: keep holding
     if (Buffer.byteLength(content, 'utf8') > MAX_WRITE_BYTES) return fail('That file is too big to write here (1 MB at most).')
     let detail = ''
     let existed = false
@@ -432,7 +456,7 @@ function sessionTools (server, ctx) {
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
       historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
     }, AGENT)
-    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.`)
+    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}`)
   })
 
   tool('quilt_claim', {
@@ -448,6 +472,8 @@ function sessionTools (server, ctx) {
       // Someone who may not post keeps their claim but not its note, which everyone reads.
       const r = room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: pattern.trim(), note: note || '' })
       if (r.ok === false) return fail(r.error || 'Could not claim that.')
+      const key = `${roomKey(room)}\0${pattern.trim()}`
+      clearTimeout(autoHeld.get(key)); autoHeld.delete(key) // claimed on purpose now: kept until released
     } catch (e) { return fail(e.message) }
     room.broadcastClaims()
     return text(`Claimed ${pattern.trim()}. Release it with quilt_release when done.`)
@@ -461,6 +487,8 @@ function sessionTools (server, ctx) {
     const released = []
     for (const c of mine) {
       try { room.claimRequest(ctx.who(room), { op: 'release', pattern: c.pattern }); released.push(c.pattern) } catch {}
+      const key = `${roomKey(room)}\0${c.pattern}`
+      clearTimeout(autoHeld.get(key)); autoHeld.delete(key)
     }
     if (released.length) room.broadcastClaims()
     return text(released.length ? `Released ${released.join(', ')}.` : 'Nothing to release.')

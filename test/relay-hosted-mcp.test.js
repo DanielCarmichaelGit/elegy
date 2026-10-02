@@ -42,6 +42,7 @@ before(async () => {
   fs.writeFileSync(path.join(carlDir, 'README.md'), '# Project\n')
   carl = new Session({ dir: carlDir, server: `ws://127.0.0.1:${srv.port}`, room: 'hm-1', secret: 's', viewSecret: 'v', name: 'Carl', tool: 'Claude Code', identity: id, passes: testPasses(id, { name: 'Carl', sub: 'user-carl' }) })
   await carl.start({ waitTimeoutMs: 5000 })
+  carl.setAgentState({ tool: 'Claude Code', status: 'idle' }) // Carl edits by hand in these tests
   await waitFor(() => carl.isOwner)
   grok = await client(hostedPass())
 })
@@ -146,10 +147,21 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(out(await call('quilt_read_file', { path: 'missing.txt' })), /no file called missing.txt/)
   assert.match(out(await call('quilt_read_file', { path: '../etc/passwd' })), /not a path inside the project/)
 
-  assert.match(out(await call('quilt_write_file', { path: './hello.md', content: 'hello from Grok\n' })), /Created hello.md/)
+  const created = out(await call('quilt_write_file', { path: './hello.md', content: 'hello from Grok\n' }))
+  assert.match(created, /Created hello.md/)
+  assert.match(created, /hello\.md is claimed for you while you work on it/, 'claims follow writes')
   await waitFor(() => read(carlDir, 'hello.md') === 'hello from Grok\n')
-  assert.match(out(await call('quilt_write_file', { path: 'hello.md', content: 'hello from Grok\nand again\n' })), /Updated hello.md \(\+1 -0 lines\)/)
+  await waitFor(() => carl.claimFor('hello.md')?.by === 'Grok-Bot')
+  const updated = out(await call('quilt_write_file', { path: 'hello.md', content: 'hello from Grok\nand again\n' }))
+  assert.match(updated, /Updated hello.md \(\+1 -0 lines\)/)
+  assert.doesNotMatch(updated, /claimed for you/, 'said once')
   await waitFor(() => read(carlDir, 'hello.md') === 'hello from Grok\nand again\n')
+  // The owner's hand edit to the agent's file is undone while the agent holds it; releasing frees it.
+  fs.writeFileSync(path.join(carlDir, 'hello.md'), 'carl was here\n')
+  await waitFor(() => read(carlDir, 'hello.md') === 'hello from Grok\nand again\n')
+  assert.match(carl.takeNotices()[0], /hello\.md was undone: it is claimed by Grok-Bot \(editing\)/)
+  assert.match(out(await call('quilt_release', { pattern: 'hello.md' })), /Released hello\.md/)
+  await waitFor(() => !carl.claimFor('hello.md'))
 
   fs.writeFileSync(path.join(carlDir, 'notes.txt'), 'owner notes')
   await waitFor(async () => out(await call('quilt_read_file', { path: 'notes.txt' })) === 'owner notes')
@@ -258,6 +270,7 @@ test('a hosted agent in an uncontrolled room (no owner) is an editor straight aw
   const dir = tmp('dana')
   const dana = new Session({ dir, server: `ws://127.0.0.1:${srv.port}`, room: 'hm-open', secret: 's', name: 'Dana', identity: id, passes: testPasses(id) })
   await dana.start({ waitTimeoutMs: 5000 })
+  dana.setAgentState({ tool: null, status: 'idle' })
   try {
     assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-open#s' })), /Joined room hm-open as Grok-Bot \(editor\)/)
     await call('quilt_write_file', { path: 'open.txt', content: 'open' })

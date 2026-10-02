@@ -36,6 +36,8 @@ const STILL_MARKED = 'this file has conflict markers in it; finish editing it (o
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
+const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long ago is let go of
+const NOTICE_CAP = 20
 // chokidar drops a 'change' for a path within 50ms of the previous one (no
 // trailing event), so each change is re-checked once that window has passed.
 const WATCH_RECHECK_MS = 80
@@ -50,7 +52,7 @@ const RETRY_MS = 30 * 1000
 const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '' }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -105,6 +107,14 @@ export class Session extends EventEmitter {
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
     this.mergeCliMissing = false // logged once per session
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
+    // Claims follow edits (see autoClaim): path -> when this person last changed it. Released when
+    // their AI goes idle, when the file has been quiet for autoClaimQuietMs, and at stop.
+    this.autoClaims = new Map()
+    this.autoClaimQuietMs = autoClaimQuietMs
+    this.autoClaimTimer = setInterval(() => this.releaseQuietAutoClaims(), Math.max(50, Math.min(60_000, Math.floor(autoClaimQuietMs / 3))))
+    if (this.autoClaimTimer.unref) this.autoClaimTimer.unref()
+    // What this person's AI should hear next time it talks to Quilt (an edit of its that was undone).
+    this.notices = []
 
     this.ig = loadIgnore(this.root)
     this.lastKnown = new Map() // path -> text content, or "bin:<sha1>"
@@ -857,6 +867,9 @@ export class Session extends EventEmitter {
       this.rejectLocal(rel, disk, refusal)
       return false
     }
+    // A change of ours to a file nobody holds claims it for us while our AI works on it. A person
+    // typing by hand while their AI sits idle keeps editing live with everyone, as before.
+    if (disk && this.ready && !this.seeding && disk.key !== this.sharedKey(rel) && (!claim || this.autoClaims.has(rel)) && this.aiMayBeEditing()) this.autoClaim(rel)
 
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
@@ -913,9 +926,25 @@ export class Session extends EventEmitter {
     return true
   }
 
-  /** Someone else claimed rel: keep our version aside and put the shared one back on disk. */
+  /** Someone else claimed rel: keep our version aside, put the shared one back on disk, and tell our AI. */
   rejectClaimed (rel, disk, claim) {
-    this.rejectLocal(rel, disk, `it is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}`, claim.by)
+    const why = `it is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}`
+    this.rejectLocal(rel, disk, why, claim.by)
+    this.notice(`Your change to ${rel} was undone: ${why}. Do not retry or work around it. ` +
+      `Send ${claim.by} a direct message with quilt_message (to: "${claim.by}") saying what you wanted to change in ${rel} and why, ` +
+      'and ask them to make the change or hand the file over; then carry on with other work.')
+  }
+
+  /** Queues a line for this person's AI; the local MCP server hands pending notices over with its next answer. */
+  notice (text) {
+    this.notices.push(text)
+    if (this.notices.length > NOTICE_CAP) this.notices.splice(0, this.notices.length - NOTICE_CAP)
+  }
+
+  takeNotices () {
+    const out = this.notices
+    this.notices = []
+    return out
   }
 
   /** We may not change rel: keep our version aside and put the shared one back on disk. */
@@ -1833,7 +1862,51 @@ export class Session extends EventEmitter {
     pattern = String(pattern ?? '').trim()
     if (!pattern) throw new Error('pattern required')
     await this.conn.claimRequest({ op: 'claim', pattern, note: String(note) })
+    this.autoClaims.delete(pattern) // claimed by hand now: ours until we release it
     return { ok: true }
+  }
+
+  // --------------------------------------------------- claims follow edits --
+  // Whatever tool made the change, a file we edit is claimed for us (so a partner's AI is refused
+  // and told, instead of overwriting us), and let go when we are done: when our AI goes idle, when
+  // the file has been quiet for a while, or when the session stops. Claims made on purpose
+  // (quilt_claim, the app, `quilt claim`) are never touched here.
+
+  /** An agent session, or a person whose AI is working or whose tool Quilt can't read: an edit is probably the AI's. */
+  aiMayBeEditing () {
+    return this.kind === 'agent' || this.agentState?.status !== 'idle'
+  }
+
+  autoClaim (rel) {
+    const first = !this.autoClaims.has(rel)
+    this.autoClaims.set(rel, Date.now())
+    if (!first || !this.conn) return
+    const note = this.focus ? `editing: ${this.focus}` : 'editing'
+    this.conn.claimRequest({ op: 'claim', pattern: rel, note }).catch((err) => {
+      // Lost the race to a partner, or an overlapping claim: their copy wins; ours is undone on the next sync.
+      this.autoClaims.delete(rel)
+      this.log(`could not claim ${rel} for you: ${err.message}`)
+    })
+  }
+
+  /** Releases the claims Quilt made for us. `only(rel, lastEdit)` picks which; all of them by default. */
+  async releaseAutoClaims (only = () => true) {
+    const done = []
+    for (const [rel, ts] of this.autoClaims) {
+      if (!only(rel, ts)) continue
+      this.autoClaims.delete(rel)
+      const c = this.claims.get(rel)
+      if (!c || c.by !== this.name || !this.conn) continue
+      done.push(this.conn.claimRequest({ op: 'release', pattern: rel }).catch(() => {}))
+    }
+    await Promise.all(done)
+    return done.length
+  }
+
+  releaseQuietAutoClaims () {
+    if (!this.ready || this.stopped) return
+    const cutoff = Date.now() - this.autoClaimQuietMs
+    this.releaseAutoClaims((rel, ts) => ts <= cutoff).catch(() => {})
   }
 
   /** Releases one of our claims, or all of them with '*'. Resolves to the number released. */
@@ -2173,8 +2246,11 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
 
   /** Live status from the AI chat reader ("working", "idle", "unavailable"). */
   setAgentState (state) {
+    const was = this.agentState?.status
     this.agentState = state ? { tool: state.tool || null, status: state.status || 'idle', ...(state.reason ? { reason: state.reason } : {}), ...(state.notes ? { notes: state.notes } : {}) } : null
     this.publishAgentState()
+    // Our AI finished its turn: the files Quilt claimed for it while it worked are free again.
+    if (was === 'working' && this.agentState?.status !== 'working' && this.autoClaims.size) this.releaseAutoClaims().catch(() => {})
   }
 
   publishAgentState () {
@@ -2301,6 +2377,10 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
 
   async stop () {
     this.ready = false
+    clearInterval(this.autoClaimTimer)
+    if (this.autoClaims.size && this.conn && !this.stopped) {
+      await Promise.race([this.releaseAutoClaims(), new Promise((r) => setTimeout(r, 2000))])
+    }
     this.stopped = true
     clearInterval(this.retryTimer)
     if (this.watcher) await this.watcher.close()

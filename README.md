@@ -183,7 +183,7 @@ See [Claims](#claims).
 | `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
-| `quilt_claim` / `quilt_release` | Claim or release files by hand (Claude Code does this automatically as it edits) |
+| `quilt_claim` / `quilt_release` | Claim or release files by hand (Quilt claims files for you as your AI edits them) |
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
 | `quilt_inbox` | What is waiting for you: mentions (`@yourname`), direct messages and tasks handed to you since you last looked |
@@ -212,26 +212,31 @@ The file tree on the left shows orange badges on files edited in the last two
 minutes and purple badges on claims. Use a file's or folder's ⋯ menu to claim
 or release it.
 
-**No AI edits a file without claiming it first.** In Claude Code, Quilt's hooks
-make this automatic, so nobody has to remember:
+**No AI edits a file without claiming it first, whatever tool it runs in.** Claims
+follow edits, so nobody has to remember:
 
-- Before every edit, the file is claimed for you (note: `editing`, or your current
-  focus). Files you already hold, files Quilt doesn't sync, and files outside the
-  project need no claim.
-- If someone else holds the file, the edit is refused before it happens. Claude is
-  told who holds it and why, and to send them a direct message saying what it wanted
-  to change and asking for help, then carry on with other work.
-- The holder's Claude sees that message after its next edit, and if it tries to
-  finish with an unanswered one it is asked to reply first: help with the change,
-  hand the file over, or say when it will be done. The person still sees the message
-  as unread in the app.
-- Claims the hooks made are released when Claude finishes its turn and when its
-  session ends. Claims you made yourself (`quilt claim`, the ⋯ menu, `quilt_claim`)
-  are never touched. If a Claude crashes, the next session for the folder releases
-  what it left behind.
+- **Every tool.** The moment your AI changes a file nobody holds, Quilt claims it for
+  you (note: `editing`, or your current focus). Quilt watches the disk, so this covers
+  Cursor, Codex, Windsurf, a terminal agent, anything. The claim ends when your AI
+  goes idle (Quilt reads Claude Code and Cursor), when the file has been quiet for
+  five minutes (for tools it can't read), and when the session stops. When Quilt can
+  see your AI is idle, your own hand edits are not claimed, so two people can still
+  type in one file together.
+- **A partner's edit to your file is undone** and put back the way you have it. Their
+  AI hears about it with its next Quilt tool call: who holds the file and why, and to
+  send you a direct message saying what it wanted to change rather than retry.
+- **Claude Code gets the nicer version** through hooks in your own
+  `.claude/settings.local.json`: the edit is refused before it happens, the holder's
+  Claude sees the message after its next edit, and if it tries to finish with an
+  unanswered one it is asked to reply first. Hook claims end when Claude finishes
+  its turn; a crashed Claude's leftovers are released by the next session.
+- **Hosted agents** (on `api.heyquilt.com/mcp`) are claimed for when they write a
+  file and let go after ten quiet minutes; a write to someone else's file is refused
+  with the same advice.
+- Claims you made yourself (`quilt claim`, the ⋯ menu, `quilt_claim`) are never
+  touched by any of this.
 
-Other tools keep the written rule (claim first, release when done) and the
-enforcement below.
+The enforcement below is what makes the claim count:
 
 Claims are enforced in code, not just by asking agents nicely:
 

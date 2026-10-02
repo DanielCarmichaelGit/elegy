@@ -18,6 +18,8 @@ export async function startControl (session, extras = {}) {
     'POST /get': async (b) => ({ path: await session.fetchFile(b.id, b.dest) }),
     'POST /focus': (b) => { session.setFocus(b.text); return { ok: true } },
     'POST /claim': (b) => session.claim(b.pattern, b.note),
+    // What this person's AI should hear (an edit of its that Quilt undone); handed over once.
+    'POST /notices': () => ({ notices: session.takeNotices() }),
     'POST /release': async (b) => ({ released: await session.release(b.pattern) }),
     // Who owns one path (the hooks ask before every edit). `shared` is false for paths Quilt doesn't sync.
     'POST /claim-for': (b) => {
