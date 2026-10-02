@@ -148,9 +148,13 @@ reporter.record({ kind, name, outcome, durationMs, status, message, context })
   records `{ kind: 'action', name, outcome, durationMs, status, message,
   context }` where `name` is the route key with the session id replaced
   (`POST /api/sessions/:id/open-in`) and `context` holds the few body fields
-  worth keeping per route (`open-in`: `{ app }`; `start`/`join`: `{ tool }`;
-  nothing else by default). Over 3 s is `slow`. A thrown error is `error` with
-  its message; the error still reaches the UI exactly as today.
+  worth keeping per route (`POST /api/sessions/:id/open-in`: `{ app }`;
+  `POST /api/sessions`: `{ mode, tool, prefer }`; nothing else by default).
+  Over 3 s is `slow`. A thrown error is `error` with its message; the error
+  still reaches the UI exactly as today. An `ok` outcome is only kept for
+  non-GET routes — a successful read (every `GET`) is not recorded, since the
+  renderer polls and refreshes constantly; `slow` and `error` are kept for
+  every route, GET included.
 - Unknown routes record `http404`.
 - `POST /api/report` (open before sign-in): the renderer's own errors, body
   `{ name, message, context }`, recorded as kind `error`.

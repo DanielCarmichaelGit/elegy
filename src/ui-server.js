@@ -113,13 +113,12 @@ const CSP = [
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
 // link, so a dev preview pane can show the app. Any local page could then open it too.
-export async function startUi ({ port = 7420, onShutdown, preview = false, reporter } = {}) {
+export async function startUi ({ port = 7420, onShutdown, preview = false, reporter, slowMs = 3000 } = {}) {
   // What this app tells Quilt about itself (see report.js). Off with the "report" setting.
   reporter = reporter || createReporter({ token: () => readAccount()?.token || null, enabled: () => getSettings().report !== false })
   // Body fields worth keeping with a route's outcome: which editor, which kind of start. Never free text.
-  const CONTEXT_FIELDS = { 'POST /api/sessions/:id/open-in': ['app'], 'POST /api/sessions': ['mode', 'tool', 'prefer'], 'POST /api/settings': [] }
+  const CONTEXT_FIELDS = { 'POST /api/sessions/:id/open-in': ['app'], 'POST /api/sessions': ['mode', 'tool', 'prefer'] }
   const contextFor = (key, body) => Object.fromEntries((CONTEXT_FIELDS[key] || []).filter((f) => typeof body?.[f] === 'string').map((f) => [f, body[f].slice(0, 40)]))
-  const SLOW_MS = 3000
   // Not recorded: reports about reports. (The event stream never reaches the dispatch block
   // below — it returns earlier — so it needs no entry here.)
   const UNRECORDED = new Set(['POST /api/report'])
@@ -127,7 +126,12 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     // The reporter's own `enabled()` is the single gate on the "report" setting.
     if (UNRECORDED.has(key)) return
     const durationMs = Date.now() - startedAt
-    reporter.record({ kind: 'action', name: key, outcome: error ? 'error' : durationMs > SLOW_MS ? 'slow' : 'ok', status, durationMs, message: error ? error.message : '', context: contextFor(key, body) })
+    const outcome = error ? 'error' : durationMs > slowMs ? 'slow' : 'ok'
+    // A successful read (GET) isn't worth a row: the renderer polls and refreshes
+    // constantly, and an `ok` there would just be a usage log nobody was told about.
+    // Every non-GET outcome, and every slow or failed GET, is still kept.
+    if (outcome === 'ok' && key.startsWith('GET ')) return
+    reporter.record({ kind: 'action', name: key, outcome, status, durationMs, message: error ? error.message : '', context: contextFor(key, body) })
   }
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
@@ -602,7 +606,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       link = null
       for (const id of [...runs.keys()]) await stop(id)
       for (const res of clients) res.end()
-      await reporter.flush()
+      await reporter.close()
       await new Promise((r) => server.close(r))
     }
   }

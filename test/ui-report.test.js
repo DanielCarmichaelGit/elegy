@@ -20,29 +20,50 @@ const reporter = createReporter({
   api: 'https://api.test', version: '0.3.2', platform: 'darwin', batchSize: 1, delayMs: 0
 })
 let ui
+let uiSlow
 before(async () => {
   // A signed-in computer, so routes answer (the token is never used: the reporter's fetch is fake and the relay isn't needed).
   fs.mkdirSync(path.join(home, '.quilt'), { recursive: true })
   fs.writeFileSync(path.join(home, '.quilt', 'account.json'), JSON.stringify({ token: 'qd_test', account: { id: 'u1', name: 'Dana', email: '' }, signedInAt: Date.now() }), { mode: 0o600 })
   ui = await startUi({ port: 0, reporter })
+  // Everything is "slow" on this one, so a handler's outcome is always 'slow', never 'ok'.
+  uiSlow = await startUi({ port: 0, reporter, slowMs: -1 })
 })
-after(() => ui.close())
+after(async () => { await ui.close(); await uiSlow.close() })
 
-const call = (method, p, body) => fetch(`http://127.0.0.1:${ui.port}${p}`, {
-  method, headers: { 'x-quilt-token': ui.token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined
+const callOn = (target, method, p, body) => fetch(`http://127.0.0.1:${target.port}${p}`, {
+  method, headers: { 'x-quilt-token': target.token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined
 }).then(async (r) => ({ status: r.status, body: await r.json() }))
+const call = (method, p, body) => callOn(ui, method, p, body)
 const settle = () => new Promise((r) => setTimeout(r, 30))
 const events = () => sent.flatMap((b) => b.events)
 const last = (name) => events().filter((e) => e.name === name).at(-1)
 
-test('a handler that works is recorded ok, with its duration and the context fields the route keeps', async () => {
+test('a successful GET is not recorded: reads happen constantly and are not worth a row', async () => {
+  const before = events().length
   const r = await call('GET', '/api/settings')
   assert.equal(r.status, 200)
   assert.equal(r.body.report, true, 'reporting is on by default')
   await settle()
-  const e = last('GET /api/settings')
+  assert.equal(events().length, before, 'nothing new was recorded for a successful read')
+})
+
+test('a successful POST is recorded ok, with its duration and the context fields the route keeps', async () => {
+  const r = await call('POST', '/api/settings', { report: true })
+  assert.equal(r.status, 200)
+  assert.equal(r.body.report, true)
+  await settle()
+  const e = last('POST /api/settings')
   assert.equal(e.kind, 'action'); assert.equal(e.outcome, 'ok'); assert.equal(e.status, 200)
   assert.equal(typeof e.durationMs, 'number'); assert.deepEqual(e.context, {})
+})
+
+test('a slow POST is recorded as slow, even though a successful GET is skipped', async () => {
+  const r = await callOn(uiSlow, 'POST', '/api/settings', { report: true })
+  assert.equal(r.status, 200)
+  await settle()
+  const e = last('POST /api/settings')
+  assert.equal(e.outcome, 'slow'); assert.equal(e.status, 200)
 })
 
 test('a handler that fails is recorded as an error with the message the person saw, and the session id is not in the name', async () => {
