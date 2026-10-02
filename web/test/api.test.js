@@ -11,7 +11,7 @@ before(async () => {
       let parsed = body
       try { parsed = JSON.parse(body) } catch {}
       seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: parsed })
-      res.writeHead(req.url === '/v1/boom' ? 500 : req.url === '/v1/missing' ? 404 : 200, { 'content-type': 'application/json' })
+      res.writeHead(req.url.includes('/boom') ? 500 : req.url === '/v1/missing' ? 404 : 200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ echo: req.url }))
     })
   }).listen(0)
@@ -53,19 +53,29 @@ test('a request that never gets a response times out to the same failed shape', 
 test('a failed or slow call to the API is reported once, with the key, and ordinary 4xx answers are not', async () => {
   const { apiCall } = await import('../lib/api.js')
   process.env.QUILT_REPORT_KEY = 'rk_web'
+  const wait = () => new Promise((r) => setTimeout(r, 50))
   const before = seen.length
   await apiCall({ accessToken: 'tok', id: 'u-1' }, 'GET', '/v1/boom')
+  await wait() // the report is fire-and-forget, so give it a moment to land
   const rep = seen.slice(before).find((s) => s.url === '/v1/issues')
   assert.ok(rep, 'the 500 was reported')
   assert.equal(rep.body.events[0].name, 'GET /v1/boom'); assert.equal(rep.body.events[0].status, 500); assert.equal(rep.body.events[0].outcome, 'error')
   assert.equal(rep.body.userId, 'u-1')
   const n = seen.length
   await apiCall({ accessToken: 'tok' }, 'GET', '/v1/agents')
+  await wait()
   assert.equal(seen.slice(n).filter((s) => s.url === '/v1/issues').length, 0, 'a 200 is not reported')
   const n2 = seen.length
   await apiCall({ accessToken: 'tok', id: 'u-2' }, 'GET', '/v1/missing')
+  await wait()
   const rep404 = seen.slice(n2).find((s) => s.url === '/v1/issues')
   assert.ok(rep404, 'the 404 was reported')
   assert.equal(rep404.body.events[0].status, 404)
+  const n3 = seen.length
+  await apiCall({ accessToken: 'tok' }, 'GET', '/v1/orgs/3f2504e0-4f89-11d3-9a0c-0305e82c3301/boom?x=1')
+  await wait()
+  const repId = seen.slice(n3).find((s) => s.url === '/v1/issues')
+  assert.ok(repId, 'the 500 behind an id was reported')
+  assert.equal(repId.body.events[0].name, 'GET /v1/orgs/:id/boom')
   delete process.env.QUILT_REPORT_KEY
 })

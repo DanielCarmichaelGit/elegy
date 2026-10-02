@@ -31,7 +31,9 @@ export async function apiCall (user, method, path, body) {
   const durationMs = Date.now() - started
   const failed = result.status === 0 || result.status === 404 || result.status >= 500
   if (failed || durationMs > SLOW_MS) {
-    await report({ kind: 'action', name: nameOf(method, path), outcome: failed ? 'error' : 'slow', status: result.status || undefined, durationMs, message: failed ? (result.data?.error || `Quilt answered ${result.status}`) : '', userId: user?.id || null })
+    // Fire-and-forget: a report never delays the page. If the function host ends the request
+    // before it lands, the report is lost, which is acceptable.
+    report({ kind: 'action', name: nameOf(method, path), outcome: failed ? 'error' : 'slow', status: result.status || undefined, durationMs, message: failed ? (result.data?.error || `Quilt answered ${result.status}`) : '', userId: user?.id || null }).catch(() => {})
   }
   return result
 }
