@@ -29,8 +29,9 @@ import {
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
-import { verifyPass } from './passes.js'
-import { patternsOverlap, globMatcher } from './fsutil.js'
+import { verifyPass, PASS_TTL_MS } from './passes.js'
+import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange } from './session-access.js'
+import { patternsOverlap } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
@@ -194,7 +195,7 @@ class Room {
    * for the owner. `account` is '<kind>:<sub>' from their pass when sign-in is
    * on: then they are their account, on any computer, not their key.
    */
-  accessFor (key, name, kind, invitedAs, account = '') {
+  accessFor (key, name, kind, invitedAs, account = '', pass = null) {
     if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false }
     if (!this.meta.owner) {
       // The room's creator becomes its owner when they sign in, and nobody else, however much
@@ -212,14 +213,72 @@ class Room {
       }
       return { state: 'approved', role: 'editor', scopes: [], owner: true }
     }
+    // A room pass with a grant (from the accounts API) lets them straight in, with its access.
+    const granted = this.passGrant(pass)
+    if (granted) {
+      this.noteGranted(account, name, kind, granted)
+      return { state: 'approved', ...relayAccess(granted), owner: false, id: account }
+    }
     // Members approved with a pass are kept under their account; older ones under their key.
     const id = account && this.meta.members[account] ? account : key
     const m = this.meta.members[id]
     if (m) {
       if (m.name !== name || m.kind !== kind) { m.name = name; m.kind = kind; this.saveMeta() }
-      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
+      return { state: 'approved', ...memberAccess(m), owner: false, id }
     }
     return { state: 'pending', invitedAs }
+  }
+
+  /**
+   * What a pass for this room lets its holder do here (the grant the accounts API signed
+   * into it), or null: no pass for this room, no grant, or the owner removed them after it
+   * was issued. An owner's narrowing made after it was issued still applies.
+   */
+  passGrant (pass) {
+    if (!pass || pass.room !== this.name) return null
+    const access = cleanAccess(pass.access)
+    if (!access) return null
+    const account = `${pass.kind}:${pass.sub}`
+    const issued = typeof pass.iat === 'number' ? pass.iat : pass.exp - PASS_TTL_MS
+    const removedAt = (this.meta.removed || {})[account]
+    if (removedAt && issued <= removedAt) return null
+    const m = this.meta.members[account]
+    if (m && m.setAt && issued <= m.setAt) return narrowAccess(access, fromRelay(m))
+    return access
+  }
+
+  /** Keeps someone let in by their pass's grant on the member list, with that access. */
+  noteGranted (id, name, kind, access) {
+    const m = this.meta.members[id]
+    if (m && m.name === name && m.kind === kind && sameAccess(fromRelay(m), access)) return
+    this.meta.members[id] = { ...(m || {}), name, kind, ...relayAccess(access), since: m?.since || Date.now(), granted: true }
+    this.saveMeta()
+  }
+
+  /**
+   * A fresh pass arrived (see renewPass): its grant applies now. Someone waiting is let in,
+   * and someone in the room gets the new access, both without the owner.
+   */
+  passRenewed (ws) {
+    const granted = this.passGrant(ws.pass)
+    if (!granted) return
+    const id = `${ws.pass.kind}:${ws.pass.sub}`
+    if (this.meta.ownerSub === id) return
+    const waiting = this.pending.get(ws)
+    if (waiting) {
+      this.pending.delete(ws)
+      this.noteGranted(id, waiting.name, waiting.kind, granted)
+      this.log(`[${this.name}] ${waiting.name} was let in by their invite`)
+      this.enter(ws, { key: waiting.key, id, name: waiting.name, kind: waiting.kind, ...relayAccess(granted), owner: false })
+      return
+    }
+    const a = this.access.get(ws)
+    if (!a || a.owner || sameAccess(fromRelay(a), granted)) return
+    this.noteGranted(id, a.name, a.kind, granted)
+    Object.assign(a, relayAccess(granted))
+    this.setAccess(ws, a)
+    send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    this.broadcastMembers()
   }
 
   /**
@@ -249,6 +308,7 @@ class Room {
     if (!this.controlled) return true
     const account = `${pass.kind}:${pass.sub}`
     if (this.meta.owner && this.isOwner(pass.key, account)) return true
+    if (this.passGrant(pass)) return true
     return !!(this.meta.members[account] || this.meta.members[pass.key])
   }
 
@@ -281,7 +341,7 @@ class Room {
     const m = this.meta.members[id]
     if (m) {
       if (m.name !== pass.name) { m.name = pass.name; this.saveMeta() }
-      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
+      return { state: 'approved', ...memberAccess(m), owner: false, id }
     }
     return { state: 'pending', id }
   }
@@ -315,10 +375,7 @@ class Room {
   }
 
   /** May this connection change this file? */
-  mayWrite (a, rel) {
-    if (!a || a.role === 'viewer') return false
-    return !a.scopes || !a.scopes.length || a.scopes.some((s) => globMatcher(s)(rel))
-  }
+  mayWrite (a, rel) { return mayChange(a, rel) }
 
   /**
    * A restricted member (viewer, or agent limited to folders) changed the doc.
@@ -389,13 +446,13 @@ class Room {
   }
 
   accessMessage (a) {
-    return { state: 'approved', role: a.role, scopes: a.scopes || [], owner: !!a.owner, controlled: this.controlled }
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled }
   }
 
   /** Tracks restricted connections so their file changes are checked. */
   setAccess (ws, a) {
     this.access.set(ws, a)
-    const restricted = a.role === 'viewer' || (a.scopes && a.scopes.length)
+    const restricted = a.role === 'viewer' || (a.scopes && a.scopes.length) || (a.scopesExcept && a.scopesExcept.length) || a.talk === false
     if (restricted) this.guard.trackedOrigins.add(ws)
     else this.guard.trackedOrigins.delete(ws)
   }
@@ -409,7 +466,7 @@ class Room {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
       list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
-    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, role: m.role, scopes: m.scopes || [], online: online.has(key) })
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key) })
     return list
   }
 
@@ -664,6 +721,7 @@ class Room {
       // (MSG_PASS is under 128, so it is the whole first byte.)
       if (ws.pass && buf[0] === MSG_PASS) {
         if (!renewPass(ws, buf)) this.log(`[${this.name}] ignored a pass refresh from ${name} that wasn't theirs`)
+        else this.passRenewed(ws)
         return
       }
       if (joined || this.access.has(ws)) {
@@ -689,7 +747,7 @@ class Room {
         if (!this.keyMatches(name, publicKey)) return ws.close(CLOSE_NAME_TAKEN, nameTaken(name))
         this.bindName(name, publicKey)
       }
-      const acc = this.accessFor(publicKey, name, kind, invitedAs, account)
+      const acc = this.accessFor(publicKey, name, kind, invitedAs, account, ws.pass)
       if (acc.state === 'pending') {
         waiting = true
         this.pending.set(ws, { key: publicKey, id: account || publicKey, name, kind, invitedAs, since: Date.now() })
@@ -700,7 +758,7 @@ class Room {
         return
       }
       joined = true
-      this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, owner: acc.owner })
+      this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, scopesExcept: acc.scopesExcept || [], talk: acc.talk !== false, owner: acc.owner })
       onJoin()
     })
     ws.on('close', () => {
@@ -714,7 +772,12 @@ class Room {
   enter (ws, a) {
     this.setAccess(ws, a)
     // Presence: an account's visit starts once it's let in (never while it waits for the owner).
-    if (ws.pass && this.presence && !ws.visit) ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
+    if (ws.pass && this.presence && !ws.visit) {
+      ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
+      // The accounts API learns who owns a session from this report, and only the owner may
+      // give people access there: tell it now rather than within the minute.
+      if (a.owner) this.presence.tick().catch(() => {})
+    }
     send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
     this.join(ws, a.name)
     this.broadcastMembers()
@@ -820,6 +883,9 @@ class Room {
 
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
 
+/** A saved member's access, in the relay's shape (members saved before access types may talk and have no exceptions). */
+const memberAccess = (m) => ({ role: m.role, scopes: m.scopes || [], scopesExcept: m.scopesExcept || [], talk: m.talk !== false })
+
 /** Closes the connection when its pass runs out, unless a newer one arrives first. */
 function trackPass (ws, pass) {
   ws.pass = pass
@@ -836,7 +902,7 @@ function renewPass (ws, buf) {
     decoding.readVarUint(dec)
     next = verifyPass(String(JSON.parse(decoding.readVarString(dec)).pass || ''), ws.passKey)
   } catch {}
-  if (!next || next.sub !== ws.pass.sub || next.kind !== ws.pass.kind || next.key !== ws.pass.key) return false
+  if (!next || next.sub !== ws.pass.sub || next.kind !== ws.pass.kind || next.key !== ws.pass.key || next.room !== ws.pass.room) return false
   trackPass(ws, next)
   return true
 }
@@ -850,7 +916,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const passKey = cfg.passPublicKey ? parsePublicKey(cfg.passPublicKey) : null
   if (cfg.passPublicKey && !passKey) throw new Error('QUILT_PASS_PUBLIC_KEY is not an Ed25519 public key (spki, base64url)')
   /** With sign-in on: the request's valid pass, or null. With it off: an empty pass. */
-  const httpPass = (req) => passKey ? verifyPass(String(req.headers['x-quilt-pass'] || ''), passKey) : {}
+  const httpPass = (req, room = '') => {
+    if (!passKey) return {}
+    const p = verifyPass(String(req.headers['x-quilt-pass'] || ''), passKey)
+    // A room pass is good in its own room only.
+    return p && (!p.room || !room || p.room === room) ? p : null
+  }
   // Who a new session counts against: their account with sign-in on, otherwise their address.
   const starterOf = (pass, req) => pass && pass.sub ? `${pass.kind}:${pass.sub}` : clientIp(req)
   // Without sign-in the limit is per address, and the message says so (as before).
@@ -1052,6 +1123,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         if (err) return text(400, err.message)
         const { token, room: roomName, secret, name, tool } = body || {}
         if (!TOKEN_RE.test(String(token)) || !ROOM_RE.test(String(roomName)) || typeof name !== 'string' || !name.trim()) return text(400, 'bad link')
+        if (pass.room && pass.room !== roomName) return text(401, SIGN_IN)
         if (roomEnded(roomName)) return text(410, ENDED_MESSAGE)
         const room = getRoom(roomName)
         if (!room) return text(...refused(roomName))
@@ -1109,7 +1181,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         return receiveBlob(req, file, Number(n), (err) => err ? text(err.code || 500, err.message) : text(201, 'stored'))
       }
       if (req.method !== 'POST') return text(405, 'method not allowed')
-      const pass = httpPass(req)
+      const pass = httpPass(req, name)
       if (!pass) return text(401, SIGN_IN)
       const starter = starterOf(pass, req)
       const room = getRoom(name)
@@ -1153,7 +1225,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
     const [, name, id] = m
     if (roomEnded(name)) return text(410, ENDED_MESSAGE)
-    const pass = httpPass(req)
+    const pass = httpPass(req, name)
     if (!pass) return text(401, SIGN_IN)
     const starter = starterOf(pass, req)
     const room = getRoom(name)
@@ -1202,7 +1274,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!ROOM_RE.test(name)) return reject(socket, 400, 'Bad room name')
     // With sign-in on, nobody gets further without a pass, and who they are comes from it.
     const pass = passKey ? verifyPass(header('x-quilt-pass') || url.searchParams.get('pass') || '', passKey) : null
-    if (passKey && (!pass || pass.key !== publicKey)) return reject(socket, 401, SIGN_IN)
+    if (passKey && (!pass || pass.key !== publicKey || (pass.room && pass.room !== name))) return reject(socket, 401, SIGN_IN)
     const person = pass ? pass.name : (url.searchParams.get('name') || '').trim()
     const kind = pass ? (pass.kind === 'agent' ? 'agent' : 'human') : (url.searchParams.get('kind') === 'agent' ? 'agent' : 'human')
     // People and agents come from different id spaces, so the kind is part of who they are.

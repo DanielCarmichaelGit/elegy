@@ -5,9 +5,9 @@ import { PassSource } from '../src/pass-source.js'
 
 export const PASS_KEYS = newPassKeys()
 
-/** A pass for `identity`, like the API would sign it (any field can be overridden). */
-export function makePass ({ identity, name = 'Dana', kind = 'person', sub = 'user-dana', exp = Date.now() + PASS_TTL_MS, v = 1, keys = PASS_KEYS }) {
-  return signPass({ v, sub, kind, name, key: identity.publicKey, exp }, keys.privateKey)
+/** A pass for `identity`, like the API would sign it (any field can be overridden; others, like room and access, are added). */
+export function makePass ({ identity, name = 'Dana', kind = 'person', sub = 'user-dana', exp = Date.now() + PASS_TTL_MS, v = 1, keys = PASS_KEYS, ...extra }) {
+  return signPass({ v, sub, kind, name, key: identity.publicKey, exp, ...extra }, keys.privateKey)
 }
 
 /** Passes made locally for `identity`, the way the API would hand them out. */

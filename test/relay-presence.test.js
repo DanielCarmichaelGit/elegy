@@ -103,6 +103,14 @@ test('an account let in starts a visit, and leaving ends it', async (t) => {
   assert.equal(api.events[2].start, api.events[1].id)
 })
 
+test("the owner's visit reaches the accounts API at once, so they can give people access straight away", async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch, flushMs: 60 * 60 * 1000 } })
+  const r = room()
+  await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  await waitFor(() => api.events.some((e) => e.type === 'start' && e.owner && e.room === r))
+})
+
 test('someone waiting for the owner records nothing, and nothing if they are turned away', async (t) => {
   const api = collector()
   const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })

@@ -10,6 +10,7 @@ export const PASS_VERSION = 1
 export const PASS_TTL_MS = 10 * 60 * 1000
 const MAX_NAME = 64
 const KINDS = ['person', 'agent']
+const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 
 /** A new signing pair, encoded like identity keys: SPKI and PKCS8 DER, in base64url. */
 export function newPassKeys () {
@@ -55,6 +56,8 @@ export function verifyPass (pass, key, { now = Date.now() } = {}) {
   if (typeof p.exp !== 'number' || p.exp <= now) return null
   if (typeof p.sub !== 'string' || !p.sub || !KINDS.includes(p.kind)) return null
   if (typeof p.name !== 'string' || !p.name.trim() || p.name.length > MAX_NAME) return null
+  // A room pass is good in that room only (see access in session-access.js).
+  if (p.room !== undefined && (typeof p.room !== 'string' || !ROOM.test(p.room))) return null
   // No key: an HTTP-only pass (a hosted agent, see relay-mcp.js); it can't open a WebSocket.
   if (typeof p.key !== 'string' || (p.key && !parsePublicKey(p.key))) return null
   return p

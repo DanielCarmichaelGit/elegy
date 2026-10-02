@@ -45,3 +45,9 @@ test('a pass with no key is a valid HTTP-only pass; a pass with a bad key is not
   const bad = signPass({ v: 1, sub: 'agent-1', kind: 'agent', name: 'Grok-Bot', key: 'not-a-key', exp }, keys.privateKey)
   assert.equal(verifyPass(bad, keys.publicKey), null)
 })
+
+test('a room pass names its room as a session name, and keeps its access and email', () => {
+  const room = fields({ room: 'room-1', iat: Date.now(), access: { files: 'view', folders: [], foldersExcept: [], talk: false }, email: 'dana@acme.com' })
+  assert.deepEqual(verifyPass(signPass(room, keys.privateKey), keys.publicKey), room)
+  for (const bad of ['', 'a room', '../x', 7]) assert.equal(verifyPass(signPass(fields({ room: bad }), keys.privateKey), keys.publicKey), null, JSON.stringify(bad))
+})
