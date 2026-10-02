@@ -259,3 +259,43 @@ test('the owner can end a session for everyone from the app', async () => {
   const state = await api('GET', '/api/state')
   assert.equal(state.body.sessions.filter((s) => s.id === id).length, 0, 'stopped locally')
 })
+
+test('a hostile chat message id never reaches the file link unescaped', async () => {
+  // Any room member can push a message with any id (issue 021). The download link is
+  // built from it, so it must be a hex id, escaped and percent-encoded, or not rendered.
+  const { fileCardHref, renderable } = await import('../src/ui/chat.js')
+  const hostile = 'zz" onmouseover="window.__xss=1" data-x="'
+  const href = fileCardHref('s1', hostile, 'tok"en')
+  assert.ok(!href.includes('"'), `no raw quote in ${href}`)
+  assert.ok(!/onmouseover=/.test(href), 'no inline handler')
+  assert.ok(href.includes(encodeURIComponent(hostile)), 'the id is percent-encoded')
+  assert.equal(fileCardHref('s1', 'abcdef0123', 'tok'), '/api/sessions/s1/files/abcdef0123?t=tok')
+
+  const good = { id: 'abcdef0123', by: 'Mo', text: 'hi', ts: 1 }
+  const list = renderable([
+    good,
+    { ...good, id: hostile },
+    { ...good, id: 'abc' }, // too short to be one of ours
+    { ...good, id: 'ABCDEF0123' }, // not lower-case hex
+    { ...good, by: { toString: () => 'x' } },
+    { ...good, to: 7 },
+    { ...good, text: ['no'] },
+    { ...good, file: 'notes.txt' },
+    { ...good, file: { name: 'notes.txt', size: 'big' } },
+    { ...good, id: 'ffffffff', to: 'Mo', text: null, file: { name: 'notes.txt', size: 5 } },
+    null,
+    'string'
+  ])
+  assert.deepEqual(list.map((m) => m.id), ['abcdef0123', 'ffffffff'])
+})
+
+test('the app page carries a Content-Security-Policy that blocks inline script', async () => {
+  const page = await fetch(base + '/')
+  const csp = page.headers.get('content-security-policy')
+  assert.ok(csp, 'CSP header on the page')
+  assert.match(csp, /(^|;)\s*script-src 'self'\s*(;|$)/, 'only our own scripts, no inline or event handlers')
+  assert.match(csp, /(^|;)\s*default-src 'self'\s*(;|$)/)
+  assert.match(csp, /object-src 'none'/)
+  assert.match(csp, /base-uri 'none'/)
+  assert.equal((await fetch(base + '/chat.js')).status, 200, 'the chat helpers are served to the page')
+})

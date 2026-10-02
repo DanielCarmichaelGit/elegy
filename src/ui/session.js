@@ -7,6 +7,7 @@ import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
 import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
 import { quiltMark } from './mark.js'
+import { fileCardHref, renderable } from './chat.js'
 
 let current = null // session id being shown
 let timers = []
@@ -964,7 +965,7 @@ function renderRecipients () {
   const sel = $('#to-select')
   if (!s || !sel) return
   const names = new Set(s.status.peers.map((p) => p.name))
-  for (const m of state.messages.get(current) || []) {
+  for (const m of renderable(state.messages.get(current))) {
     if (m.by !== s.status.me.name) names.add(m.by)
     if (m.to && m.to !== s.status.me.name) names.add(m.to)
   }
@@ -982,7 +983,7 @@ function renderMessages (incoming = false, force = false) {
   const s = sum()
   if (!el || !s) return
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  const list = state.messages.get(current) || []
+  const list = renderable(state.messages.get(current)) // peers can push anything into the room
   const name = s.status.me.name
   const colors = new Map(s.status.peers.map((p) => [p.name, p.color]))
   colors.set(name, s.status.me.color)
@@ -990,7 +991,7 @@ function renderMessages (incoming = false, force = false) {
     ? list.map((m) => {
       const mine = m.by === name
       const dm = m.to ? `<span class="dm">${mine ? `to ${esc(m.to)}` : 'direct'}</span>` : ''
-      const file = m.file ? `<a class="file-card" href="/api/sessions/${current}/files/${m.id}?t=${encodeURIComponent(TOKEN)}" download="${esc(m.file.name)}">
+      const file = m.file ? `<a class="file-card" href="${fileCardHref(current, m.id, TOKEN)}" download="${esc(m.file.name)}">
           <span class="fi">${I.file}</span><span style="min-width:0"><div class="fn">${esc(m.file.name)}</div><div class="fs">${bytes(m.file.size)} · ${mine ? 'sent' : 'download'}</div></span></a>` : ''
       return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(m.by, colors.get(m.by))}
         <div style="min-width:0"><div class="head"><b>${mine ? 'You' : esc(m.by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>

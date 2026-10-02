@@ -80,6 +80,7 @@ const STATIC = {
   '/mark.js': ['mark.js', 'text/javascript; charset=utf-8'],
   '/invite.js': ['invite.js', 'text/javascript; charset=utf-8'],
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
+  '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
@@ -87,6 +88,22 @@ const STATIC = {
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/git.js': ['git.js', 'text/javascript; charset=utf-8']
 }
+
+// The page's Content-Security-Policy: scripts only from our own files (no inline script or
+// event handlers, the second line of defence against injected markup), fonts and the event
+// stream from this server, inline style attributes allowed since the UI sets them.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'"
+].join('; ')
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
 // link, so a dev preview pane can show the app. Any local page could then open it too.
@@ -412,7 +429,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     }
     if (req.method === 'GET' && STATIC[url.pathname]) {
       const [file, type] = STATIC[url.pathname]
-      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' })
+      const headers = { 'content-type': type, 'cache-control': 'no-store' }
+      if (url.pathname === '/') headers['content-security-policy'] = CSP
+      res.writeHead(200, headers)
       return res.end(fs.readFileSync(path.join(UI_DIR, file)))
     }
     const font = req.method === 'GET' && url.pathname.match(/^\/fonts\/([a-z-]+)\/([^/]+)$/)

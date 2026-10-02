@@ -1,6 +1,6 @@
 # 021: Stored XSS in the chat panel through a peer-controlled message id
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** app UI from main (0.3.1), reproduced live with two clients on a local relay
+**Status:** **Fixed** (a95063c) · **Reported:** 2026-10-01 (audit) · **Seen on:** app UI from main (0.3.1), reproduced live with two clients on a local relay
 
 ## What happens
 Chat messages are plain objects in the shared Yjs array; any room member can
@@ -32,3 +32,4 @@ dropped before they reach the UI; a CSP blocks inline handlers as a second line.
 
 ## Log
 - 2026-10-01: found by the audit; live-confirmed (`window.__xss === 1`).
+- 2026-10-02: fixed in a95063c: the file-card href is built by `fileCardHref()` in `src/ui/chat.js` (percent-encoded, then escaped), and the chat panel renders only messages passing `validMessage()` (id `/^[a-f0-9]{8,32}$/`, string `by`, string-or-absent `to`/`text`, well-typed `file`). The UI server now sends a CSP on the page (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`); home, settings, the dropdown, the sessions menu and the New session / Join / Shut down dialogs render with an empty console. Tests in test/ui.test.js ("a hostile chat message id never reaches the file link unescaped", "the app page carries a Content-Security-Policy that blocks inline script").

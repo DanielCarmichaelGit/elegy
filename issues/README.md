@@ -23,7 +23,7 @@ the commit, so the history stays in one place.
 | [013](013-client-stops-reconnecting.md) | The app stops reconnecting after a 429 or a proxy 502/503 (relay restarts) | Open, high |
 | [014](014-session-ownership-first-come.md) | Session ownership and creation go to whoever connects first | Open, high |
 | [015](015-relay-disk-errors.md) | A disk error stops the relay; a half-written session file is deleted on restart | Open, high |
-| [021](021-chat-xss.md) | Stored XSS in the chat panel through a peer-controlled message id | Open, high |
+| [021](021-chat-xss.md) | Stored XSS in the chat panel through a peer-controlled message id | **Fixed** (a95063c): id encoded and escaped, non-hex ids dropped, CSP on the page |
 | [032](032-remote-write-failure-reverts-edits.md) | One unwritable file drops the rest of an update and reverts the partner's edit; first-join name collisions abort | Open, high |
 | [033](033-symlink-read-on-rejoin.md) | On rejoin, a shared path under a local symlink reads a file outside the project into the room | Open, high |
 | [034](034-chat-attachment-lands-in-project.md) | A crafted chat message id puts an attachment in the project root; a malformed message breaks status for everyone | Open, high |
