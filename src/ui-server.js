@@ -120,12 +120,12 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   const CONTEXT_FIELDS = { 'POST /api/sessions/:id/open-in': ['app'], 'POST /api/sessions': ['mode', 'tool', 'prefer'], 'POST /api/settings': [] }
   const contextFor = (key, body) => Object.fromEntries((CONTEXT_FIELDS[key] || []).filter((f) => typeof body?.[f] === 'string').map((f) => [f, body[f].slice(0, 40)]))
   const SLOW_MS = 3000
-  // Not recorded: the live event stream (it is open for as long as the window is), and reports about reports.
-  const UNRECORDED = new Set(['GET /api/events', 'POST /api/report'])
+  // Not recorded: reports about reports. (The event stream never reaches the dispatch block
+  // below — it returns earlier — so it needs no entry here.)
+  const UNRECORDED = new Set(['POST /api/report'])
   function recordRoute (key, { startedAt, status, body, error }) {
-    // Gated here too (not just in the default reporter's `enabled`), so the setting holds
-    // even when a caller supplies its own reporter, as the tests do.
-    if (UNRECORDED.has(key) || getSettings().report === false) return
+    // The reporter's own `enabled()` is the single gate on the "report" setting.
+    if (UNRECORDED.has(key)) return
     const durationMs = Date.now() - startedAt
     reporter.record({ kind: 'action', name: key, outcome: error ? 'error' : durationMs > SLOW_MS ? 'slow' : 'ok', status, durationMs, message: error ? error.message : '', context: contextFor(key, body) })
   }
@@ -531,8 +531,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       const startedAt = Date.now()
       try {
         const out = await handler(body, sid, url)
-        recordRoute(key, { startedAt, status: 200, body })
-        return json(200, out)
+        json(200, out)
+        return recordRoute(key, { startedAt, status: 200, body })
       } catch (err) {
         recordRoute(key, { startedAt, status: err.status || 400, body, error: err })
         throw err

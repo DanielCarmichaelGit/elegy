@@ -12,11 +12,11 @@ process.env.HOME = home
 
 const { startUi } = await import('../src/ui-server.js')
 const { createReporter } = await import('../src/report.js')
-const { saveSettings } = await import('../src/settings.js')
+const { saveSettings, getSettings } = await import('../src/settings.js')
 
 const sent = []
 const reporter = createReporter({
-  token: () => null, fetch: async (url, opts) => { sent.push(JSON.parse(opts.body)); return { ok: true, status: 200 } },
+  token: () => null, enabled: () => getSettings().report !== false, fetch: async (url, opts) => { sent.push(JSON.parse(opts.body)); return { ok: true, status: 200 } },
   api: 'https://api.test', version: '0.3.2', platform: 'darwin', batchSize: 1, delayMs: 0
 })
 let ui
