@@ -3412,15 +3412,15 @@ For the controller, once every task above is merged to `main`. Steps marked **(u
 
    Check the output says `Packaging Edge Functions`, then `curl -sI https://heyquilt.com/dashboard` and `curl -sI https://heyquilt.com/dashboard/sessions/room-abc` are both `307` to `/signin`.
 
-6. **The desktop release 0.3.2.** **(user: publishing a release is public; confirm before it goes out.)** From the clean clone on `main`: `npm run release` (it builds, tags `v0.3.2`, pushes and publishes the GitHub release with the `RELEASES.md` section). Check `curl -sIL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-arm64.dmg` ends in `200`.
+6. **The desktop release 0.3.3.** **(user: publishing a release is public; confirm before it goes out.)** From the clean clone on `main`: `npm run release` (it builds, tags `v0.3.3`, pushes and publishes the GitHub release with the `RELEASES.md` section). Check `curl -sIL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-arm64.dmg` ends in `200`.
 
 7. **Live check.** Two accounts spend a few minutes in one session:
-   - **(user)** With Quilt 0.3.2 signed in as account A, start a session on a new folder named `live-check`. The session menu shows **Rename session…**.
+   - **(user)** With Quilt 0.3.3 signed in as account A, start a session on a new folder named `live-check`. The session menu shows **Rename session…**.
    - **(user)** Join it as account B, from another computer or from a terminal on the Mac: `export HOME="$(mktemp -d)"`, `node bin/quilt.js login` (approve as B in a private browser window), `node bin/quilt.js join <invite link>`. A lets B in.
    - Wait at least 3 minutes, then B leaves (Ctrl-C), and wait 2 more minutes (the relay reports every minute).
    - With the Supabase MCP `execute_sql`: `select room, name, owner_account, last_active_at from relay_sessions order by last_active_at desc limit 3;` shows the room named `live-check`, and `select account, account_name, started_at, ended_at from session_visits order by started_at desc limit 4;` shows both accounts, B's visit ended.
    - **(user)** On heyquilt.com, A's dashboard lists `live-check` with B's avatar and "Time collaborating this week" of about 3 minutes; the session page shows B with about 3 minutes together. B's dashboard shows the same session, owned by A, with A.
-   - **(user)** A renames it on the website (the pencil); B's dashboard and A's app tab show the new name after a refresh.
+   - **(user)** A renames it in the app (**Rename session…** in the session menu); the new name shows on heyquilt.com after a refresh, and in B's tab. (A rename on the website reaches only the website: the relay isn't told about it.)
 
 ## Self-review notes
 
