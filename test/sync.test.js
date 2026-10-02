@@ -56,7 +56,8 @@ async function pair (t, seed = {}) {
 }
 
 before(async () => {
-  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {} })
+  // Every test opens a room of its own, more than the relay lets one address start per hour.
+  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, maxNewRoomsPerHour: 0 })
   server = `ws://127.0.0.1:${srv.port}`
 })
 
@@ -469,4 +470,160 @@ test('changes the file watcher never reports still sync', async (t) => {
   await waitFor(() => read(dirB, 'unseen/deep/new.txt') === 'created unseen\n')
   await waitFor(() => read(dirB, 'watched.txt') === 'v2')
   await waitFor(() => read(dirB, 'README.md') === null)
+})
+
+// ------------------------------------------------------------- issue 032 --
+
+test('a file that cannot be written never blocks the rest of a remote update, nor is it pushed back', async (t) => {
+  const files = ['a.txt', 'locked.txt', 'b.txt', 'c.txt']
+  const { A, dirA, dirB } = await pair(t, Object.fromEntries(files.map((f) => [f, 'v1\n'])))
+  for (const f of files) assert.equal(read(dirB, f), 'v1\n')
+  fs.chmodSync(path.join(dirB, 'locked.txt'), 0o444)
+  for (const f of files) write(dirA, f, 'v2\n')
+  // One transaction, so all four changes travel in one update, like a multi-file edit flushed at once.
+  A.doc.transact(() => { for (const f of files) A.ingest(f) })
+  await waitFor(() => files.every((f) => read(dirB, f) === 'v2\n'))
+  // By the time a later change of bob's reaches alice, bob's re-scan has seen the chmod and reacted.
+  write(dirB, 'after.txt', 'bob')
+  await waitFor(() => read(dirA, 'after.txt') === 'bob')
+  assert.equal(A.sharedKey('locked.txt'), 'v2\n', "bob's stale copy must not revert alice's edit")
+  assert.equal(read(dirA, 'locked.txt'), 'v2\n')
+  assert.equal(fs.existsSync(path.join(dirB, '.quilt', 'conflicts')), false, 'no conflict copy: nothing was edited')
+})
+
+test('on rejoin, a shared change that never reached the disk is taken, not pushed back', async (t) => {
+  let { A, B, dirA, dirB, room } = await pair(t, { 'stale.txt': 'v1\n' })
+  assert.equal(read(dirB, 'stale.txt'), 'v1\n')
+  await close(B)
+  // Bob's saved document took a partner's update whose write failed, so the folder still has v1.
+  const saved = new Y.Doc()
+  Y.applyUpdate(saved, fs.readFileSync(path.join(dirB, '.quilt', 'state.bin')))
+  const text = saved.getMap('files').get('stale.txt')
+  saved.transact(() => { text.delete(0, text.length); text.insert(0, 'v2\n') })
+  fs.writeFileSync(path.join(dirB, '.quilt', 'state.bin'), Y.encodeStateAsUpdate(saved))
+  B = await open(t, dirB, 'bob', { room })
+  await waitFor(() => read(dirB, 'stale.txt') === 'v2\n' && read(dirA, 'stale.txt') === 'v2\n')
+  write(dirB, 'after.txt', 'bob')
+  await waitFor(() => read(dirA, 'after.txt') === 'bob')
+  assert.equal(A.sharedKey('stale.txt'), 'v2\n')
+  assert.equal(read(dirA, 'stale.txt'), 'v2\n')
+})
+
+test('on rejoin, a shared file that could not be written is written, not deleted from the room', async (t) => {
+  let { A, B, dirA, dirB, room } = await pair(t)
+  write(dirB, 'build', 'a file called build\n')
+  await waitFor(() => read(dirA, 'build') === 'a file called build\n')
+  // A partner (an older client, or one whose ignore file differs) shares a file under that name.
+  A.doc.transact(() => A.files.set('build/x.js', new Y.Text('z')))
+  await waitFor(() => B.writeFailed.has('build/x.js'))
+  assert.equal(read(dirB, 'build'), 'a file called build\n')
+  await close(B)
+  fs.rmSync(path.join(dirB, 'build'))
+  B = await open(t, dirB, 'bob', { room })
+  await waitFor(() => read(dirB, 'build/x.js') === 'z')
+  await waitFor(() => read(dirA, 'build') === null)
+  assert.ok(A.files.has('build/x.js'), 'the file bob never had must not be deleted from the room')
+  assert.equal(B.writeFailed.size, 0)
+})
+
+test('first join moves a local folder or file aside when the room has the other kind at that path', async (t) => {
+  const { A, dirA, room } = await pair(t, { build: 'a file called build\n' })
+  const dirC = tmp('c')
+  write(dirC, 'build/out.js', 'local output')
+  await open(t, dirC, 'carol', { room })
+  assert.equal(read(dirC, 'build'), 'a file called build\n')
+  const conflictsC = path.join(dirC, '.quilt', 'conflicts')
+  const [stampC] = fs.readdirSync(conflictsC)
+  assert.equal(read(path.join(conflictsC, stampC), 'build/out.js'), 'local output')
+  // The reverse: the room has a folder where dave has a file.
+  write(dirA, 'lib/x.js', 'shared module')
+  await waitFor(() => A.files.has('lib/x.js'))
+  const dirD = tmp('d')
+  write(dirD, 'lib', 'a file called lib')
+  await open(t, dirD, 'dave', { room })
+  assert.equal(read(dirD, 'lib/x.js'), 'shared module')
+  const conflictsD = path.join(dirD, '.quilt', 'conflicts')
+  const [stampD] = fs.readdirSync(conflictsD)
+  assert.equal(read(path.join(conflictsD, stampD), 'lib'), 'a file called lib')
+})
+
+test('paths that cannot exist on every member\'s disk are rejected', () => {
+  for (const p of ['aux', 'AUX.txt', 'src/con.js', 'nul', 'com1.log', 'LPT9', 'prn.', 'Con.tar.gz', 'dir/ends.', 'ends./x', 'trailing /y', 'ok/trailing ']) {
+    assert.equal(isSafeRelPath(p), false, p)
+  }
+  assert.equal(isSafeRelPath('a/' + 'x'.repeat(256) + '.txt'), false, 'a name over 255 bytes')
+  assert.equal(isSafeRelPath('é'.repeat(128)), false, '256 bytes of UTF-8')
+  for (const p of ['console.js', 'aux1.txt', 'com0', 'lpt10', 'src/null.js', 'x'.repeat(255), 'a. b', 'conf/x', 'é'.repeat(127), '.hidden']) {
+    assert.equal(isSafeRelPath(p), true, p)
+  }
+})
+
+// ------------------------------------------------------------- issue 033 --
+
+test('a shared path under a local symlink to outside the project is never read, live or on rejoin', async (t) => {
+  let { A, B, dirA, dirB, room } = await pair(t, { 'README.md': 'hi\n' })
+  const outside = tmp('outside')
+  write(outside, 'private.txt', 'bob-private-data\n')
+  fs.symlinkSync(outside, path.join(dirB, 'link'))
+  const logs = []
+  B.on('log', (m) => logs.push(m))
+  write(dirA, 'link/private.txt', 'from alice\n')
+  await waitFor(() => logs.some((m) => /outside/.test(m)))
+  assert.equal(read(outside, 'private.txt'), 'bob-private-data\n')
+  // The claimer's revert reads the disk too.
+  await B.claim('link/**')
+  await waitFor(() => A.claimFor('link/private.txt'))
+  A.doc.transact(() => A.files.get('link/private.txt').insert(0, 'rogue '), 'rogue')
+  write(dirA, 'marker1.txt', '1')
+  await waitFor(() => read(dirB, 'marker1.txt') === '1')
+  assert.equal(A.sharedKey('link/private.txt'), 'rogue from alice\n')
+  await B.release('*')
+  // Rejoin: the saved document has the path, the folder (as walked) doesn't.
+  await close(B)
+  write(dirB, 'marker2.txt', '2')
+  B = await open(t, dirB, 'bob', { room })
+  await waitFor(() => read(dirA, 'marker2.txt') === '2')
+  assert.equal(A.sharedKey('link/private.txt'), 'rogue from alice\n')
+  assert.equal(read(dirA, 'link/private.txt'), 'rogue from alice\n')
+  assert.equal(read(outside, 'private.txt'), 'bob-private-data\n')
+})
+
+// ------------------------------------------------------------- issue 034 --
+
+test('a chat message with a crafted id cannot put its attachment outside the inbox', async (t) => {
+  const { A, B, dirB } = await pair(t)
+  const outside = tmp('outside')
+  fs.writeFileSync(path.join(outside, 'note.txt'), 'attached\n')
+  const sent = await A.sendFile(path.join(outside, 'note.txt'), { text: 'here' })
+  // A modified client can push any message object.
+  A.doc.transact(() => A.chat.push([{ id: '../../', by: 'alice', to: null, text: 'evil', ts: Date.now(), file: { id: sent.file.id, name: 'evil.txt', size: 9 } }]))
+  const again = await A.sendFile(path.join(outside, 'note.txt'), { text: 'and again' })
+  await waitFor(() => B.messages({ markRead: false }).find((m) => m.id === again.id)?.file.localPath)
+  assert.deepEqual(fs.readdirSync(dirB), ['.quilt'], 'nothing lands in the project tree')
+  assert.ok(fs.readdirSync(path.join(dirB, '.quilt', 'inbox')).every((n) => !n.includes('evil')))
+  assert.ok(!B.messages({ markRead: false }).some((m) => m.text === 'evil'))
+  assert.ok(!A.messages({ markRead: false }).some((m) => m.text === 'evil'))
+})
+
+test('a malformed chat message is skipped without breaking status or the messages after it', async (t) => {
+  const { A, B } = await pair(t)
+  const got = []
+  B.on('message', (m) => got.push(m.text))
+  A.doc.transact(() => {
+    A.chat.push([
+      { id: 123, by: 'alice', to: null, text: 'numeric id with file', ts: Date.now(), file: { id: 'x', name: 'a', size: 1 } },
+      { id: 'abcd1234abcd1234', by: 'alice', to: null, text: 'normal message after it', ts: Date.now() }
+    ])
+  })
+  await waitFor(() => got.includes('normal message after it'))
+  assert.ok(!got.includes('numeric id with file'))
+  assert.ok(B.status().chat.some((m) => m.text === 'normal message after it'))
+  assert.ok(!B.messages({ markRead: false }).some((m) => m.text === 'numeric id with file'))
+  assert.equal(B.unreadCount(), 1)
+  // A file id that is not hex is skipped too, and never reaches the relay URL.
+  A.doc.transact(() => A.chat.push([{ id: 'abcd1234abcd1235', by: 'alice', to: null, text: 'bad file id', ts: Date.now(), file: { id: '../x', name: 'a', size: 1 } }]))
+  A.say('last')
+  await waitFor(() => got.includes('last'))
+  assert.ok(!got.includes('bad file id'))
+  assert.equal(B.unreadCount(), 2)
 })
