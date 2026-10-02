@@ -19,6 +19,7 @@ import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, 
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
 import { TASK_WORKFLOW, pickupReminder } from './agent-task-workflow.js'
+import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -34,6 +35,7 @@ export const INSTRUCTIONS =
   'again with a short summary when you finish, so collaborators can follow along. ' +
   'Before starting a task, call quilt_status to see who is working on what, and quilt_tasks for the shared board ' +
   '(open tasks assigned to you are listed first). Assign work with quilt_assign_task. ' +
+  'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Do not edit files someone else has claimed; ' +
   'message them with quilt_message instead. Claim files before larger changes. Always re-read a file right before editing it. ' +
   TASK_WORKFLOW
@@ -44,6 +46,7 @@ export const HOSTED_INSTRUCTIONS =
   '(quilt_session_info tells you). Then: quilt_status to see who is doing what, quilt_list_files and quilt_read_file to look ' +
   'around, quilt_write_file to change a file (always read it right before), quilt_claim before larger changes, quilt_share to ' +
   'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
+  'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Do not edit files someone else has claimed. ' +
   'Everyone sees your changes on their own disk within moments. ' +
   TASK_WORKFLOW
@@ -90,6 +93,29 @@ function sessionTools (server, ctx) {
     return out
   }
   const claimsOf = (room) => room.claimList ? room.claimList() : []
+  // One chronology writer per room, shared by every hosted agent's connection.
+  const historyOf = (room) => {
+    if (!room.historyLog) room.historyLog = new HistoryLog(room.doc, room.doc.getArray('history'), { origin: AGENT })
+    return room.historyLog
+  }
+
+  tool('quilt_history', {
+    description: 'The chronology of the project: who changed which file, when, what changed (diff) and for which task. ' +
+      'Filter by path or glob, person, task or time. Use it to understand recent changes before building on them, or to find what broke something.',
+    inputSchema: {
+      path: z.string().max(500).optional().describe('A file, a folder ending in "/", or a glob like src/ui/**'),
+      by: z.string().max(80).optional().describe('Only changes by this person or agent'),
+      since: z.string().max(40).optional().describe('"2h", "3d", "today", "yesterday" or a date'),
+      task: z.string().max(40).optional().describe('Only changes made for this task id'),
+      with_diff: z.boolean().optional().describe('Include each change\'s diff (capped per change)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest matching changes (default 30)')
+    }
+  }, ({ path: p, by, since, task, with_diff, limit }, { room }) => {
+    const from = parseSince(since)
+    if (from === undefined) return fail('since: use a duration like 2h or 3d, "today", "yesterday", or a date.')
+    const list = queryHistory(historyOf(room).entries(), { path: p ? cleanPath(p) : '', by, since: from ?? undefined, task, limit: limit || 30 })
+    return text(formatHistory(list, { withDiff: !!with_diff }))
+  })
 
   tool('quilt_status', {
     description: 'See who else is in the live session, what they and their AIs are doing, recent file changes, claimed files and recent messages. Call this before starting a task.',
@@ -341,9 +367,12 @@ function sessionTools (server, ctx) {
       blobs.delete(rel)
       let ytext = files.get(rel)
       if (!ytext) { ytext = new Y.Text(); files.set(rel, ytext) }
+      const before = ytext.toString()
       detail = applyTextDiff(ytext, content)
-      activity.push([{ by: me, path: rel, kind: existed ? 'edited' : 'created', detail, ts: Date.now() }])
+      const kind = existed ? 'edited' : 'created'
+      activity.push([{ by: me, path: rel, kind, detail, ts: Date.now() }])
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
+      historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
     }, AGENT)
     return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.`)
   })

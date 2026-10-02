@@ -18,6 +18,7 @@ import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
 import { TASK_WORKFLOW, pickupReminder } from './agent-task-workflow.js'
+import { formatHistory } from './history.js'
 import { getSettings } from './settings.js'
 
 /**
@@ -66,6 +67,7 @@ export const MCP_INSTRUCTIONS =
   'doing; announce your task with quilt_set_focus. The session has a shared task board: read it with quilt_tasks ' +
   '(open tasks assigned to you are listed first), add work with quilt_add_task, assign it with quilt_assign_task, ' +
   'and move a task with quilt_move_task when you start or finish it. ' +
+  'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
   'Claim files or folders before larger changes and do not edit files someone else has claimed. ' +
   'Always re-read a file right before you edit it. ' +
@@ -430,6 +432,22 @@ export async function runMcp () {
   }, () => withDaemon(async (d) => describeSession(d.dir)))
 
   // ------------------------------------------------- the workspace, for agents --
+
+  server.registerTool('quilt_history', {
+    description: 'The chronology of the project: who changed which file, when, what changed (diff) and for which task. ' +
+      'Filter by path or glob, person, task or time. Use it to understand recent changes before building on them, or to find what broke something.',
+    inputSchema: {
+      path: z.string().max(500).optional().describe('A file, a folder ending in "/", or a glob like src/ui/**'),
+      by: z.string().max(80).optional().describe('Only changes by this person or agent'),
+      since: z.string().max(40).optional().describe('"2h", "3d", "today", "yesterday" or a date'),
+      task: z.string().max(40).optional().describe('Only changes made for this task id'),
+      with_diff: z.boolean().optional().describe('Include each change\'s diff (capped per change)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest matching changes (default 30)')
+    }
+  }, ({ path: p, by, since, task, with_diff, limit }) => withDaemon(async (d) => {
+    const { entries } = await call(d, 'POST', '/history', { path: p, by, since, task, limit: limit || 30 })
+    return formatHistory(entries, { withDiff: !!with_diff })
+  }))
 
   server.registerTool('quilt_partner_feed', {
     description: 'Read what a collaborator\'s AI is doing: their prompts, the AI\'s replies, and one-line actions like "Edited src/app.ts". Without "who", lists collaborators and their AI status. Use it to avoid duplicating or conflicting with their work.',

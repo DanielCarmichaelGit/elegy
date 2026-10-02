@@ -158,6 +158,7 @@ pick up the MCP server.
 | `quilt say "pushing a schema change"` / `quilt say @bob "got a sec?"` | Message everyone / one person |
 | `quilt send design.png @bob "new mockup"` | Send a file (to everyone, or one person) |
 | `quilt messages` / `quilt messages --all` / `--with bob` | Unread messages / history / one conversation |
+| `quilt history [path] [--by name] [--since 2h] [--diff]` | Who changed what, when, and for which task |
 | `quilt get <message-id> [dest]` | Download a shared file again |
 | `quilt setup` | Wire up MCP + agent instructions |
 | `quilt mcp` | The MCP server itself (your AI tool launches this) |
@@ -172,6 +173,7 @@ pick up the MCP server.
 | `quilt_leave_session` / `quilt_session_info` | Leave; or see the folder, your name, who's online, and the invite |
 | `quilt_status` | Collaborators, their focus, recently edited files, claims, messages |
 | `quilt_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
+| `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
 | `quilt_claim` / `quilt_release` | Claim or release files before and after larger changes |

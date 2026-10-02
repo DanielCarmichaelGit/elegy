@@ -123,6 +123,30 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   await waitFor(() => carl.members.find((m) => m.key === GROK)?.online === true)
 })
 
+test('the chronology records hosted and local changes with diffs, and is queryable', async () => {
+  // The owner is working a task; Grok has none in progress.
+  const task = carl.addTask({ title: 'Owner notes', assignee: 'me', column: 'doing' })
+  fs.writeFileSync(path.join(carlDir, 'notes.txt'), 'owner notes\nmore\n')
+  await waitFor(() => carl.history.entries().some((e) => e.path === 'notes.txt' && /\+more/.test(e.diff)))
+
+  const all = out(await call('quilt_history'))
+  // Grok's two writes within seconds fold into one entry; so do Carl's two saves of notes.txt.
+  assert.match(all, /Grok-Bot created hello\.md \(\+2 -0\)/)
+  assert.match(all, /Carl created notes\.txt \(\+2 -0\) for "Owner notes" \[/)
+  const mine = out(await call('quilt_history', { by: 'grok-bot', with_diff: true }))
+  assert.match(mine, /hello\.md/)
+  assert.doesNotMatch(mine, /notes\.txt/)
+  assert.match(mine, /\+hello from Grok/)
+  assert.match(out(await call('quilt_history', { path: 'notes.txt', task: task.id })), /Carl created notes\.txt/)
+  assert.equal(out(await call('quilt_history', { path: 'src/**' })), 'No changes match.')
+  assert.match(out(await call('quilt_history', { since: 'soonish' })), /since: use a duration/)
+  // The owner's local query sees the same record.
+  assert.ok(carl.historyQuery({ by: 'Grok-Bot' }).every((e) => e.by === 'Grok-Bot'))
+  assert.ok(carl.historyQuery({ since: '1h' }).length >= 2)
+  assert.throws(() => carl.historyQuery({ since: 'nope' }), /since: use a duration/)
+  carl.deleteTask(task.id)
+})
+
 test('messages, shares and claims reach the owner, and claims are respected', async () => {
   await call('quilt_message', { text: 'hello from the cloud' })
   await waitFor(() => carl.chat.toArray().some((m) => m.by === 'Grok-Bot' && m.text === 'hello from the cloud'))

@@ -28,6 +28,8 @@ export async function startControl (session, extras = {}) {
     },
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
+    // The chronology: { path, by, since, task, limit } (see Session.historyQuery).
+    'POST /history': (b) => ({ entries: session.historyQuery(b) }),
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
     'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),

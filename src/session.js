@@ -21,6 +21,7 @@ import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
+import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 
 export { applyTextDiff }
 
@@ -80,6 +81,8 @@ export class Session extends EventEmitter {
     this.claims = new Map()
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
+    // The chronology: every change with its diff and the task it was for (src/history.js).
+    this.history = new HistoryLog(this.doc, this.doc.getArray('history'), { origin: LOCAL })
     // "<name>\0<path>" -> { by, path, added, removed, edits, kind, ts }: what each
     // person has changed in this room, every edit counted. Each person writes
     // only their own keys, so there is nothing to merge.
@@ -548,9 +551,11 @@ export class Session extends EventEmitter {
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
       this.doc.transact(() => {
+        const was = this.files.get(rel)
+        const before = was ? was.toString() : undefined
         this.files.delete(rel)
         this.blobs.delete(rel)
-        this.recordActivity(rel, 'deleted', '')
+        this.recordActivity(rel, 'deleted', '', { before, after: before === undefined ? undefined : '' })
       }, LOCAL)
       this.lastKnown.delete(rel)
       this.setOnDisk(rel, null)
@@ -573,6 +578,7 @@ export class Session extends EventEmitter {
     let detail = ''
     this.doc.transact(() => {
       const existed = this.files.has(rel) || this.blobs.has(rel)
+      let texts
       if (disk.binary) {
         this.files.delete(rel)
         this.blobs.set(rel, { hash: disk.hash, data: disk.buf.toString('base64') })
@@ -584,9 +590,10 @@ export class Session extends EventEmitter {
           ytext = new Y.Text()
           this.files.set(rel, ytext)
         }
+        texts = { before: ytext.toString(), after: disk.text }
         detail = applyTextDiff(ytext, disk.text)
       }
-      this.recordActivity(rel, existed ? 'edited' : 'created', detail)
+      this.recordActivity(rel, existed ? 'edited' : 'created', detail, texts)
     }, LOCAL)
     this.lastKnown.set(rel, disk.key)
     this.setOnDisk(rel, null)
@@ -626,9 +633,11 @@ export class Session extends EventEmitter {
     this.emit('file-changed', { path: rel, by: by || this.lastEditorOf(rel) || 'partner' })
   }
 
-  recordActivity (rel, kind, detail) {
+  /** `texts` is { before, after } for text files, so the chronology keeps the diff. */
+  recordActivity (rel, kind, detail, texts) {
     const now = Date.now()
     this.tally(rel, kind, detail, now)
+    this.history.record({ by: this.name, path: rel, kind, detail, before: texts?.before, after: texts?.after, task: this.currentTask(), ts: now })
     const last = this.lastActivityPush.get(rel)
     // Collapse bursts of edits to the same file into one entry.
     if (kind === 'edited' && last && now - last < 20000) return
@@ -1219,6 +1228,25 @@ export class Session extends EventEmitter {
 
   /** The shared board: To do, In progress, Done. Everyone in the room sees the same list. */
   taskList () { return readTasks(this.tasks) }
+
+  /**
+   * The In-progress task this person (or, when their AI is working, their AI) is on,
+   * so a change can be filed under it. Null when there is none.
+   */
+  currentTask () {
+    const aiWorking = this.kind !== 'agent' && this.agentState?.status === 'working'
+    return currentTask(this.taskList(), this.name, { preferAi: aiWorking })
+  }
+
+  /**
+   * The chronology, filtered: { path, by, since, task, limit }. `since` is "2h",
+   * "3d", "today", "yesterday" or a date.
+   */
+  historyQuery ({ path, by, since, task, limit } = {}) {
+    const from = parseSince(since)
+    if (from === undefined) throw new Error('since: use a duration like 2h or 3d, "today", "yesterday", or a date')
+    return queryHistory(this.history.entries(), { path, by, since: from ?? undefined, task, limit: Math.min(Number(limit) || 50, 500) })
+  }
 
   /** `input` is a title, or { title, assignee, forAi, to_ai, tool, files }. "me" means this person. */
   addTask (input) {
