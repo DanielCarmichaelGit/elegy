@@ -14,12 +14,26 @@ export const HOWS = ['mine', 'theirs', 'hand', 'agent', 'review']
 const HEX_ID = /^[0-9a-f]{16}$/i
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/
+// eslint-disable-next-line no-control-regex
+const CONTROL_RUN = /[\u0000-\u001f\u007f]+/g
 const str = (v, max) => typeof v === 'string' && v.length <= max
 const optStr = (v, max) => v == null || str(v, max)
 // Names, paths and reasons go verbatim into logs and into the prompt a coding
 // tool gets for Send to…: one line each, no control characters.
 const line = (v, max) => str(v, max) && !CONTROL.test(v)
 const optLine = (v, max) => v == null || line(v, max)
+
+/**
+ * A peer-written name (from an activity entry or a claim), made safe to put
+ * in a merge record: control characters and newlines become a space,
+ * whitespace is collapsed, and it's trimmed and capped at 80 characters.
+ * Falls back to 'someone' when that leaves nothing, so a stray control
+ * character in a name never suppresses the merge record itself.
+ */
+export function cleanName (name) {
+  const flat = String(name == null ? '' : name).replace(CONTROL_RUN, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
+  return flat || 'someone'
+}
 
 /** A record we'll show. Anything a modified client pushed that isn't this shape is ignored. */
 export function publicMerge (v) {

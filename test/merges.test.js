@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
-import { openMerge, updateMerge, readMerges, pruneMerges, publicMerge, MAX_RECORD_TEXT, MAX_MERGES, DONE_TTL_MS } from '../src/merges.js'
+import { openMerge, updateMerge, readMerges, pruneMerges, publicMerge, cleanName, MAX_RECORD_TEXT, MAX_MERGES, DONE_TTL_MS } from '../src/merges.js'
 
 const fresh = () => { const doc = new Y.Doc(); return { doc, map: doc.getMap('merges') } }
 const fields = { path: 'src/a.js', by: 'bob', byId: 'k1', others: ['alice'], kind: 'conflict', ours: 'mine\n', base: 'base\n', theirsHash: 'abc', binary: false }
@@ -98,4 +98,15 @@ test('publicMerge rejects paths outside the project or into .git/.quilt, and con
   assert.equal(publicMerge({ ...r, resolvedBy: 'al\nice' }), null)
   assert.equal(publicMerge({ ...r, reason: 'one\ntwo' }), null)
   assert.ok(publicMerge({ ...r, reason: 'a fine reason' }))
+})
+
+test('cleanName flattens control characters instead of letting a merge record be refused', () => {
+  const { doc, map } = fresh()
+  assert.equal(cleanName('al\nice'), 'al ice')
+  assert.equal(cleanName('bob\u001b[2J'), 'bob [2J')
+  assert.equal(cleanName('   '), 'someone')
+  assert.equal(cleanName(null), 'someone')
+  assert.equal(cleanName('x'.repeat(90)).length, 80)
+  const r = openMerge(doc, map, { ...fields, others: [cleanName('al\nice')] }, null)
+  assert.deepEqual(r.others, ['al ice'])
 })

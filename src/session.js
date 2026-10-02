@@ -27,7 +27,7 @@ import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
-import { openMerge, updateMerge, readMerges, pruneMerges } from './merges.js'
+import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 
 export { applyTextDiff }
 
@@ -628,7 +628,9 @@ export class Session extends EventEmitter {
       const onDisk = this.readDisk(rel)
       if (onDisk && onDisk.key !== undefined && onDisk.key !== ours) this.keepConflict(rel, onDisk)
       // The record first, so an applied AI merge always has one to review.
-      const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [theirsBy] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false }, LOCAL)
+      // theirsBy is peer-written (an activity entry): flatten it so a stray
+      // control character can't make openMerge throw and drop the record.
+      const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [cleanName(theirsBy)] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false }, LOCAL)
       // The local copies are for Send to… and review; the record already has
       // ours (an "ai" record is never local), so a failed write mustn't stop the merge it describes.
       try {
@@ -670,18 +672,23 @@ export class Session extends EventEmitter {
    */
   openConflict ({ rel, base, ours, theirs, theirsBy, disk, kind, reason = null, claimedBy = null, binary }) {
     const text = (k) => (typeof k === 'string' && !k.startsWith('bin:') ? k : null)
+    // theirsBy and claimedBy are peer-written (an activity entry, a claim):
+    // flatten them so a stray control character can't make openMerge throw
+    // and leave this conflict silently unrecorded.
+    const by = theirsBy ? cleanName(theirsBy) : null
+    const claimant = claimedBy ? cleanName(claimedBy) : null
     const rec = openMerge(this.doc, this.merges, {
       path: rel,
       by: this.name,
       byId: this.myKey(),
-      others: theirsBy ? [theirsBy] : [],
+      others: by ? [by] : [],
       kind,
       ours: binary ? null : text(ours),
       oursDeleted: ours === null,
       base: binary ? null : text(base),
       theirsHash: theirs === undefined ? null : sha1(theirs),
       binary,
-      claimedBy,
+      claimedBy: claimant,
       // One line of at most 500 characters, or the record would be invalid.
       // eslint-disable-next-line no-control-regex
       reason: reason ? String(reason).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500) || null : null
@@ -693,9 +700,9 @@ export class Session extends EventEmitter {
     this.merging.delete(rel)
     if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
     this.tryWrite(rel)
-    const who = claimedBy ? `${claimedBy} has it claimed` : theirsBy ? `${theirsBy} changed it too` : 'it changed in the session too'
+    const who = claimant ? `${claimant} has it claimed` : by ? `${by} changed it too` : 'it changed in the session too'
     this.log(`⚠️  ${rel} needs merging: ${who}${reason ? ` (${reason})` : ''}. Your version is kept; see Merges in the app.`)
-    this.emit('file-changed', { path: rel, by: theirsBy || 'partner' })
+    this.emit('file-changed', { path: rel, by: by || 'partner' })
     return 'conflict'
   }
 
