@@ -22,7 +22,7 @@ test('an access key signs a personal agent in; /me says who it is', async () => 
   const { agent, accessKey } = await makeAgent(t, { name: 'Larry', description: 'Writes tests', ownerUserId: 'mem' })
   const r = await me(accessKey)
   assert.equal(r.status, 200)
-  assert.deepEqual(r.body, { agent: { id: agent.id, name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: 'Writes tests', canJoinSessions: false, kind: 'personal', org: null }, teams: [], role: null })
+  assert.deepEqual(r.body, { agent: { id: agent.id, name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: 'Writes tests', canJoinSessions: true, hosted: true, kind: 'personal', org: null }, teams: [], role: null, mcp: 'https://api.quilt.test/mcp' })
   assert.ok((await t.store.agentById(agent.id)).lastUsedAt > 0, 'last used is recorded')
   assert.equal((await me('qa_nope')).status, 401)
   assert.equal((await t.call('GET', '/v1/agents/me', null, 'mem')).status, 401, "a person's sign-in is not an agent's")
@@ -47,9 +47,10 @@ test('/me for an org agent lists its org, role and teams with folders', async ()
   const core = await t.store.createTeam({ orgId: o.org.id, name: 'Core' })
   await t.store.addTeamMember({ teamId: core.id, memberId: m.id, access: 'editor', scopes: ['src'] })
   assert.deepEqual((await me(accessKey)).body, {
-    agent: { id: agent.id, name: 'Bot', provider: 'OpenAI', type: 'coding agent', description: '', canJoinSessions: false, kind: 'org', org: { slug: o.slug, name: 'Agent Me Co' } },
+    agent: { id: agent.id, name: 'Bot', provider: 'OpenAI', type: 'coding agent', description: '', canJoinSessions: true, hosted: true, kind: 'org', org: { slug: o.slug, name: 'Agent Me Co' } },
     teams: [{ id: core.id, name: 'Core', access: 'editor', scopes: ['src'] }],
-    role: { name: 'Lead' }
+    role: { name: 'Lead' },
+    mcp: 'https://api.quilt.test/mcp'
   })
 })
 
@@ -170,8 +171,9 @@ test('the personal agents list says whether each agent has a key, never the key 
   await makeAgent(t, { name: 'Keyless', ownerUserId: 'noKeyOwner' })
   const agents = (await t.call('GET', '/v1/agents', null, 'noKeyOwner')).body.agents
   const byName = (n) => agents.find((a) => a.name === n)
-  assert.equal(byName('Keyed').canJoinSessions, true)
-  assert.equal(byName('Keyless').canJoinSessions, false)
+  // Every agent can join a session: with a key from a computer running Quilt too, without one through the hosted MCP.
+  assert.deepEqual([byName('Keyed').canJoinSessions, byName('Keyed').hosted], [true, false])
+  assert.deepEqual([byName('Keyless').canJoinSessions, byName('Keyless').hosted], [true, true])
   for (const a of agents) assert.equal('publicKey' in a, false, 'never expose the key itself')
 })
 

@@ -1,8 +1,9 @@
 // Refreshes the Supabase session on every page request and keeps private pages private.
-// join.heyquilt.com/<room> serves the public invite page (/join/<room>).
+// join.heyquilt.com/<room> redirects to the invite page here (/join/<room>); browsers keep
+// the #secret across the redirect, and the page can then see whether you're signed in.
 import { NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
-import { JOIN_HOST, joinPath } from './lib/join.js'
+import { JOIN_HOST, SITE_URL, joinRedirect } from './lib/join.js'
 
 const PRIVATE = ['/dashboard', '/settings', '/link', '/reset', '/org', '/orgs', '/invite']
 
@@ -17,19 +18,18 @@ export async function proxy (request) {
   const host = (request.headers.get('host') || '').split(':')[0].toLowerCase()
   const path = request.nextUrl.pathname
   if (host === JOIN_HOST) {
-    const to = joinPath(path)
-    if (!to) return NextResponse.redirect('https://heyquilt.com/')
-    const url = request.nextUrl.clone()
-    url.pathname = to
-    return invitePage(NextResponse.rewrite(url))
+    const to = joinRedirect(path)
+    return to ? invitePage(NextResponse.redirect(to)) : NextResponse.redirect(`${SITE_URL}/`)
   }
-  if (path.startsWith('/join/')) return invitePage(NextResponse.next({ request }))
+  // The invite page is public but needs to know whether you're signed in, so it goes
+  // through the session refresh below like any other page.
+  const invite = path.startsWith('/join/')
 
   // skipTrailingSlashRedirect (next.config.mjs, needed so the join host's rewrite can accept a
   // trailing slash itself) turns off Next's own trailing-slash redirect everywhere, so bring it
   // back here for every other host. Build the target from request.url, not nextUrl.clone():
   // nextUrl normalizes the pathname back to the trailing slash, which loops.
-  if (path !== '/' && path.endsWith('/')) {
+  if (!invite && path !== '/' && path.endsWith('/')) {
     const url = new URL(request.url)
     url.pathname = path.replace(/\/+$/, '')
     return NextResponse.redirect(url, 308)
@@ -57,7 +57,7 @@ export async function proxy (request) {
     for (const cookie of response.cookies.getAll()) redirectResponse.cookies.set(cookie)
     return redirectResponse
   }
-  return response
+  return invite ? invitePage(response) : response
 }
 
 export const config = {

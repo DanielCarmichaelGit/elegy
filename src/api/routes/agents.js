@@ -2,10 +2,11 @@
 import { HttpError, needId } from '../http.js'
 import { keyStatus } from '../agent-auth.js'
 
-// Never the key itself, just whether it has one: that's what lets it get a session pass.
-const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: !!a.publicKey })
+// Never the key itself, just whether it has one. With a key it joins sessions from a computer
+// running Quilt; without one it is hosted: it joins through the API's /mcp. Either way it can join.
+const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: true, hosted: !a.publicKey })
 
-export function agentRoutes ({ store, user, now, limitTokens, agentAuth }) {
+export function agentRoutes ({ store, user, person, now, limitTokens, agentAuth, apiUrl }) {
   return [
     ['POST', /^\/v1\/agents\/token$/, async (req, body) => {
       limitTokens(req)
@@ -14,19 +15,22 @@ export function agentRoutes ({ store, user, now, limitTokens, agentAuth }) {
 
     ['GET', /^\/v1\/agents\/me$/, async (req) => {
       const { agent } = await agentAuth.agentFromRequest(req)
-      if (!agent.orgId) return { agent: { ...profileOf(agent), kind: 'personal', org: null }, teams: [], role: null }
+      const mcp = `${apiUrl}/mcp`
+      if (!agent.orgId) return { agent: { ...profileOf(agent), kind: 'personal', org: null }, teams: [], role: null, mcp }
       const [org, m, teams] = await Promise.all([store.orgById(agent.orgId), store.memberByAgent(agent.orgId, agent.id), store.listTeams(agent.orgId)])
       const [role, mine] = await Promise.all([m?.roleId ? store.roleById(agent.orgId, m.roleId) : null, m ? store.teamsOfMember(m.id) : []])
       const names = new Map(teams.map((x) => [x.id, x.name]))
       return {
         agent: { ...profileOf(agent), kind: 'org', org: { slug: org.slug, name: org.name } },
         teams: mine.map((x) => ({ id: x.teamId, name: names.get(x.teamId) || '', access: x.access, scopes: x.scopes })),
-        role: role ? { name: role.name } : null
+        role: role ? { name: role.name } : null,
+        mcp
       }
     }],
 
+    // Listed on the website and in the app (a linked computer's token counts as its person).
     ['GET', /^\/v1\/agents$/, async (req) => {
-      const u = await user(req)
+      const u = await person(req)
       const agents = await store.listPersonalAgents(u.userId)
       return {
         agents: await Promise.all(agents.map(async (a) => ({

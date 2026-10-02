@@ -127,6 +127,20 @@ export async function signOut ({ token, api = apiUrl(), fetch: fetchImpl = globa
   await revokeToken({ token, api, fetch: fetchImpl, timeoutMs: revokeTimeoutMs })
 }
 
+/** A one-time agent invite link for this computer's account: { link, id, expiresAt }. Throws with .status 401 once the token is revoked. */
+export async function createAgentInvite ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', '/v1/agent-invites', {}, token)
+  if (!r.link || !r.invite) throw new Error(BAD_REPLY)
+  return { link: r.link, id: r.invite.id, expiresAt: r.invite.expiresAt }
+}
+
+/** This account's agents (not revoked), as the API lists them. Throws with .status 401 once the token is revoked. */
+export async function listAgents ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', '/v1/agents', null, token)
+  if (!Array.isArray(r.agents)) throw new Error(BAD_REPLY)
+  return r.agents
+}
+
 /** Revokes a token on the server, best effort, without touching account.json. */
 export async function revokeToken ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
   if (token) await call(fetchImpl, api, 'POST', '/v1/me/signout', {}, token, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => {})

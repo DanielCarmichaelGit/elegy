@@ -16,19 +16,27 @@ import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
 import { relayRoutes } from './routes/relay.js'
 import { sessionRoutes } from './routes/sessions.js'
+import { HOSTED_RELAY } from '../settings.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
 const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
+// A hosted agent's MCP request (a whole file, at most) and how long it may take on the relay.
+const MAX_MCP_BODY = 2 * 1024 * 1024
+const MCP_TIMEOUT_MS = 30 * 1000
+// A pass minted for a hosted agent is reused until this close to its end.
+const PASS_REUSE_MARGIN_MS = 2 * 60 * 1000
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relaySecret = '' }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, relaySecret = '' }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
   // Where agents reach this API: invite links and the join instructions point here.
   const api = String(apiUrl).replace(/\/+$/, '')
+  // The relay that hosts the agents' MCP (/mcp here hands requests on to it).
+  const relay = String(relayUrl).replace(/\/+$/, '').replace(/^ws(s?):\/\//, 'http$1://')
 
   const bearer = (req) => (String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i) || [])[1] || ''
   async function user (req) {
@@ -42,6 +50,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     if (!d) throw new HttpError(401, 'this computer is signed out')
     await store.touchDevice(d.id)
     return d
+  }
+
+  /** A signed-in person, from the website (JWT) or from the app on a linked computer (qd_ token). */
+  async function person (req) {
+    if (bearer(req).startsWith('qd_')) return { userId: (await device(req)).userId, email: '' }
+    return user(req)
   }
 
   // A few tries per minute per address is plenty for a person. Behind Fly,
@@ -72,22 +86,19 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Passes, per token (keyed on its hash, counted once the token checks out).
   const limitPasses = makeLimiter(passLimit, 'too many passes; try again in a minute', { keyOf: (tokenHash) => tokenHash })
   const agentAuth = makeAgentAuth({ store, now, bearer })
+  // Hosted MCP calls, per agent.
+  const limitMcp = makeLimiter(mcpLimit, 'too many requests; slow down', { keyOf: (agentId) => agentId })
 
   /** Who a pass is for: a linked computer's account, or an agent and the key it registered. */
   async function passHolder (req) {
     if (bearer(req).startsWith('qa_')) {
       const { agent } = await agentAuth.agentFromRequest(req)
-      if (!agent.publicKey) throw new HttpError(409, 'This agent has no key. Invite it again.')
-      return { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey }
+      // No key: a hosted agent. Its pass works over HTTPS (the relay's /mcp), never for a WebSocket.
+      return { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
     }
     const d = await device(req)
     const p = await store.profile(d.userId)
     return { sub: d.userId, kind: 'person', name: ((p && p.name) || 'Quilt user').slice(0, 64), key: d.publicKey }
-  }
-  /** The person calling: the website's sign-in (a Supabase JWT), or a linked computer's qd_ token. */
-  async function caller (req) {
-    if (bearer(req).startsWith('qd_')) return { userId: (await device(req)).userId }
-    return user(req)
   }
 
   const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
@@ -213,7 +224,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, caller, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
+  const ctx = { store, user, person, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx))
 
   async function openLink (code) {
@@ -240,6 +251,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       return res.end()
     }
     try {
+      if (pathname === '/mcp') return await proxyMcp(req, res, send)
       const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
       if (!route) throw new HttpError(404, 'not found')
@@ -264,6 +276,38 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     }
   })
 
+  // Hosted agents' MCP: the agent's access key signs it in here; the relay gets the same
+  // request with a pass for the agent, and its answer comes straight back. Stateless on
+  // both sides, so each request stands alone.
+  const mintedPasses = new Map() // agent id -> { pass, exp }
+  async function proxyMcp (req, res, send) {
+    needPassKey()
+    if (!bearer(req).startsWith('qa_')) throw new HttpError(401, 'send your agent access key as "Authorization: Bearer <accessKey>"')
+    const { agent } = await agentAuth.agentFromRequest(req)
+    limitMcp(agent.id)
+    let minted = mintedPasses.get(agent.id)
+    if (!minted || minted.exp - now() < PASS_REUSE_MARGIN_MS) {
+      const exp = now() + PASS_TTL_MS
+      minted = { pass: signPass({ v: PASS_VERSION, sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '', exp }, passKey), exp }
+      mintedPasses.set(agent.id, minted)
+      if (mintedPasses.size > maxStartKeys) for (const [k, v] of mintedPasses) if (v.exp <= now()) mintedPasses.delete(k)
+    }
+    const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, MAX_MCP_BODY) : undefined
+    const headers = { 'x-quilt-pass': minted.pass }
+    for (const h of ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'last-event-id']) if (req.headers[h]) headers[h] = String(req.headers[h])
+    let upstream
+    try {
+      upstream = await fetch(`${relay}/mcp`, { method: req.method, headers, body, signal: AbortSignal.timeout(MCP_TIMEOUT_MS) })
+    } catch (err) {
+      log(`mcp relay error: ${err.message}`)
+      throw new HttpError(502, 'the session relay did not answer; try again in a moment')
+    }
+    const type = upstream.headers.get('content-type') || 'application/json'
+    const out = Buffer.from(await upstream.arrayBuffer())
+    res.writeHead(upstream.status, { 'content-type': type, 'cache-control': 'no-store' })
+    res.end(out)
+  }
+
   // Only the website may call the API from a browser.
   function cors (req) {
     return site && req.headers.origin === site ? { 'access-control-allow-origin': site, vary: 'origin' } : {}
@@ -277,6 +321,15 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
 function decodePart (s) {
   try { return decodeURIComponent(s) } catch { throw new HttpError(400, 'bad path') }
+}
+
+function readRaw (req, max) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = []
+    req.on('data', (c) => { size += c.length; if (size > max) { req.destroy(); reject(new HttpError(413, 'too large')) } else chunks.push(c) })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
 }
 
 function readJson (req, limit) {

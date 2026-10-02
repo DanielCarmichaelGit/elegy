@@ -96,7 +96,7 @@ test('latestRelease asks GitHub once, caches, and survives a failure', async () 
     const a = await latestRelease(opts)
     assert.deepEqual(a, { version: '9.9.9', url: 'https://github.com/x/releases/tag/v9.9.9', date: '2026-10-09', summary: '', items: ['**Flies.** Now with wings.'] })
     const b = await latestRelease(opts)
-    assert.equal(hits, 1, 'second call within the hour is served from the cache')
+    assert.equal(hits, 1, 'second call within ten minutes is served from the cache')
     assert.deepEqual(b, a)
     now += 2 * 60 * 60 * 1000
     status = 500

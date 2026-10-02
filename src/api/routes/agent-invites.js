@@ -1,6 +1,8 @@
 // Agent invites: a signed-in person makes a one-time link (good for an hour)
 // that their AI uses to join, as their personal agent or as an org's agent with
 // the role, teams and folders chosen here. Only the link's hash is stored.
+// Personal invites can be made from the website or from the Quilt app (`person`);
+// org invites only from the website (`user`).
 import { HttpError, needId } from '../http.js'
 import { newToken, hashToken } from '../tokens.js'
 import { orgAccess } from '../org-access.js'
@@ -11,7 +13,7 @@ const MAX_TEAMS = 50
 
 export const inviteStatus = (i, at) => (i.cancelledAt ? 'cancelled' : i.usedAt ? 'used' : i.expiresAt <= at ? 'expired' : 'waiting')
 
-export function agentInviteRoutes ({ store, user, now, apiUrl, limitSend }) {
+export function agentInviteRoutes ({ store, user, person, now, apiUrl, limitSend }) {
   const orgFor = async (req, slug) => { const u = await user(req); return { u, ...(await orgAccess(store, u.userId, slug)) } }
   const teamNames = async (orgId) => new Map((await store.listTeams(orgId)).map((x) => [x.id, x.name]))
 
@@ -61,19 +63,19 @@ export function agentInviteRoutes ({ store, user, now, apiUrl, limitSend }) {
 
   return [
     ['POST', /^\/v1\/agent-invites$/, async (req) => {
-      const u = await user(req)
+      const u = await person(req)
       limitSend(u.userId)
       const { invite, link } = await make(u.userId, { ownerUserId: u.userId })
       return { invite: await view(invite), link }
     }],
 
     ['GET', /^\/v1\/agent-invites$/, async (req) => {
-      const u = await user(req)
+      const u = await person(req)
       return { invites: await Promise.all((await store.listAgentInvites({ ownerUserId: u.userId })).map((i) => view(i))) }
     }],
 
     ['DELETE', /^\/v1\/agent-invites\/([^/]+)$/, async (req, body, [id]) => {
-      const u = await user(req)
+      const u = await person(req)
       const i = await store.agentInviteById(needId(id, 'invite'))
       if (!i || i.ownerUserId !== u.userId) throw new HttpError(404, 'no such invite')
       return cancel(i)

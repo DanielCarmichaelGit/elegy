@@ -61,6 +61,7 @@
       "assets/**",
       "desktop/main.js",
       "desktop/preload.cjs",
+      "desktop/updater.js",
       "desktop/icons/*.png",
       "package.json",
       "RELEASES.md"

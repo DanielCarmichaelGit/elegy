@@ -48,7 +48,9 @@ export function memberRoutes ({ store, user }) {
           provider: m.provider ?? null,
           type: m.type ?? null,
           // Only for an agent; whether it has a key, never the key itself.
-          canJoinSessions: m.agentId ? !!m.publicKey : null,
+          // Agents always can: with a key from a computer running Quilt too, without one through the hosted MCP.
+          canJoinSessions: m.agentId ? true : null,
+          hosted: m.agentId ? !m.publicKey : null,
           email: emails[i]?.email || '',
           roleId: m.roleId,
           role: roleName.get(m.roleId) || null,

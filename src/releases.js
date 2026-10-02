@@ -9,7 +9,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const REPO = 'DanielCarmichaelGit/heyquilt'
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`
 const RELEASES_PAGE = `https://github.com/${REPO}/releases`
-const CACHE_MS = 60 * 60 * 1000
+const CACHE_MS = 10 * 60 * 1000
 
 /** The version this app is, from package.json. */
 export function currentVersion () {
@@ -73,7 +73,7 @@ function parseGitHubBody (body) {
 const cache = new Map() // url -> { at, release }
 /**
  * The newest release on GitHub: { version, url, date, summary, items }, or null when it can't be
- * reached and nothing is cached. Asks at most once an hour; a failed refresh keeps the last answer.
+ * reached and nothing is cached. Asks at most every ten minutes; a failed refresh keeps the last answer.
  */
 export async function latestRelease ({ url = process.env.QUILT_RELEASES_URL || LATEST_API, now = Date.now, timeoutMs = 6000 } = {}) {
   const hit = cache.get(url)
@@ -88,7 +88,7 @@ export async function latestRelease ({ url = process.env.QUILT_RELEASES_URL || L
     cache.set(url, { at: now(), release })
     return release
   } catch {
-    if (hit) { hit.at = now(); return hit.release } // try again in an hour
+    if (hit) { hit.at = now(); return hit.release } // try again in ten minutes
     return null
   }
 }

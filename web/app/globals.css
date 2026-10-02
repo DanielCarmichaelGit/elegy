@@ -152,8 +152,6 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .join-card { text-align: center; align-items: center; }
 .join-open { align-self: stretch; justify-content: center; }
 .join-get { border-top: 1px solid var(--border); padding-top: 16px; width: 100%; }
-/* join.heyquilt.com's minimal top bar (no sticky marketing header: its links are relative). */
-.join-bar { max-width: 1080px; margin: 0 auto; padding: 14px 16px; }
 
 /* the app window frame used for every screenshot on the page */
 .qwin { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }

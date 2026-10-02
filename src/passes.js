@@ -1,6 +1,7 @@
 // Session passes: short-lived tickets the accounts API signs and the relay checks.
 // A pass says who you are (an account or an agent), your name, and the identity
-// key you'll prove when you connect. Its format is
+// key you'll prove when you connect (empty for a hosted agent, which only ever
+// talks to the relay over HTTPS and never proves a key). Its format is
 // base64url(JSON payload) + "." + base64url(Ed25519 signature of the first part).
 import crypto from 'node:crypto'
 import { generateIdentity, parsePublicKey } from './identity.js'
@@ -54,6 +55,7 @@ export function verifyPass (pass, key, { now = Date.now() } = {}) {
   if (typeof p.exp !== 'number' || p.exp <= now) return null
   if (typeof p.sub !== 'string' || !p.sub || !KINDS.includes(p.kind)) return null
   if (typeof p.name !== 'string' || !p.name.trim() || p.name.length > MAX_NAME) return null
-  if (typeof p.key !== 'string' || !parsePublicKey(p.key)) return null
+  // No key: an HTTP-only pass (a hosted agent, see relay-mcp.js); it can't open a WebSocket.
+  if (typeof p.key !== 'string' || (p.key && !parsePublicKey(p.key))) return null
   return p
 }

@@ -111,15 +111,26 @@ const getAs = (host, path) => new Promise((resolve, reject) => {
   }).on('error', reject)
 })
 
-test('join.heyquilt.com/<room> shows the invite page, sending no referrer and kept out of search', async () => {
-  for (const [host, path] of [['join.heyquilt.com', '/room-abc'], ['join.heyquilt.com', '/room-abc/'], [new URL(base).host, '/join/room-abc']]) {
-    const res = await getAs(host, path)
-    assert.equal(res.status, 200, `${host}${path}`)
-    assert.match(res.body, /invited to a Quilt session/)
-    assert.match(res.body, /quilt-mac-arm64\.dmg|quilt-windows-x64\.exe/, 'download buttons')
-    assert.equal(res.headers['referrer-policy'], 'no-referrer', `${host}${path}`)
-    assert.equal(res.headers['x-robots-tag'], 'noindex', `${host}${path}`)
+test('join.heyquilt.com/<room> redirects to the invite page on the main site, sending no referrer', async () => {
+  for (const path of ['/room-abc', '/room-abc/']) {
+    const res = await getAs('join.heyquilt.com', path)
+    assert.equal(res.status, 307, path)
+    assert.equal(res.headers.location, 'https://heyquilt.com/join/room-abc', path)
+    assert.equal(res.headers['referrer-policy'], 'no-referrer', path)
   }
+})
+
+test('the invite page is public, kept out of search, offers downloads, and sends signed-out people to sign in from the browser', async () => {
+  const res = await get('/join/room-abc')
+  assert.equal(res.status, 200)
+  const html = await res.text()
+  assert.match(html, /invited to a Quilt session/)
+  assert.match(html, /quilt-mac-arm64\.dmg|quilt-windows-x64\.exe/, 'download buttons')
+  assert.equal(res.headers.get('referrer-policy'), 'no-referrer')
+  assert.equal(res.headers.get('x-robots-tag'), 'noindex')
+  // The secret is in the fragment, which only the browser sees: the page is served signed-out
+  // and its script decides (remember the invite, then /signin?next=/join/<room>).
+  assert.ok(html.includes('signedIn\\":false'), 'JoinInvite is rendered signed out')
 })
 
 test('anything else on join.heyquilt.com goes to the home page; a bad room is not found', async () => {
@@ -131,20 +142,14 @@ test('anything else on join.heyquilt.com goes to the home page; a bad room is no
   assert.equal((await get('/join/bad%20room')).status, 404)
 })
 
-test('the join host has no relative nav links (R3): the site Header would try to open them as room invites', async () => {
-  const res = await getAs('join.heyquilt.com', '/room-abc')
-  assert.doesNotMatch(res.body, /href="\/pricing"/)
-  assert.doesNotMatch(res.body, /href="\/signin"/)
-})
-
-// skipTrailingSlashRedirect (next.config.mjs) is needed so the join host's own rewrite can
-// accept a trailing slash; proxy.js brings the redirect back for every other host.
-test('a trailing slash redirects to the canonical path, except on the join host', async () => {
+// skipTrailingSlashRedirect (next.config.mjs) is needed so the join host can accept a trailing
+// slash itself; proxy.js brings the redirect back for every other path.
+test('a trailing slash redirects to the canonical path, except for invites', async () => {
   const res = await get('/pricing/')
   assert.equal(res.status, 308)
   assert.equal(new URL(res.headers.get('location'), base).pathname, '/pricing')
 
-  const stillJoins = await getAs('join.heyquilt.com', '/room-abc/')
+  const stillJoins = await get('/join/room-abc/')
   assert.equal(stillJoins.status, 200)
 })
 

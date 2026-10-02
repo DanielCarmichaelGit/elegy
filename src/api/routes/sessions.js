@@ -8,8 +8,8 @@ import { cleanSessionName, BAD_SESSION_NAME } from '../../session-name.js'
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const NO_SESSION = 'no such session'
 
-export function sessionRoutes ({ store, now, caller }) {
-  const me = async (req) => `person:${(await caller(req)).userId}`
+export function sessionRoutes ({ store, now, person }) {
+  const me = async (req) => `person:${(await person(req)).userId}`
   const zoneOf = (req) => {
     const tz = new URL(req.url, 'http://x').searchParams.get('tz') || 'UTC'
     if (!isTimeZone(tz)) throw new HttpError(400, 'tz must be an IANA time zone, like Europe/London')

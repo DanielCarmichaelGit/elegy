@@ -20,7 +20,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
-import { handleAgentMcp } from './relay-mcp.js'
+import { handleAgentMcp, handleHostedMcp } from './relay-mcp.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
@@ -39,6 +39,8 @@ import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
+// A hosted agent counts as online this long after its last tool call.
+const HOSTED_ONLINE_MS = 3 * 60 * 1000
 const MAX_PATTERN = 500
 const MAX_SCOPES = 20
 const ROLES = ['editor', 'viewer']
@@ -117,7 +119,10 @@ class Room {
     // '<kind>:<sub>' for members approved with a pass (an account, on any computer).
     this.meta.members = this.meta.members || {}
     this.access = new Map() // ws -> { key, id, name, kind, role, scopes, owner } for people in the room
-    this.pending = new Map() // ws -> { key, id, name, kind, invitedAs, since } waiting for the owner
+    // ws -> { key, id, name, kind, invitedAs, since } waiting for the owner. A hosted agent (one
+    // that only talks to the relay over HTTP, see relay-mcp.js) waits under a { hosted: id } stand-in.
+    this.pending = new Map()
+    this.hostedSeen = new Map() // member id -> when a hosted agent last called a tool
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
@@ -146,7 +151,8 @@ class Room {
       const changed = added.concat(updated, removed)
       if (origin && this.conns.has(origin)) {
         const ids = this.conns.get(origin)
-        for (const id of added) ids.add(id)
+        // Updated too: a client back from a drop speaks for the same id over a new connection.
+        for (const id of added.concat(updated)) ids.add(id)
         for (const id of removed) ids.delete(id)
       }
       const msg = awarenessMessage(this.awareness, changed)
@@ -246,6 +252,65 @@ class Room {
   /** The id the member list shows the owner under. */
   get ownerId () { return this.meta.ownerSub || this.meta.owner }
 
+  /**
+   * Where a hosted agent (HTTP only, no key) stands: approved with its role, or waiting for
+   * the owner. Waiting puts it on the owner's list like a connection would. It never becomes
+   * the owner: a room with no owner yet keeps it waiting.
+   */
+  hostedRequest (pass, invitedAs) {
+    const id = `${pass.kind}:${pass.sub}`
+    const a = this.hostedAccess(pass)
+    if (a.state === 'approved') return a
+    if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false, id }
+    const waiting = [...this.pending].find(([k, p]) => k.hosted && p.id === id)
+    if (waiting) { waiting[1].since = Date.now(); waiting[1].invitedAs = invitedAs; return { state: 'pending', invitedAs } }
+    this.pending.set({ hosted: id }, { key: '', id, name: pass.name, kind: pass.kind === 'agent' ? 'agent' : 'human', invitedAs, since: Date.now() })
+    this.log(`[${this.name}] ${pass.name} (hosted) is waiting to be let in`)
+    this.broadcastMembers()
+    return { state: 'pending', invitedAs }
+  }
+
+  /** A hosted agent's current standing, changing nothing: approved (role, scopes) or pending. */
+  hostedAccess (pass) {
+    const id = `${pass.kind}:${pass.sub}`
+    if (!this.controlled) return { state: 'approved', role: 'editor', scopes: [], owner: false, id }
+    if (this.meta.owner && this.isOwner(pass.key || '', id)) return { state: 'approved', role: 'editor', scopes: [], owner: true, id }
+    const m = this.meta.members[id]
+    if (m) {
+      if (m.name !== pass.name) { m.name = pass.name; this.saveMeta() }
+      return { state: 'approved', role: m.role, scopes: m.scopes || [], owner: false, id }
+    }
+    return { state: 'pending', id }
+  }
+
+  /** A hosted agent just used a tool: it shows as online for a while, and stops waiting. */
+  hostedActive (id) {
+    const was = this.hostedSeen.get(id) || 0
+    this.hostedSeen.set(id, Date.now())
+    for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
+    // Newly online (or back after a while): everyone's member list shows it.
+    if (Date.now() - was >= HOSTED_ONLINE_MS) this.broadcastMembers()
+  }
+
+  /** Hosted agents active in the last few minutes, for status and presence. */
+  hostedOnline () {
+    const cutoff = Date.now() - HOSTED_ONLINE_MS
+    const out = []
+    for (const [id, ts] of this.hostedSeen) {
+      if (ts < cutoff) { this.hostedSeen.delete(id); continue }
+      const m = this.meta.members[id]
+      if (m) out.push({ id, name: m.name, kind: m.kind, role: m.role })
+    }
+    return out
+  }
+
+  /** Tells every connection the claims changed (a hosted agent claimed or released). */
+  broadcastClaims () {
+    this.saveMeta()
+    const claims = this.claimList()
+    for (const other of this.conns.keys()) send(other, jsonMessage(MSG_CLAIMS, { claims }))
+  }
+
   /** May this connection change this file? */
   mayWrite (a, rel) {
     if (!a || a.role === 'viewer') return false
@@ -316,7 +381,7 @@ class Room {
     if (this.meta.largeFiles) return
     this.meta.largeFiles = true
     for (const ws of [...this.conns.keys(), ...this.pending.keys()]) {
-      if (!this.supported(ws)) ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
+      if (!ws.hosted && !this.supported(ws)) ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
     }
   }
 
@@ -335,6 +400,7 @@ class Room {
   memberList () {
     const online = new Map()
     for (const a of this.access.values()) online.set(a.owner ? this.ownerId : a.id, true)
+    for (const h of this.hostedOnline()) online.set(h.id, true)
     const list = []
     if (this.meta.owner) {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
@@ -398,6 +464,8 @@ class Room {
       this.log(`[${this.name}] ${p.name} approved as ${this.meta.members[key].role}`)
       for (const [pws, w] of waiting) {
         this.pending.delete(pws)
+        // A hosted agent has no connection to let in: it finds out on its next tool call.
+        if (pws.hosted) continue
         this.enter(pws, { key: w.key, id: key, name: w.name, kind: w.kind, role: this.meta.members[key].role, scopes: this.meta.members[key].scopes, owner: false })
       }
       return { ok: true }
@@ -406,7 +474,7 @@ class Room {
       if (!waiting.length) throw new Error('nobody with that key is waiting')
       for (const [pws] of waiting) {
         this.pending.delete(pws)
-        pws.close(CLOSE_DENIED, 'The session owner did not let you in')
+        if (!pws.hosted) pws.close(CLOSE_DENIED, 'The session owner did not let you in')
       }
       return { ok: true }
     }
@@ -431,6 +499,7 @@ class Room {
       for (const id of gone) delete this.meta.members[id]
       this.saveMeta()
       for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
+      for (const id of gone) this.hostedSeen.delete(id)
       return { ok: true }
     }
     throw new Error('unknown request')
@@ -454,6 +523,12 @@ class Room {
   }
 
   /** Presence may only describe the sender, under their verified name. */
+  samePerson (a, b) {
+    const x = this.access.get(a)
+    const y = this.access.get(b)
+    return !!(x && y && x.key === y.key && x.name === y.name)
+  }
+
   presenceAllowed (ws, update) {
     const name = this.names.get(ws)
     const dec = decoding.createDecoder(update)
@@ -462,7 +537,14 @@ class Room {
       const id = decoding.readVarUint(dec)
       decoding.readVarUint(dec) // clock
       const state = JSON.parse(decoding.readVarString(dec))
-      for (const [other, ids] of this.conns) if (other !== ws && ids.has(id)) return false
+      for (const [other, ids] of this.conns) {
+        if (other === ws || !ids.has(id)) continue
+        // The same person over a new connection: they're back from a drop the relay hasn't
+        // noticed yet (its heartbeat takes up to a minute). The old connection is dead; let
+        // it go now, or they'd stay unseen until it does.
+        if (this.samePerson(other, ws)) { ids.delete(id); other.terminate(); continue }
+        return false
+      }
       if (state !== null && state.name !== name) return false
     }
     return true
@@ -648,7 +730,12 @@ class Room {
       this.guard.trackedOrigins.delete(ws)
       this.broadcastMembers()
     }
-    if (ids && ids.size) awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null)
+    if (ids && ids.size) {
+      awarenessProtocol.removeAwarenessStates(this.awareness, [...ids], null)
+      // Forget their clocks too: back after a drop, a client sends the same state at the
+      // same clock, which would be ignored until its next renewal.
+      for (const id of ids) this.awareness.meta.delete(id)
+    }
     if (this.conns.size === 0) {
       this.save()
       this.touch()
@@ -828,7 +915,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       room.onEnd = () => {
         if (room.ended) return
         room.ended = true
-        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) ws.close(CLOSE_ENDED, 'The owner ended this session')
+        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) if (!ws.hosted) ws.close(CLOSE_ENDED, 'The owner ended this session')
         clearTimeout(room.unloadTimer)
         room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
         if (rooms.get(name) === room) rooms.delete(name)
@@ -876,6 +963,23 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   }
   const tokenKey = (t) => hash(t).toString('hex')
   const TOKEN_RE = /^[A-Za-z0-9_-]{20,64}$/
+
+  // Hosted agents: which session each one (by pass id) is in, so every tool call over
+  // /mcp knows its room. Kept on disk so a relay restart doesn't drop them out.
+  const hostedFile = dataDir && path.join(dataDir, 'hosted-agents.json')
+  const hosted = new Map()
+  try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(hostedFile, 'utf8')))) hosted.set(k, v) } catch {}
+  let hostedTimer = null
+  const saveHosted = () => {
+    if (!hostedFile || hostedTimer) return
+    hostedTimer = setTimeout(() => {
+      hostedTimer = null
+      const cutoff = Date.now() - 30 * DAY
+      for (const [k, v] of hosted) if ((v.seenAt || 0) < cutoff) hosted.delete(k)
+      try { fs.writeFileSync(hostedFile, JSON.stringify(Object.fromEntries(hosted))) } catch {}
+    }, 2000)
+    hostedTimer.unref()
+  }
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
@@ -951,6 +1055,14 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
         res.end(JSON.stringify({ ok: true, aiSeenAt: prev.aiSeenAt || 0 }))
       })
+    }
+    if (url.pathname === '/mcp') {
+      // Hosted agents (and anyone with a pass): session tools over HTTP, no app needed.
+      if (!passKey) return text(404, 'this relay has sign-in off; hosted agents need it on')
+      const pass = httpPass(req)
+      if (!pass) return text(401, SIGN_IN)
+      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, log, endedMessage: ENDED_MESSAGE } })
+        .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
     if (mm) {

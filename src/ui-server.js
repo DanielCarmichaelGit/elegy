@@ -14,7 +14,7 @@ import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './setting
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents } from './account.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
@@ -24,6 +24,7 @@ import { currentVersion, localReleases, latestRelease, compareVersions, download
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
 const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
+const SIGNED_OUT_MESSAGE = 'This computer was signed out. Sign in again.'
 const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
 // Until this computer is signed in, only these answer.
 const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown'])
@@ -363,8 +364,28 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     } finally { r.gitBusy = false }
   }
 
+  // Agent invites and the list of your agents come from the accounts API, as this computer's account.
+  // A 401 there is checked against /v1/me before it counts: only a token the API no longer knows
+  // signs the app out (an older API that doesn't take the app's token for these yet just errors).
+  const asAccount = async (fn) => {
+    const account = readAccount()
+    if (!account) throw Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
+    try {
+      return await fn(account.token)
+    } catch (err) {
+      if (err.status !== 401) throw err
+      let revoked = false
+      try { await fetchMe({ token: account.token }) } catch (e) { revoked = e.status === 401 }
+      if (!revoked) throw httpError(502, `Quilt's accounts service turned this down: ${err.message}`)
+      await signedOut('revoked')
+      throw Object.assign(httpError(401, SIGNED_OUT_MESSAGE), { signedOut: true })
+    }
+  }
+
   const api = {
     'GET /api/account': () => accountState(),
+    'GET /api/agents': () => asAccount(async (token) => ({ agents: await listAgents({ token }) })),
+    'POST /api/agent-invites': () => asAccount((token) => createAgentInvite({ token })),
     'POST /api/account/start': () => beginLink(),
     'POST /api/account/cancel': () => { link = null; return accountState() },
     'POST /api/account/signout': async () => {

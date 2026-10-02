@@ -1,23 +1,73 @@
 // What's new and the update check: a bar across the top when a newer Quilt is out, and the
-// release notes in a quilted pop-up (shown by itself the first time a new version runs).
-import { I, state, $, esc, api } from './common.js'
+// release notes in a quilted pop-up (shown by itself the first time a new version runs, and
+// again when a newer release appears). In the desktop app, "Update Quilt" installs it.
+import { I, state, $, esc, api, remember, recall } from './common.js'
 import { quiltMark } from './mark.js'
 
-const RECHECK_MS = 4 * 60 * 60 * 1000
+const RECHECK_MS = 10 * 60 * 1000
 let shownUnseen = false
 let hiddenBar = false
 
-/** Asks the app about versions, shows the update bar, and opens the notes after an update. */
+/** Asks the app about versions, shows the update bar, and opens the notes after an update or a new release. */
 export async function checkRelease () {
   try { state.release = await api('GET', '/api/version') } catch { return }
-  renderUpdateBar()
-  if (state.release.unseen && !shownUnseen) {
-    shownUnseen = true
+  const r = state.release
+  // Each newer release is announced once per computer: when it is cut while the app is open, or at the next launch.
+  if (r.outOfDate && recall('announced-release') !== r.latest.version) {
+    remember('announced-release', r.latest.version)
+    hiddenBar = false
     openReleaseNotes()
-    api('POST', '/api/version/seen').catch(() => {})
-    state.release.unseen = false
+  } else if (r.unseen && !shownUnseen) {
+    openReleaseNotes()
   }
+  if (r.unseen && !shownUnseen) {
+    shownUnseen = true
+    api('POST', '/api/version/seen').catch(() => {})
+    r.unseen = false
+  }
+  renderUpdateBar()
   if (!checkRelease.timer) checkRelease.timer = setInterval(() => checkRelease().catch(() => {}), RECHECK_MS)
+}
+
+// ------------------------------------------------------------- update --
+const desktop = () => window.quiltDesktop?.installUpdate ? window.quiltDesktop : null
+let update = null // { phase: 'downloading' | 'installing' | 'restarting' | 'failed', received, total, error }
+
+/** Downloads and installs the newest Quilt from inside the desktop app. */
+async function startUpdate () {
+  const d = desktop()
+  if (!d || (update && update.phase !== 'failed')) return
+  if (!startUpdate.listening) { startUpdate.listening = true; d.onUpdateProgress?.((p) => { update = { ...update, ...p }; refreshUpdateControls() }) }
+  update = { phase: 'downloading', received: 0, total: 0 }
+  refreshUpdateControls()
+  try {
+    await d.installUpdate()
+    update = { phase: 'restarting' }
+  } catch (err) {
+    update = { phase: 'failed', error: String(err?.message || err).replace(/^Error invoking remote method '[^']*': (Error: )?/, '') }
+  }
+  refreshUpdateControls()
+}
+
+/** The button that gets the newer Quilt: installs it in the desktop app, downloads it elsewhere. */
+function updateControl () {
+  const r = state.release
+  const download = `<a class="btn sm primary" href="${esc(r.downloadUrl)}" target="_blank" rel="noopener">${I.down}<span>Download</span></a>`
+  if (!desktop()) return `<span class="update-ctl">${download}</span>`
+  const phase = update?.phase
+  if (!phase) return `<span class="update-ctl"><button class="btn sm primary" type="button" data-update>${I.down}<span>Update Quilt</span></button></span>`
+  if (phase === 'failed') {
+    return `<span class="update-ctl update-failed"><span class="update-err" title="${esc(update.error)}">${esc(update.error)}</span><button class="btn sm primary" type="button" data-update>${I.refresh}<span>Try again</span></button>${download}</span>`
+  }
+  const pct = phase === 'downloading' && update.total ? ` ${Math.min(99, Math.floor(update.received / update.total * 100))}%` : ''
+  const label = phase === 'downloading' ? `Downloading…${pct}` : phase === 'installing' ? 'Installing…' : 'Restarting…'
+  return `<span class="update-ctl"><button class="btn sm primary update-busy" type="button" disabled><span class="spin" aria-hidden="true"></span><span>${esc(label)}</span></button></span>`
+}
+
+/** Redraws every update button (the bar's and the pop-up's) in place. */
+function refreshUpdateControls () {
+  if (!state.release) return
+  for (const el of document.querySelectorAll('.update-ctl')) el.outerHTML = updateControl()
 }
 
 /** The bar at the top of the window: this version is out of date. */
@@ -37,7 +87,7 @@ export function renderUpdateBar () {
     <span class="ub-dot"></span>
     <span class="ub-text"><b>Quilt ${esc(r.latest.version)} is out.</b> You have ${esc(r.version)}.</span>
     <button class="btn sm ghost" type="button" data-release-notes>What's new</button>
-    <a class="btn sm primary" href="${esc(r.downloadUrl)}" target="_blank" rel="noopener">${I.down}<span>Download</span></a>
+    ${updateControl()}
     <button class="btn sm ghost icon ub-x" type="button" data-hide-update aria-label="Hide until next time">${I.x}</button>`
 }
 
@@ -62,7 +112,7 @@ function releaseHtml (rel, i, { current = false, latest = false } = {}) {
       <span class="rn-patch rn-patch-${PATCHES[i % PATCHES.length]}" id="rn-v-${esc(rel.version)}">${esc(rel.version)}</span>
       <span class="rn-when">${esc(when(rel.date))}</span>
       ${current ? '<span class="rn-tag">You have this</span>' : ''}
-      ${latest ? `<a class="btn sm primary" href="${esc(state.release.downloadUrl)}" target="_blank" rel="noopener">${I.down}<span>Download</span></a>` : ''}
+      ${latest ? updateControl() : ''}
     </header>
     ${rel.summary ? `<p class="rn-sum">${inline(rel.summary)}</p>` : ''}
     ${rel.items.length ? `<ul class="rn-list">${rel.items.map((it) => `<li>${inline(it)}</li>`).join('')}</ul>` : ''}
@@ -86,7 +136,7 @@ export function openReleaseNotes () {
       <header class="rn-head">
         <div class="rn-logo">${quiltMark({ sew: true })}</div>
         <h2 id="rn-title">What's new</h2>
-        <p class="rn-lead">${r.outOfDate ? `Quilt <b>${esc(r.latest.version)}</b> is out; you have ${esc(r.version)}.` : `You have the newest Quilt, <b>${esc(r.version)}</b>.`}</p>
+        <p class="rn-lead">${r.outOfDate ? `Quilt <b>${esc(r.latest.version)}</b> is out; you have ${esc(r.version)}.${desktop() ? ' Update takes a minute and restarts Quilt.' : ''}` : `You have the newest Quilt, <b>${esc(r.version)}</b>.`}</p>
         <button class="btn icon ghost rn-close" type="button" data-rn-close aria-label="Close">${I.x}</button>
       </header>
       <div class="rn-body">
@@ -110,4 +160,5 @@ document.addEventListener('click', (e) => {
     else checkRelease().then(openReleaseNotes)
   }
   if (e.target.closest('[data-hide-update]')) { hiddenBar = true; renderUpdateBar() }
+  if (e.target.closest('[data-update]')) startUpdate()
 })

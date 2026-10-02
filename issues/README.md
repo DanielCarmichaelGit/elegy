@@ -19,7 +19,7 @@ the commit, so the history stays in one place.
 | [010](010-production-relay-sign-in-off.md) | Production relay has sign-in off: 0.3.1 clients get 403 starting sessions, names unchecked | **Fixed** (deployed 2026-10-02) |
 | [031](031-peer-can-unignore-env.md) | A partner's `.gitignore` edit un-ignores `.env` and your secrets sync into the room | **Fixed** (4637800) |
 | [011](011-secrets-in-websocket-urls.md) | Room secrets, relay key and passes travel in WebSocket URLs and were logged by Fly's proxy | **Fixed** (7028258): headers, with a query fallback for one release; rotate the leaked key |
-| [012](012-release-tag-and-default-branch.md) | GitHub default branch is a stale `claude/*` branch; v0.3.1 tagged on 27 Sept code; relay image stale | Open, high |
+| [012](012-release-tag-and-default-branch.md) | GitHub default branch is a stale `claude/*` branch; v0.3.1 tagged on 27 Sept code; relay image stale | **Fixed** (GitHub, 2026-10-02); delete the ghcr `elegy-relay` package by hand |
 | [013](013-client-stops-reconnecting.md) | The app stops reconnecting after a 429 or a proxy 502/503 (relay restarts) | **Fixed** (7028258) |
 | [014](014-session-ownership-first-come.md) | Session ownership and creation go to whoever connects first | **Fixed** (7028258): only the creator becomes owner; creation by a view link needs a client-side join flag |
 | [015](015-relay-disk-errors.md) | A disk error stops the relay; a half-written session file is deleted on restart | **Fixed** (7028258); a relay-wide free-space cap is still to do |
@@ -43,7 +43,7 @@ the commit, so the history stays in one place.
 | [030](030-mail-dns-and-headers.md) | Mail DNS incomplete (no DMARC/SPF on hq); Fly apps send no hardening headers | Open, low |
 | [035](035-sync-data-loss-edge-cases.md) | Sync edge cases: case-only collisions, delete-vs-edit race, `.quilt/` committable, 1 s rescan cost, more | Open, medium |
 
-Issues 009 to 035 come from the full audit of 2026-10-01 (relay, sync client, accounts API, Supabase, website, desktop app, deploy and docs). 009, 010 and 031 and the highs (011, 013, 014, 015, 021, 032, 033, 034) are fixed; 012 needs two GitHub actions by hand (see the file).
+Issues 009 to 035 come from the full audit of 2026-10-01 (relay, sync client, accounts API, Supabase, website, desktop app, deploy and docs). 009, 010 and 031 and the highs (011, 013, 014, 015, 021, 032, 033, 034) are fixed; 012 is done on GitHub.
 
 Feature ideas (not bugs) go in [unlocks.md](unlocks.md).
 

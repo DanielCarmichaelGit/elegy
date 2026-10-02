@@ -6,6 +6,7 @@ import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileC
 import { quiltMark } from './mark.js'
 import { renderSignIn } from './signin.js'
 import { checkRelease, openReleaseNotes } from './releases.js'
+import { agentPaste } from './invite.js'
 
 // ---------------------------------------------------------------- boot --
 const SIGNED_OUT = 'This computer was signed out. Sign in again.'
@@ -63,6 +64,14 @@ window.addEventListener('quilt-signed-out', () => signedOutNow(SIGNED_OUT))
 
 function connectEvents () {
   const es = state.events = new EventSource(`/api/events?t=${encodeURIComponent(TOKEN)}`)
+  // The browser reopens a dropped stream by itself, but whatever was pushed meanwhile is
+  // gone (a partner back after a blip, say), and nothing pushes again until something
+  // changes. So after a reopen, fetch the state over again.
+  let opened = false
+  es.addEventListener('open', () => {
+    if (!opened) { opened = true; return }
+    resync()
+  })
   es.addEventListener('session', (e) => {
     const sum = JSON.parse(e.data)
     const prev = state.sessions.get(sum.id)
@@ -103,8 +112,12 @@ function connectEvents () {
     state.messages.delete(id)
     state.feeds.delete(id)
     state.trees.delete(id)
-    if (state.view === id) { state.view = 'home'; refreshRecent() }
+    if (state.view === id) state.view = 'home'
     render()
+    // The folder moves from "open" to "recent", but the recent list is the
+    // server's: draw Home again once the fresh one arrives, or the session you
+    // just left is missing from it until the next visit.
+    refreshRecent().then(() => { if (state.view === 'home') render() })
   })
   es.addEventListener('signed-out', (e) => {
     const { reason } = JSON.parse(e.data)
@@ -139,6 +152,26 @@ async function refreshRecent () {
     state.recent = s.recent
     state.profile = s.profile
   } catch {}
+}
+
+/** Brings every session's summary (and the recent list) up to date with the server. */
+async function resync () {
+  let s
+  try { s = await api('GET', '/api/state') } catch { return }
+  state.recent = s.recent
+  state.profile = s.profile
+  const live = new Set()
+  for (const sum of s.sessions) {
+    live.add(sum.id)
+    const prev = state.sessions.get(sum.id)
+    state.sessions.set(sum.id, prev ? { ...sum, logs: prev.logs } : sum)
+  }
+  for (const id of [...state.sessions.keys()]) if (!live.has(id)) state.sessions.delete(id)
+  if (isSession(state.view)) {
+    if (state.sessions.has(state.view)) sessionUpdated(state.view)
+    else { state.view = 'home'; render() }
+  } else if (state.view === 'home') render()
+  else renderTabs()
 }
 
 export async function go (view) {
@@ -276,30 +309,51 @@ export function openInvite (id) {
   back.className = 'modal-back'
   back.innerHTML = `<div class="card modal" role="dialog" aria-modal="true" aria-labelledby="inv-title">
     <h3 id="inv-title">Invite someone</h3>
-    <p class="lead">Send them a link. They paste it into <b>Join a session</b> in Quilt, or run <code>quilt join &lt;link&gt;</code>. Opening it in a browser explains what to do.</p>
+    <p class="lead">Send them a link. Clicking it opens the session in Quilt (after signing in). It also works with <code>quilt join &lt;link&gt;</code>.</p>
     <div class="label" style="margin-bottom:6px">${s.viewInvite ? 'Can edit' : 'Invite link'}</div>
     <div class="codebox"><code id="inv-code">${esc(s.invite)}</code><button class="btn icon" data-copy="inv-code" title="Copy" aria-label="Copy invite link">${I.copy}</button></div>
     ${s.viewInvite ? `<div class="label" style="margin-bottom:6px">View only</div>
     <div class="codebox"><code id="inv-view">${esc(s.viewInvite)}</code><button class="btn icon" data-copy="inv-view" title="Copy" aria-label="Copy view-only link">${I.copy}</button></div>` : ''}
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
     <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later from the people menu.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
+    <div class="label inv-agent-label">Your AI</div>
+    <div id="inv-agent" class="inv-agent">
+      <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it. It joins as your own agent, listed in Settings.</p>
+      <button class="btn" type="button" id="inv-agent-make">${I.bot}<span>Invite an AI agent</span></button>
+      <p class="error" id="inv-agent-error"></p>
+    </div>
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`
   document.body.appendChild(back)
   const close = () => back.remove()
-  back.querySelectorAll('[data-copy]').forEach((b) => {
-    b.onclick = async () => {
-      const text = $(`#${b.dataset.copy}`, back).textContent
-      try { await navigator.clipboard.writeText(text); toast('Copied') } catch {
-        const r = document.createRange(); r.selectNodeContents($(`#${b.dataset.copy}`, back))
-        getSelection().removeAllRanges(); getSelection().addRange(r); toast('Press ⌘/Ctrl+C to copy')
-      }
+  back.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]')
+    if (!b) return
+    const el = $(`#${b.dataset.copy}`, back)
+    try { await navigator.clipboard.writeText(el.textContent); toast('Copied') } catch {
+      const r = document.createRange(); r.selectNodeContents(el)
+      getSelection().removeAllRanges(); getSelection().addRange(r); toast('Press ⌘/Ctrl+C to copy')
     }
   })
+  $('#inv-agent-make', back).onclick = async () => {
+    const btn = $('#inv-agent-make', back)
+    btn.disabled = true
+    try {
+      const inv = await api('POST', '/api/agent-invites')
+      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link, invite: s.invite }), 'inv-agent-text')
+    } catch (err) {
+      btn.disabled = false
+      $('#inv-agent-error', back).textContent = err.message
+    }
+  }
   $('#inv-done', back).onclick = close
   back.onclick = (e) => { if (e.target === back) close() }
-  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
-  $('#inv-done', back).focus()
+}
+
+/** A fresh agent invite, as the text to paste into an AI, with Copy. */
+export function agentInviteHtml (text, id) {
+  return `<p class="hint"><b>Paste this into your AI.</b> It works once, within an hour. Anyone with it can join as your agent, so only give it to your own AI.</p>
+    <div class="codebox"><code id="${id}" class="paste">${esc(text)}</code><button class="btn icon" data-copy="${id}" title="Copy" aria-label="Copy agent invite">${I.copy}</button></div>`
 }
 
 boot()
