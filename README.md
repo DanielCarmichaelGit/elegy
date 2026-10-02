@@ -313,6 +313,24 @@ and the changes sync to everyone.
 npm test     # end-to-end tests: real relay, two clients, temp folders
 ```
 
+### Releasing
+
+Every release ships with notes, and the app tells people when it's out of date.
+
+1. Bump the version: `npm version patch --no-git-tag-version` (or `minor`).
+2. Add a `## <version> — <date>` section at the top of `RELEASES.md` saying what
+   changed, one bold-led bullet per change. `npm test` fails if the top section
+   doesn't match package.json, so a release can't go out without notes.
+3. Commit on `main`, then `npm run release`. It runs the tests, builds the Mac and
+   Windows apps, tags `v<version>`, pushes, and creates the GitHub release with the
+   notes from `RELEASES.md` as its body (`--dry-run` to see the steps first,
+   `--notes` to print the body, `--notes-only` to fix the notes of a published release).
+
+The app checks GitHub's latest release about once an hour. Older versions show a bar
+across the top with a Download button, and **What's new** (also under Settings and in
+the app menu) opens the release notes. The notes for a new version open by themselves
+the first time it runs.
+
 Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),
 `src/control.js` (local API for CLI/MCP), `src/mcp.js`, `src/setup.js`,

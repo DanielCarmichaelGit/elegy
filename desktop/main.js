@@ -129,6 +129,11 @@ function createWindow () {
   })
 }
 
+function showReleaseNotes () {
+  showWindow()
+  win.webContents.send('release-notes')
+}
+
 function showWindow () {
   if (!win || win.isDestroyed()) return createWindow()
   if (win.isMinimized()) win.restore()
@@ -155,6 +160,7 @@ function appMenu () {
           label: app.name,
           submenu: [
             { role: 'about' },
+            { label: 'What’s New in Quilt…', click: showReleaseNotes },
             { type: 'separator' },
             { label: 'Install the Quilt Command…', click: installCli },
             { type: 'separator' },
@@ -163,7 +169,7 @@ function appMenu () {
             { role: 'quit' }
           ]
         }]
-      : [{ label: 'File', submenu: [{ role: 'quit' }] }]),
+      : [{ label: 'File', submenu: [{ label: 'What’s New in Quilt…', click: showReleaseNotes }, { type: 'separator' }, { role: 'quit' }] }]),
     { role: 'editMenu' },
     { label: 'View', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }] },
     { role: 'windowMenu' }

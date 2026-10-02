@@ -9,5 +9,7 @@ contextBridge.exposeInMainWorld('quiltDesktop', {
   onInvite: (fn) => {
     ipcRenderer.on('invite', (e, link) => fn(link))
     ipcRenderer.invoke('ready').then((link) => { if (link) fn(link) })
-  }
+  },
+  /** Calls `fn()` when "What's New in Quilt…" is chosen from the menu. */
+  onReleaseNotes: (fn) => { ipcRenderer.on('release-notes', () => fn()) }
 })
