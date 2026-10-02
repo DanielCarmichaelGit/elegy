@@ -100,7 +100,45 @@ test('moving a task to In progress reminds the agent to grok → plan → build 
   assert.match(out(moved), /implement a plan/i)
   assert.match(out(moved), /build the change/i)
   assert.match(out(moved), /test it/i)
-  assert.match(out(await call('quilt_move_task', { id: id.trim(), column: 'done' })), /Moved "Wire agent workflow" to Done/)
+  assert.match(out(moved), /no "Verifying a change" section/)
+  // Done needs evidence; "tested" is not evidence.
+  const refused = await call('quilt_move_task', { id: id.trim(), column: 'done' })
+  assert.ok(refused.isError)
+  assert.match(out(refused), /needs `verified`/)
+  assert.ok((await call('quilt_move_task', { id: id.trim(), column: 'done', verified: 'tested' })).isError)
+  const done = await call('quilt_move_task', { id: id.trim(), column: 'done', verified: 'npm test passed (3 tests); opened the board and the new column rendered' })
+  assert.ok(!done.isError, out(done))
+  assert.match(out(done), /Moved "Wire agent workflow" to Done\. Verified: npm test passed/)
+  assert.match(out(await call('quilt_tasks')), /verified: npm test passed \(3 tests\)/)
+})
+
+test('picking up a task briefs the agent: files, their recent changes, claims and the project checks', async () => {
+  // The owner's AGENTS.md carries the project's checks; it syncs to the room like any file.
+  fs.writeFileSync(path.join(carlDir, 'AGENTS.md'), '# Notes\n\n## Verifying a change\n\n- Run `npm test`.\n- Open the app and click through the board.\n\n## Other\n\nignored\n')
+  fs.writeFileSync(path.join(carlDir, 'src.txt'), 'v1\n')
+  await waitFor(async () => out(await call('quilt_read_file', { path: 'src.txt' })) === 'v1\n')
+  assert.ok(!(await call('quilt_claim', { pattern: 'docs/**', note: 'rewriting the guide' })).isError)
+  await waitFor(() => carl.claims.has('docs/**'))
+  const added = out(await call('quilt_add_task', { title: 'Bump src', files: ['src.txt', 'docs/a.md'] }))
+  const id = added.split('\n').find((l) => /^[0-9a-f]{16}$/.test(l.trim())).trim()
+  const brief = out(await call('quilt_move_task', { id, column: 'doing' }))
+  assert.match(brief, /^Picked up "Bump src" \[[0-9a-f]{16}\]\.\nFiles: src\.txt, docs\/a\.md/)
+  assert.match(brief, /Recent changes to these files[^\n]*\n- \[\d+s ago\] Carl created src\.txt \(\+1 -0\)/)
+  assert.doesNotMatch(brief, /AGENTS\.md \(/, 'changes to other files are left out')
+  assert.doesNotMatch(brief, /Claims to respect/, 'my own claim is not a warning')
+  assert.match(brief, /This project's checks \(from AGENTS\.md\):\n- Run `npm test`\.\n- Open the app and click through the board\./)
+  assert.doesNotMatch(brief, /ignored/)
+  assert.match(brief, /grok the codebase/i)
+  // Another person's claim on one of the files is called out.
+  await carl.claim('src.txt', 'mine for a minute')
+  await waitFor(() => carl.claims.has('src.txt'))
+  await call('quilt_move_task', { id, column: 'todo' })
+  assert.match(out(await call('quilt_move_task', { id, column: 'doing' })), /Claims to respect[^\n]*\n- src\.txt by Carl \(mine for a minute\)/)
+  // The refusal quotes the checks too.
+  assert.match(out(await call('quilt_move_task', { id, column: 'done' })), /Run `npm test`/)
+  await carl.release('src.txt')
+  await call('quilt_release', { pattern: 'docs/**' })
+  fs.rmSync(path.join(carlDir, 'AGENTS.md'))
 })
 
 test('the agent reads what the owner has, and what it writes lands on the owner\'s disk', async () => {

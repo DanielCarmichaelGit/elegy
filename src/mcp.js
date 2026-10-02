@@ -17,7 +17,7 @@ import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
-import { TASK_WORKFLOW, pickupReminder } from './agent-task-workflow.js'
+import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { getSettings } from './settings.js'
 
@@ -137,14 +137,19 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_move_task', {
-    description: 'Move a task on the shared board. Use "doing" when you start it and "done" when you finish.',
+    description: 'Move a task on the shared board. "doing" when you start it: you get a briefing (its files, recent changes to them, claims, the project\'s checks). ' +
+      '"done" when you finish: requires `verified`, what you ran and what you saw; without it the move is refused.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
-      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done')
+      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done'),
+      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
     }
-  }, ({ id, column }) => withDaemon(async (d) => {
-    const { task } = await call(d, 'POST', '/tasks/update', { id, column })
-    if (column === 'doing') return pickupReminder(task.title)
+  }, ({ id, column, verified }) => withDaemon(async (d) => {
+    const brief = await call(d, 'POST', '/tasks/brief', { id })
+    if (column === 'done' && !verifiedEnough(verified)) return doneRefusal({ task: brief.task, checklist: brief.checklist })
+    const { task } = await call(d, 'POST', '/tasks/update', { id, column, ...(column === 'done' ? { verified } : {}) })
+    if (column === 'doing') return pickupBrief({ ...brief, task })
+    if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`
     return `Moved "${task.title}" to ${columnName(task.column)}.`
   }))
 

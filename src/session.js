@@ -22,6 +22,7 @@ import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
+import { pickChecklist } from './agent-task-workflow.js'
 
 export { applyTextDiff }
 
@@ -1236,6 +1237,28 @@ export class Session extends EventEmitter {
   currentTask () {
     const aiWorking = this.kind !== 'agent' && this.agentState?.status === 'working'
     return currentTask(this.taskList(), this.name, { preferAi: aiWorking })
+  }
+
+  /** The project's own checks under "Verifying a change" in AGENTS.md (or CLAUDE.md); '' when there are none. */
+  readChecklist () {
+    const read = (f) => { try { return fs.readFileSync(path.join(this.root, f), 'utf8') } catch { return '' } }
+    return pickChecklist(read('AGENTS.md'), read('CLAUDE.md'))
+  }
+
+  /**
+   * What an agent needs when it picks up a task: the task, recent chronology for
+   * its files (or the project when it lists none), claims that touch them, and the checklist.
+   */
+  taskBrief (id) {
+    const task = this.taskList().find((t) => t.id === id)
+    if (!task) throw new Error('no such task')
+    const files = task.files || []
+    const all = this.history.entries()
+    const history = (files.length ? all.filter((e) => files.includes(e.path)) : all).slice(-8)
+    const claims = [...this.claims.values()]
+      .filter((c) => !files.length || files.some((f) => globMatcher(c.pattern)(f)))
+      .map((c) => ({ by: c.by, pattern: c.pattern, note: c.note }))
+    return { task, history, claims, checklist: this.readChecklist(), me: this.name }
   }
 
   /**

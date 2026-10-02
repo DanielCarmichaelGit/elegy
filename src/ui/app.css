@@ -998,6 +998,9 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .task.mine-ai { box-shadow: inset 3px 0 0 var(--violet), var(--shadow); }
 .task .dd-btn.task-assign, .task select.task-assign { width: 100%; margin-top: 8px; height: 26px; font-size: 12px; }
 .task-files { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+/* What the agent ran and saw before moving the card to Done. */
+.task-verified { margin: 6px 0 0; font-size: 12px; line-height: 1.4; color: var(--muted, #6b6b6b); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.task-verified::before { content: '✓ '; }
 .task-file-chip {
   display: inline-flex; align-items: center; gap: 2px; max-width: 100%;
   padding: 0 2px 0 6px; border-radius: 999px; background: var(--panel-2);

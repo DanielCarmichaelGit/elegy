@@ -80,7 +80,8 @@ const fontFile = (pkg, file) => {
   const f = path.join(path.dirname(require.resolve(`@fontsource/${pkg}/package.json`)), 'files', file)
   return fs.existsSync(f) ? f : null
 }
-const STATIC = {
+// Every module src/ui/*.js imports must be listed here, or the page fails to load (test/ui-static-allowlist.test.js).
+export const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/app.css': ['app.css', 'text/css; charset=utf-8'],

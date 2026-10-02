@@ -18,7 +18,7 @@ import { globMatcher, isSafeRelPath } from './pathrules.js'
 import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName, assigneeLabel, assignmentFields } from './tasks.js'
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
-import { TASK_WORKFLOW, pickupReminder } from './agent-task-workflow.js'
+import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 
 const FEED_CAP = 300
@@ -185,18 +185,31 @@ function sessionTools (server, ctx) {
     } catch (e) { return fail(e.message) }
   })
 
+  const checklistOf = (files) => pickChecklist(files.get('AGENTS.md')?.toString(), files.get('CLAUDE.md')?.toString())
   tool('quilt_move_task', {
-    description: 'Move a task on the shared board. Use "doing" when you start it and "done" when you finish.',
+    description: 'Move a task on the shared board. "doing" when you start it: you get a briefing (its files, recent changes to them, claims, the project\'s checks). ' +
+      '"done" when you finish: requires `verified`, what you ran and what you saw; without it the move is refused.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
-      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done')
+      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done'),
+      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
     }
-  }, ({ id, column }, { room, doc }) => {
+  }, ({ id, column, verified }, { room, doc, files }) => {
     const err = writable(room)
     if (err) return fail(err)
     try {
-      const task = updateTask(doc, taskMap(doc), { id, column }, AGENT)
-      if (column === 'doing') return text(pickupReminder(task.title))
+      const cur = readTasks(taskMap(doc)).find((t) => t.id === id)
+      if (!cur) return fail('no such task')
+      if (column === 'done' && !verifiedEnough(verified)) return fail(doneRefusal({ task: cur, checklist: checklistOf(files) }))
+      const task = updateTask(doc, taskMap(doc), { id, column, ...(column === 'done' ? { verified } : {}) }, AGENT)
+      if (column === 'doing') {
+        const tf = task.files || []
+        const all = historyOf(room).entries()
+        const history = (tf.length ? all.filter((e) => tf.includes(e.path)) : all).slice(-8)
+        const claims = claimsOf(room).filter((c) => !tf.length || tf.some((f) => globMatcher(c.pattern)(f)))
+        return text(pickupBrief({ task, history, claims, checklist: checklistOf(files), me }))
+      }
+      if (column === 'done') return text(`Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`)
       return text(`Moved "${task.title}" to ${columnName(task.column)}.`)
     } catch (e) { return fail(e.message) }
   })

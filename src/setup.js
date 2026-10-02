@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { hookSettings, HOOK_COMMAND } from './hooks.js'
-import { TASK_WORKFLOW_MD } from './agent-task-workflow.js'
+import { TASK_WORKFLOW_MD, CHECKLIST_SCAFFOLD, extractChecklist } from './agent-task-workflow.js'
 
 const START = '<!-- quilt:start -->'
 const END = '<!-- quilt:end -->'
@@ -36,6 +36,9 @@ ${TASK_WORKFLOW_MD}
   then carry on with other work.
 - Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
   hand the file over, or say when you'll be done.
+- Before moving a ticket to Done, run the checks under "Verifying a change" (in
+  AGENTS.md; add them there if the section is missing) and pass what you ran and saw
+  as \`verified\` to \`quilt_move_task\`. Done without evidence is refused.
 - Always re-read a file right before editing it; never rely on an old copy.
 - Prefer small, focused edits over rewriting whole files.
 - Don't run git commands that rewrite the working tree (checkout, reset,
@@ -93,6 +96,19 @@ export function installHooks (root) {
   return true
 }
 
+/**
+ * Adds the "Verifying a change" template to AGENTS.md when neither guide has that
+ * section yet, outside Quilt's block so owners can edit it. Returns true when written.
+ */
+export function scaffoldChecklist (root) {
+  const read = (f) => { try { return fs.readFileSync(path.join(root, f), 'utf8') } catch { return '' } }
+  if (extractChecklist(read('AGENTS.md')) || extractChecklist(read('CLAUDE.md'))) return false
+  const file = path.join(root, 'AGENTS.md')
+  const text = read('AGENTS.md')
+  fs.writeFileSync(file, (text ? text.replace(/\s*$/, '\n\n') : '') + CHECKLIST_SCAFFOLD)
+  return true
+}
+
 export function setup (root) {
   const changed = []
   if (upsertMcp(path.join(root, '.mcp.json'))) changed.push('.mcp.json (Claude Code MCP server)')
@@ -100,5 +116,6 @@ export function setup (root) {
   if (upsertMcp(path.join(root, '.cursor', 'mcp.json'))) changed.push('.cursor/mcp.json (Cursor MCP server)')
   if (upsertBlock(path.join(root, 'AGENTS.md'), AGENT_GUIDE)) changed.push('AGENTS.md (Cursor, Codex, and other agents)')
   if (upsertBlock(path.join(root, 'CLAUDE.md'), AGENT_GUIDE)) changed.push('CLAUDE.md (Claude Code)')
+  if (scaffoldChecklist(root)) changed.push('AGENTS.md ("Verifying a change": fill in what proves a change works here)')
   return changed
 }

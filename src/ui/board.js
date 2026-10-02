@@ -88,6 +88,12 @@ function filesHtml (files) {
   }).join('')}</ul>`
 }
 
+function verifiedHtml (t) {
+  if (t.column !== 'done' || !t.verified) return ''
+  const v = String(t.verified).replace(/\s+/g, ' ').trim()
+  return `<p class="task-verified" title="${esc(v)}">${esc(v.length > 160 ? `${v.slice(0, 157)}…` : v)}</p>`
+}
+
 function card (t, col, me, people) {
   const who = t.by === me ? 'You' : (t.by || '')
   const mine = t.assignee === me && !t.forAi ? ' mine' : t.assignee === me && t.forAi ? ' mine-ai' : ''
@@ -104,6 +110,7 @@ function card (t, col, me, people) {
     </div>
     <select class="task-assign" aria-label="Assign ${esc(t.title)}">${assignOptions(t, me, people)}</select>
     ${filesHtml(t.files)}
+    ${verifiedHtml(t)}
     <form class="task-file-form">
       <input class="task-file" placeholder="Add a file…" aria-label="Add a file to ${esc(t.title)}" maxlength="240" autocomplete="off">
     </form>

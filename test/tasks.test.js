@@ -260,3 +260,24 @@ test('status shows the three columns', () => {
   const empty = person('bob')
   assert.match(renderStatus(empty.status()), /## Tasks\n_No tasks yet\._/)
 })
+
+test('verified: kept on a Done task, cleaned, shown to agents and people, cleared when the task leaves Done', () => {
+  const alice = person('alice')
+  const t = alice.addTask('Ship it')
+  assert.equal(t.verified, '')
+  alice.updateTask({ id: t.id, column: 'done', verified: '  npm test\r\npassed\u200b  (3 tests)\n\n\n\nopened the app ' })
+  let now = alice.taskList().find((x) => x.id === t.id)
+  assert.equal(now.verified, 'npm test\npassed (3 tests)\n\nopened the app')
+  assert.match(formatTasks(alice.taskList(), { name: 'alice' }), /Ship it[^\n]*\n    verified: npm test passed \(3 tests\) opened the app/)
+  assert.match(renderStatus(alice.status()), /verified: npm test passed/)
+  // Reopening drops the old evidence; a fresh Done needs fresh evidence.
+  alice.updateTask({ id: t.id, column: 'doing' })
+  now = alice.taskList().find((x) => x.id === t.id)
+  assert.equal(now.verified, '')
+  assert.doesNotMatch(formatTasks(alice.taskList(), { name: 'alice' }), /verified:/)
+  // A peer cannot push junk: an over-long or uncleaned value makes the task invalid.
+  assert.equal(publicTask({ ...now, verified: 'x'.repeat(1001) }), null)
+  assert.equal(publicTask({ ...now, verified: ' padded' }), null)
+  assert.ok(publicTask({ ...now, verified: 'clean' }))
+  assert.ok(publicTask((({ verified, ...rest }) => rest)(now)), 'older tasks without the field still read')
+})

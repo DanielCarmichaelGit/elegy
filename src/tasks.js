@@ -16,6 +16,7 @@ export const MAX_FILE_PATH = 240
 const MAX_ASSIGNEE = 80
 const MAX_TOOL = 40
 const MAX_CONV = 200
+const MAX_VERIFIED = 1000
 // An edit from an AI chat only becomes a task when it just happened. Older
 // lines are the reader's backfill of an earlier conversation.
 export const AUTO_TASK_MS = 2 * 60 * 1000
@@ -127,7 +128,24 @@ export function publicTask (value) {
   if (!files) return null
   const conv = storedConv(value.conv)
   if (conv == null) return null
-  return { id: value.id, title, column: value.column, by: value.by, order: value.order, ts: value.ts, ...who, files, conv }
+  const verified = storedVerified(value.verified)
+  if (verified == null) return null
+  return { id: value.id, title, column: value.column, by: value.by, order: value.order, ts: value.ts, ...who, files, conv, verified }
+}
+
+/** What an agent said it ran and saw before moving the task to Done. Newlines kept, control chars dropped. */
+export function cleanVerified (text) {
+  return String(text ?? '').replace(/\r\n?/g, '\n').split('\n')
+    .map((line) => line.replace(INVISIBLE, ' ').replace(/[ \t]+/g, ' ').trim())
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_VERIFIED)
+}
+
+// Missing means no evidence was given. A value that is present must already be cleaned.
+function storedVerified (v) {
+  if (v == null || v === '') return ''
+  if (typeof v !== 'string' || v.length > MAX_VERIFIED) return null
+  if (v !== cleanVerified(v)) return null
+  return v
 }
 
 // Older tasks have no assignee. A value that sets one must already be cleaned,
@@ -246,6 +264,7 @@ export function addTask (doc, map, { title, by, assignee = '', forAi = false, to
     tool: who.tool || '',
     files: who.files || [],
     conv: cleanConv(conv),
+    verified: '',
     order: nextOrder(valid, column),
     ts: Date.now()
   }
@@ -257,8 +276,11 @@ export function addTask (doc, map, { title, by, assignee = '', forAi = false, to
   return task
 }
 
-/** Changes a task's title, column, place, assignee, or files. `before` is a task id to insert ahead of. */
-export function updateTask (doc, map, { id, title, column, before, assignee, forAi, tool, files } = {}, origin) {
+/**
+ * Changes a task's title, column, place, assignee, files or verified evidence.
+ * `before` is a task id to insert ahead of. Leaving Done clears `verified`.
+ */
+export function updateTask (doc, map, { id, title, column, before, assignee, forAi, tool, files, verified } = {}, origin) {
   const { valid } = split(map)
   const cur = valid.find((t) => t.id === id)
   if (!cur) throw new Error('no such task')
@@ -298,6 +320,13 @@ export function updateTask (doc, map, { id, title, column, before, assignee, for
       changed = true
     }
   }
+  if (verified !== undefined) {
+    const v = cleanVerified(verified)
+    if (v !== cur.verified) { next.verified = v; changed = true }
+  } else if (moving && cur.column === 'done' && cur.verified) {
+    next.verified = ''
+    changed = true
+  }
   if (!changed) return cur
   doc.transact(() => map.set(id, next), origin)
   return next
@@ -313,7 +342,13 @@ function taskLine (t, me) {
   const who = assigneeLabel(t, me)
   const files = (t.files || []).map((f) => `\`${f}\``).join(', ')
   const tail = [who ? ` → ${who}` : '', files ? ` · ${files}` : ''].join('')
-  return `- ${oneLine(t.title)} _(${t.by === me ? 'you' : oneLine(t.by) || 'someone'})_${tail}`
+  const verified = t.column === 'done' && t.verified ? `\n  - verified: ${shortVerified(t.verified)}` : ''
+  return `- ${oneLine(t.title)} _(${t.by === me ? 'you' : oneLine(t.by) || 'someone'})_${tail}${verified}`
+}
+
+function shortVerified (v) {
+  const one = oneLine(v)
+  return one.length > 160 ? `${one.slice(0, 157)}…` : one
 }
 
 function openTasks (list) {
@@ -459,7 +494,8 @@ function agentLine (t) {
   const who = assigneeLabel(t, '')
   const files = (t.files || []).join(', ')
   const tail = [who ? `  → ${who}` : '', files ? `  [${files}]` : ''].join('')
-  return `- ${t.id}  ${oneLine(t.title)}  (${oneLine(t.by) || 'someone'})${tail}`
+  const verified = t.column === 'done' && t.verified ? `\n    verified: ${shortVerified(t.verified)}` : ''
+  return `- ${t.id}  ${oneLine(t.title)}  (${oneLine(t.by) || 'someone'})${tail}${verified}`
 }
 
 /**
