@@ -102,3 +102,43 @@ test('the account_kind migration sets kind from sign-up metadata, and keeps the 
   assert.match(sql, /revoke execute on function public\.handle_new_user\(\) from public, anon, authenticated/)
   assert.match(sql, /grant select \(kind\) on public\.profiles to authenticated/)
 })
+
+// The stand-in client above only has from(); record_events is an rpc, so give it one too.
+function fakeRpcClient (data = 1) {
+  const calls = []
+  const base = fakeClient([])
+  base.client.rpc = (fn, args) => { calls.push([fn, args]); return Promise.resolve({ data, error: null }) }
+  return { client: base.client, calls, fromCalls: base.calls }
+}
+
+test('supabase recordEvents sends one record_events call with snake_case rows and ISO times', async () => {
+  const { client, calls } = fakeRpcClient(2)
+  const s = createSupabaseStore({ client })
+  const t = Date.parse('2026-10-01T10:00:00Z')
+  const n = await s.recordEvents([
+    { surface: 'app', kind: 'action', name: 'open-in', outcome: 'error', status: null, durationMs: 12, message: 'boom', appVersion: '0.3.2', platform: 'darwin', userId: 'u1', deviceId: 'd1', context: { app: 'cursor' }, occurredAt: t, fingerprint: 'f'.repeat(64) },
+    { surface: 'app', kind: 'action', name: 'open-in', outcome: 'ok', status: null, durationMs: 3, message: '', appVersion: '0.3.2', platform: 'darwin', userId: 'u1', deviceId: 'd1', context: {}, occurredAt: t, fingerprint: null }
+  ])
+  assert.equal(n, 2)
+  assert.equal(calls.length, 1)
+  const [fn, { events }] = calls[0]
+  assert.equal(fn, 'record_events')
+  assert.equal(events.length, 2)
+  assert.deepEqual(events[0], { surface: 'app', kind: 'action', name: 'open-in', outcome: 'error', status: null, duration_ms: 12, message: 'boom', app_version: '0.3.2', platform: 'darwin', user_id: 'u1', device_id: 'd1', context: { app: 'cursor' }, occurred_at: '2026-10-01T10:00:00.000Z', fingerprint: 'f'.repeat(64) })
+  assert.equal(events[1].fingerprint, null)
+})
+
+test('supabase recordEvents with nothing to record makes no call', async () => {
+  const { client, calls } = fakeRpcClient()
+  assert.equal(await createSupabaseStore({ client }).recordEvents([]), 0)
+  assert.equal(calls.length, 0)
+})
+
+test('supabase pruneEvents deletes events that occurred before the cut-off', async () => {
+  const { client, fromCalls } = fakeRpcClient()
+  await createSupabaseStore({ client }).pruneEvents(Date.parse('2026-09-01T00:00:00Z'))
+  const q = fromCalls.at(-1)
+  assert.equal(q.table, 'events')
+  assert.deepEqual(q.ops[0], ['delete'])
+  assert.deepEqual(q.ops[1], ['lt', 'occurred_at', '2026-09-01T00:00:00.000Z'])
+})
