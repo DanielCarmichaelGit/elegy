@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { installedEditors, openCommand, claudeCli, claudeSessionCommand } from '../src/editors.js'
+import { installedEditors, openCommand, claudeCli, claudeSessionCommand, claudePromptCommand } from '../src/editors.js'
 
 const mac = (apps) => ({ platform: 'darwin', home: '/Users/me', exists: (p) => apps.includes(p) })
 
@@ -72,4 +72,11 @@ test('a Claude session is made in the folder with a free local command', () => {
   assert.equal(file, '/bin/claude')
   assert.deepEqual(args, ['-p', '/rename Panorama (quilt)', '--session-id', 'abc'])
   assert.deepEqual(opts, { cwd: '/Users/me/Panorama' })
+})
+
+test('a Claude session can start with a prompt that edits files without asking', () => {
+  const [file, args, opts] = claudePromptCommand('/bin/claude', '/Users/me/Panorama', 'abc', 'Merge conflict in src/a.js')
+  assert.equal(file, '/bin/claude')
+  assert.deepEqual(args, ['-p', 'Merge conflict in src/a.js', '--session-id', 'abc', '--permission-mode', 'acceptEdits'])
+  assert.deepEqual(opts, { cwd: '/Users/me/Panorama', timeout: 300000 })
 })

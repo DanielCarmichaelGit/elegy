@@ -533,6 +533,15 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     }),
     'POST /api/sessions': (b) => start(b),
     'POST /api/sessions/:id/open-in': async (b, id) => { await openIn(String(b.app || ''), get(id).root); return { ok: true } },
+    'GET /api/sessions/:id/merges': (b, id) => ({ merges: get(id).mergeList() }),
+    'POST /api/sessions/:id/merges/resolve': (b, id) => { const r = get(id).resolveMerge(String(b.id || ''), { how: b.how }); pushStatus(id); return r },
+    'POST /api/sessions/:id/merges/send': async (b, id) => {
+      const s = get(id)
+      const { prompt } = s.prepareMergeSend(String(b.id || ''))
+      const app = String(b.app || '')
+      const { copied } = await openIn(app, s.root, { prompt })
+      return { copied, app }
+    },
     'POST /api/sessions/:id/stop': (b, id) => stop(id).then(() => ({ ok: true })),
     'POST /api/sessions/:id/say': (b, id) => get(id).say(b.text, { to: b.to || null }),
     'POST /api/sessions/:id/focus': (b, id) => { get(id).setFocus(b.text); return { ok: true } },

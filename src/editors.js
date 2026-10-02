@@ -137,25 +137,47 @@ export function claudeSessionCommand (cli, dir, id) {
   return [cli, ['-p', `/rename ${path.basename(dir)} (quilt)`, '--session-id', id], { cwd: dir }]
 }
 
+/** A Claude Code session that starts by working on `prompt` headless (edits allowed), then can be opened to look at. */
+export function claudePromptCommand (cli, dir, id, prompt) {
+  return [cli, ['-p', prompt, '--session-id', id, '--permission-mode', 'acceptEdits'], { cwd: dir, timeout: 300000 }]
+}
+
+/** Puts text on the clipboard (pbcopy on a Mac, clip on Windows, xclip elsewhere). False when it couldn't. */
+export async function copyToClipboard (text) {
+  const cmd = process.platform === 'darwin' ? ['pbcopy', []] : process.platform === 'win32' ? ['clip', []] : ['xclip', ['-selection', 'clipboard']]
+  return new Promise((resolve) => {
+    const child = spawn(cmd[0], cmd[1], { stdio: ['pipe', 'ignore', 'ignore'] })
+    child.on('error', () => resolve(false))
+    child.on('close', (code) => resolve(code === 0))
+    child.stdin.end(text)
+  })
+}
+
 async function openInClaude (dir, opts) {
   const [file, args] = openCommand('claude', dir, opts) // checks it's installed; the folder link is the fallback
   const cli = claudeCli(opts)
   if (cli) {
     const id = crypto.randomUUID()
     try {
-      await run(...claudeSessionCommand(cli, dir, id))
+      if (opts.prompt) await run(...claudePromptCommand(cli, dir, id, opts.prompt))
+      else await run(...claudeSessionCommand(cli, dir, id))
       const link = `claude://resume?session=${id}`
-      return await run(...(process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', link]] : ['open', [link]]))
-    } catch {} // fall back to the folder link
+      await run(...(process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', link]] : ['open', [link]]))
+      return { copied: false }
+    } catch {} // fall back to the folder link (and the clipboard, when there's a prompt)
   }
+  const copied = opts.prompt ? await copyToClipboard(opts.prompt) : false
   await run(file, args)
+  return { copied }
 }
 
-export async function openIn (id, dir, opts) {
+export async function openIn (id, dir, opts = {}) {
   dir = path.resolve(dir)
   try {
     if (id === 'claude') return await openInClaude(dir, opts)
+    const copied = opts.prompt ? await copyToClipboard(opts.prompt) : false
     await run(...openCommand(id, dir, opts))
+    return { copied }
   } catch (err) {
     throw new Error(`Could not open it: ${err.message}`)
   }
