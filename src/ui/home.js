@@ -443,6 +443,8 @@ async function submit (form, errSel, body, busy = 'Connecting…') {
 }
 
 // -------------------------------------------------------------- settings --
+const THEMES = [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']]
+
 function toggle (name, checked, label, hint) {
   return `<label class="toggle"><input type="checkbox" name="${name}" ${checked ? 'checked' : ''}><span class="track"><span class="knob"></span></span>
     <span class="tg-text"><b>${label}</b><span class="hint">${hint}</span></span></label>`
@@ -451,6 +453,7 @@ function toggle (name, checked, label, hint) {
 function settingsHtml ({ head = true } = {}) {
   const p = state.profile
   const a = state.account || { name: p.name, email: '' }
+  const theme = p.theme || document.documentElement.dataset.theme || 'light'
   return `
   ${head ? `<header class="page-head">
     <h1>Settings</h1>
@@ -501,6 +504,16 @@ function settingsHtml ({ head = true } = {}) {
       <div class="sec-actions"><span class="hint">New sessions use this. Rejoin a running session to update it there.</span><button class="btn primary" type="submit">Save profile</button></div>
     </div>
   </form>
+
+  <section class="card settings-sec" id="appearance-sec">
+    <div class="sec-intro"><h2>Appearance</h2><p>How Quilt looks on this computer.</p></div>
+    <div class="sec-body">
+      <div class="segmented theme-switch" role="radiogroup" aria-label="Theme">
+        ${THEMES.map(([v, label]) => `<button type="button" role="radio" data-theme-pick="${v}" class="${theme === v ? 'on' : ''}" aria-checked="${theme === v}">${theme === v ? I.check : ''}<span>${label}</span></button>`).join('')}
+      </div>
+      <span class="hint">System follows your computer's light or dark setting.</span>
+    </div>
+  </section>
 
   <form class="card settings-sec" id="sessions-sec" autocomplete="off">
     <div class="sec-intro"><h2>Sessions</h2><p>Defaults for starting and joining.</p></div>
@@ -605,6 +618,21 @@ function bindSettings (root, refresh) {
   const sess = $('#sessions-sec', root)
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir', root))
   saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
+
+  // Appearance applies at once; the server puts it on <html> at the next launch.
+  $('#appearance-sec', root).addEventListener('click', async (e) => {
+    const pick = e.target.closest('[data-theme-pick]')
+    if (!pick || pick.classList.contains('on')) return
+    const before = document.documentElement.dataset.theme
+    document.documentElement.dataset.theme = pick.dataset.themePick
+    try {
+      state.profile = await api('POST', '/api/settings', { theme: pick.dataset.themePick })
+      refresh()
+    } catch (err) {
+      document.documentElement.dataset.theme = before
+      toast(err.message)
+    }
+  })
 
   bindAgents(root)
 

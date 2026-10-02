@@ -3,7 +3,7 @@
 // output never leave the machine.
 import path from 'node:path'
 
-const EDIT = new Set(['edit', 'multiedit', 'notebookedit', 'edit_file', 'search_replace', 'str_replace', 'apply_patch', 'write'])
+const EDIT = new Set(['edit', 'multiedit', 'notebookedit', 'edit_file', 'search_replace', 'str_replace', 'strreplace', 'apply_patch', 'write'])
 const READ = new Set(['read', 'read_file'])
 const SEARCH = new Set(['grep', 'glob', 'grep_search', 'file_search', 'glob_file_search', 'codebase_search', 'list_dir', 'ls'])
 const RUN = new Set(['bash', 'run_terminal_cmd', 'run_terminal_command', 'run_command', 'shell'])

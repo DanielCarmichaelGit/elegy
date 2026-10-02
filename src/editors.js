@@ -5,21 +5,25 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 
 // `tool` matches the AI tool names people pick in their profile. On a Mac,
 // `mac` is the app bundle; `url` builds a link the app opens instead of the
 // folder being handed to it; `cli` is the app's own command-line launcher
 // inside the bundle, run with `args` before the folder. On Windows, `win` is
-// the exe under %LOCALAPPDATA%, also run with `args`.
+// the exe under %LOCALAPPDATA%. `winCli` is that install's command-line
+// launcher, relative to the exe; opening through it (see openCommand) brings
+// the window forward when the app is already running.
 export const EDITORS = [
   // The Claude app's own "new session in this folder" link loses the folder
   // once you type, so a session is made in the folder first (see openInClaude)
   // and the app opens that; the link is only the fallback.
-  { id: 'claude', name: 'Claude Code', tool: 'Claude Code', mac: 'Claude', win: 'AnthropicClaude/claude.exe', url: (dir) => `claude://code/new?folder=${encodeURIComponent(dir)}` },
+  // On Windows the Store build is found by its package folder or the claude://
+  // link it registers. The versioned WindowsApps path changes on every update.
+  { id: 'claude', name: 'Claude Code', tool: 'Claude Code', mac: 'Claude', win: 'AnthropicClaude/claude.exe', winMore: ['Programs/Claude/Claude.exe'], winPackage: 'Claude_pzs8sxrjxfjjc', protocol: 'claude', url: (dir) => `claude://code/new?folder=${encodeURIComponent(dir)}` },
   // Cursor otherwise opens its Agents window, whose chats stay on whatever
   // project was used last; a classic window ties the agent to this folder.
-  { id: 'cursor', name: 'Cursor', tool: 'Cursor', mac: 'Cursor', cli: 'Contents/Resources/app/bin/cursor', args: ['--classic', '--new-window'], win: 'Programs/cursor/Cursor.exe' },
+  { id: 'cursor', name: 'Cursor', tool: 'Cursor', mac: 'Cursor', cli: 'Contents/Resources/app/bin/cursor', args: ['--classic', '--new-window'], win: 'Programs/cursor/Cursor.exe', winCli: 'resources/app/bin/cursor.cmd' },
   { id: 'codex', name: 'Codex', tool: 'Codex', mac: 'Codex' },
   { id: 'windsurf', name: 'Windsurf', tool: 'Windsurf', mac: 'Windsurf', win: 'Programs/Windsurf/Windsurf.exe' },
   { id: 'vscode', name: 'VS Code', tool: 'GitHub Copilot', mac: 'Visual Studio Code', win: 'Programs/Microsoft VS Code/Code.exe' },
@@ -27,7 +31,8 @@ export const EDITORS = [
 ]
 
 /** Where an editor is installed on this computer, or null. */
-function locate (ed, { platform = process.platform, home = os.homedir(), exists = fs.existsSync } = {}) {
+function locate (ed, opts = {}) {
+  const { platform = process.platform, home = os.homedir(), exists = fs.existsSync, localAppData = process.env.LOCALAPPDATA } = opts
   if (platform === 'darwin') {
     for (const dir of ['/Applications', path.join(home, 'Applications')]) {
       const app = path.join(dir, `${ed.mac}.app`)
@@ -35,11 +40,31 @@ function locate (ed, { platform = process.platform, home = os.homedir(), exists 
     }
     return null
   }
-  if (platform === 'win32' && ed.win) {
-    const exe = path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), ...ed.win.split('/'))
-    return exists(exe) ? exe : null
+  if (platform === 'win32') {
+    const local = localAppData || path.join(home, 'AppData', 'Local')
+    const candidates = [
+      ...(ed.win ? [ed.win] : []),
+      ...(ed.winMore || []),
+      ...(ed.winPackage ? [`Packages/${ed.winPackage}`] : [])
+    ]
+    for (const rel of candidates) {
+      const found = path.join(local, ...rel.split('/'))
+      if (exists(found)) return found
+    }
+    if (ed.protocol && hasProtocol(ed.protocol, opts)) return `${ed.protocol}://`
+    return null
   }
   return null
+}
+
+/** Whether `name://` is a registered link on this computer. `protocols` is for tests. */
+function hasProtocol (name, { protocols, query = execFileSync } = {}) {
+  if (protocols) return protocols(name)
+  if (process.platform !== 'win32') return false
+  try {
+    query('reg', ['query', `HKCU\\Software\\Classes\\${name}`, '/v', 'URL Protocol'], { windowsHide: true, stdio: 'ignore', timeout: 3000 })
+    return true
+  } catch { return false }
 }
 
 /** The editors installed here, in list order: [{ id, name, tool }]. */
@@ -47,7 +72,7 @@ export function installedEditors (opts) {
   return EDITORS.filter((ed) => locate(ed, opts)).map(({ id, name, tool }) => ({ id, name, tool }))
 }
 
-/** The command that opens `dir` in editor `id`: [file, args]. */
+/** The command that opens `dir` in editor `id`: [file, args, runOpts?]. */
 export function openCommand (id, dir, opts = {}) {
   const ed = EDITORS.find((e) => e.id === id)
   if (!ed) throw new Error('Unknown app.')
@@ -61,13 +86,32 @@ export function openCommand (id, dir, opts = {}) {
     return ['open', ['-a', where, dir]]
   }
   if (ed.url) return ['cmd', ['/c', 'start', '""', ed.url(dir)]]
+  // Launching Cursor.exe while it is already open hands the folder to the
+  // running instance and leaves that window behind whatever is in front.
+  // `start` of its CLI activates the window on the folder instead.
+  if (ed.winCli) {
+    const cli = path.join(path.dirname(where), ...ed.winCli.split('/'))
+    const exists = opts.exists || fs.existsSync
+    if (exists(cli)) return ['cmd.exe', ['/c', 'start', '', cli, ...args, dir], { activate: true }]
+  }
   return [where, [...args, dir]]
 }
 
-const run = (file, args, opts = {}) => new Promise((resolve, reject) => {
-  const child = execFile(file, args, { windowsHide: true, timeout: 60000, ...opts }, (err) => (err ? reject(err) : resolve()))
-  child.stdin?.end() // the Claude CLI waits for stdin to close before running a prompt
-})
+const run = (file, args, opts = {}) => {
+  // `start` returns as soon as the app is activated; waiting would hold the
+  // button until the launcher's console exits.
+  if (opts.activate) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: false })
+      child.once('error', reject)
+      child.once('spawn', () => { child.unref(); resolve() })
+    })
+  }
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, args, { windowsHide: true, timeout: 60000, ...opts }, (err) => (err ? reject(err) : resolve()))
+    child.stdin?.end() // the Claude CLI waits for stdin to close before running a prompt
+  })
+}
 
 /** The Claude Code command-line tool: installed on its own, or the copy inside the Claude app. */
 export function claudeCli ({ platform = process.platform, home = os.homedir(), exists = fs.existsSync, readdir = fs.readdirSync } = {}) {

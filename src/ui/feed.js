@@ -1,22 +1,31 @@
-// A person's AI conversation, read-only: their prompts, the AI's replies and
-// one-line actions ("Edited src/app.ts"), with dividers between conversations.
+// A person's AI conversations, read-only: their prompts, the AI's replies and
+// one-line actions ("Edited src/app.ts"). Each agent session (a Claude Code
+// session, a Cursor chat, ...) is its own conversation, picked from a strip
+// at the top; the feed follows the newest one until the reader picks another.
 import { esc, clock, avatar, I } from './common.js'
+import { toolLogo } from './tool-logo.js'
+import { conversations, pickConversation } from './feed-convs.js'
 
 /**
  * Renders the feed into `el` (the scrolling main area). Keeps the reader's
- * scroll position unless they were already at the bottom.
+ * scroll position unless they were already at the bottom. `convSel` is the
+ * pinned conversation id (undefined: follow the newest).
  */
-export function renderFeed (el, { entries, person, isMe, color, agent, online }) {
+export function renderFeed (el, { entries, person, isMe, color, agent, online, convSel }) {
   const scroller = el.querySelector('.feed-scroll')
   const atBottom = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60
   const prevCount = scroller ? Number(scroller.dataset.count || 0) : 0
   const prevTop = scroller ? scroller.scrollTop : 0
+  const prevConv = scroller ? scroller.dataset.conv : undefined
 
   const who = isMe ? 'You' : person
   const whose = isMe ? 'your' : `${person}'s`
   const sharing = !agent || agent.sharing !== false
   const working = sharing && agent && agent.status === 'working'
   let body
+  let strip = ''
+  let shownConv = ''
+  let liveShown = true // the shown conversation is the newest, where the AI is working
 
   if (!entries.length) {
     let title, hint
@@ -35,25 +44,22 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online })
     }
     body = `<div class="feed-empty">${avatar(person, color, online)}<div class="t">${esc(title)}</div>${hint ? `<div class="hint">${esc(hint)}</div>` : ''}</div>`
   } else {
+    const convs = conversations(entries)
+    const conv = pickConversation(convs, convSel)
+    const shown = entries.filter((e) => e.kind === 'paused' || e.kind === 'resumed' || (e.conv || '') === conv)
     const parts = []
-    let conv = null
     let actions = []
     const flush = () => {
       if (!actions.length) return
       parts.push(`<div class="f-actions">${actions.map((a) => `<div class="f-action"><span class="chev">›</span><span>${esc(a.text)}</span></div>`).join('')}</div>`)
       actions = []
     }
-    for (const e of entries) {
+    for (const e of shown) {
       if (e.kind === 'paused' || e.kind === 'resumed') {
         flush()
         parts.push(`<div class="feed-divider"><span>${esc(who)} ${e.kind === 'paused' ? 'paused' : 'resumed'} sharing · ${esc(clock(e.ts))}</span></div>`)
         continue
       }
-      if (e.conv && conv && e.conv !== conv) {
-        flush()
-        parts.push(`<div class="feed-divider"><span>New conversation${e.tool ? ` · ${esc(e.tool)}` : ''}</span></div>`)
-      }
-      if (e.conv) conv = e.conv
       if (e.kind === 'action') { actions.push(e); continue }
       flush()
       if (e.kind === 'prompt') {
@@ -61,24 +67,33 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online })
           <div class="head"><b>${esc(who)}</b><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
           <div class="bubble"><div class="text">${esc(visiblePrompt(e.text))}</div></div></div></div>`)
       } else if (e.kind === 'reply') {
-        parts.push(`<div class="f-reply"><div class="head"><span class="ai-badge">${I.sparkle}${esc(e.tool || 'AI')}</span><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
+        parts.push(`<div class="f-reply"><div class="head"><span class="ai-badge">${toolLogo(e.tool)}</span><span>${esc(clock(e.ts))}</span>${e.summary ? '<span class="tag summary" title="Summarized before sharing">summary</span>' : ''}</div>
           <div class="md">${markdown(e.text)}</div></div>`)
       }
     }
     flush()
     if (!sharing) parts.push(`<div class="feed-note">${esc(isMe ? 'You paused sharing' : `${person} paused sharing`)}</div>`)
     body = parts.join('')
+    if (convs.length > 1) {
+      strip = `<div class="feed-convs" role="tablist" aria-label="Conversations">${convs.map((c, i) => {
+        const on = c.conv === conv
+        const live = working && i === 0
+        return `<button class="conv-chip${on ? ' on' : ''}" role="tab" aria-selected="${on}" data-conv="${esc(c.conv)}" title="${esc(c.tool || '')}${c.tool ? ' · ' : ''}${esc(clock(c.ts))}">${live ? '<span class="pulse"></span>' : ''}<span class="tool">${toolLogo(c.tool)}</span><span class="nm">${esc(c.label)}</span></button>`
+      }).join('')}</div>`
+    }
+    shownConv = conv
+    liveShown = conv === convs[0].conv
   }
 
-  const workingHtml = working
+  const workingHtml = working && liveShown
     ? `<div class="f-working"><span class="dots"><i></i><i></i><i></i></span>${esc(isMe ? 'Your AI is working…' : `${whose} AI is working…`)}</div>`
     : ''
 
-  el.innerHTML = `<div class="feed-scroll" data-count="${entries.length}"><div class="feed">${body}${workingHtml}</div></div>
+  el.innerHTML = `${strip}<div class="feed-scroll" data-count="${entries.length}" data-conv="${esc(shownConv)}"><div class="feed">${body}${workingHtml}</div></div>
     <button class="btn sm new-activity" hidden>${I.down}<span>New activity</span></button>`
   const s = el.querySelector('.feed-scroll')
   const jump = el.querySelector('.new-activity')
-  if (atBottom || !scroller) s.scrollTop = s.scrollHeight
+  if (atBottom || !scroller || prevConv !== shownConv) s.scrollTop = s.scrollHeight
   else {
     s.scrollTop = prevTop
     if (entries.length > prevCount) jump.hidden = false

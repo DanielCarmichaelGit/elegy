@@ -12,7 +12,7 @@ import { startServer } from '../src/server.js'
 import { Connection } from '../src/connection.js'
 import { generateIdentity } from '../src/identity.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-home-'))
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 async function waitFor (fn, ms = 5000) {
   const t = Date.now()

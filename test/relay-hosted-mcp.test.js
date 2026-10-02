@@ -14,7 +14,7 @@ import { generateIdentity } from '../src/identity.js'
 import { signPass, PASS_TTL_MS } from '../src/passes.js'
 import { PASS_KEYS, testPasses } from './pass-helpers.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-hm-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-hm-home-'))
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-hm-${n}-`))
 async function waitFor (fn, ms = 8000) {
   const start = Date.now()
@@ -51,6 +51,10 @@ test('without a pass the hosted MCP is refused; with one, the tools are there', 
   await assert.rejects(client(''), /sign in to continue/)
   const tools = (await grok.listTools()).tools.map((t) => t.name)
   for (const t of ['quilt_join_session', 'quilt_session_info', 'quilt_leave_session', 'quilt_status', 'quilt_read_file', 'quilt_write_file', 'quilt_message', 'quilt_claim', 'quilt_share']) assert.ok(tools.includes(t), t)
+  const { TASK_WORKFLOW } = await import('../src/agent-task-workflow.js')
+  const instructions = grok.getInstructions()
+  assert.ok(instructions && instructions.includes(TASK_WORKFLOW), 'hosted MCP instructions embed TASK_WORKFLOW')
+  assert.match(instructions, /grok the codebase/i)
 })
 
 test('before joining, tools say to join; a bad invite is refused without touching the room', async () => {
@@ -82,6 +86,21 @@ test('joining puts the agent on the owner\'s list; the owner lets it in and it b
   assert.match(status, /- Carl \(Claude Code\)/)
   // Joining again while a member is just a no-op.
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1 as Grok-Bot \(editor\)/)
+})
+
+test('moving a task to In progress reminds the agent to grok → plan → build → test', async () => {
+  const added = await call('quilt_add_task', { title: 'Wire agent workflow' })
+  assert.ok(!added.isError, out(added))
+  const id = out(added).split('\n').find((l) => /^[0-9a-f]{16}$/.test(l.trim()))
+  assert.ok(id, `expected task id in:\n${out(added)}`)
+  const moved = await call('quilt_move_task', { id: id.trim(), column: 'doing' })
+  assert.ok(!moved.isError, out(moved))
+  assert.match(out(moved), /Picked up "Wire agent workflow"/)
+  assert.match(out(moved), /grok the codebase/i)
+  assert.match(out(moved), /implement a plan/i)
+  assert.match(out(moved), /build the change/i)
+  assert.match(out(moved), /test it/i)
+  assert.match(out(await call('quilt_move_task', { id: id.trim(), column: 'done' })), /Moved "Wire agent workflow" to Done/)
 })
 
 test('the agent reads what the owner has, and what it writes lands on the owner\'s disk', async () => {

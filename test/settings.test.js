@@ -11,7 +11,7 @@ import { getSettings, saveSettings, relayUrl, isHostedRelay, unsupportedRelay, H
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-settings-home-'))
-process.env.HOME = home
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home
 delete process.env.QUILT_SERVER
 
 test('relay settings from before are ignored, and dropped the next time settings are saved', () => {

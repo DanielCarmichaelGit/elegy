@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
 import { describeOtherSync, runSession, recentSessions } from '../src/runner.js'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-busy-home-'))
-process.env.HOME = home
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home
 
 /** A stand-in for another process's control API: alive, answering GET /info as `info`. */
 function otherProcess (info) {

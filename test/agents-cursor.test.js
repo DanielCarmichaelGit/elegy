@@ -232,3 +232,67 @@ test('quilt doctor reports what it sees without printing chat text', { skip }, a
   await doctor({ dir: path.join(c.root, 'elsewhere'), cursorDir: c.userDir, print: (l) => lines.push(l) })
   assert.match(lines.join('\n'), /never opened this exact folder[\s\S]*proj/)
 })
+
+function addHeader (c, id, workspaceId, value, archived = 0) {
+  c.g.exec(`CREATE TABLE IF NOT EXISTS composerHeaders (
+    composerId TEXT, workspaceId TEXT, createdAt INTEGER, lastUpdatedAt INTEGER,
+    isArchived INTEGER, isSubagent INTEGER, recency INTEGER, checkpointAt INTEGER,
+    value TEXT, subagentTypeName TEXT
+  )`)
+  c.g.prepare(`DELETE FROM composerHeaders WHERE composerId = ?`).run(id)
+  const ts = Date.now()
+  c.g.prepare(`INSERT INTO composerHeaders
+    (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, value, subagentTypeName)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, '')`).run(id, workspaceId, ts, ts, archived, ts, ts, JSON.stringify(value))
+}
+
+test('an unfinished run stays working through a long think', { skip }, async () => {
+  const c = makeCursor()
+  addHeader(c, 'live', 'aaa', { unfinishedRunAt: Date.now() })
+  addHeader(c, 'elsewhere', 'bbb', { unfinishedRunAt: Date.now() })
+  addHeader(c, 'archived', 'aaa', { unfinishedRunAt: Date.now() }, 1)
+  const t0 = Date.now()
+  let clock = t0
+  const states = []
+  const r = startCursorReader({
+    dir: c.project, userDir: c.userDir, pollMs: 20, now: () => clock,
+    onEntries: () => {}, onState: (s) => states.push(s.status)
+  })
+  await wait(120)
+  assert.equal(states.at(-1), 'working')
+  clock += 60000
+  await wait(80)
+  assert.equal(states.at(-1), 'working', 'a quiet think is still work')
+  c.g.prepare(`UPDATE composerHeaders SET value = ? WHERE composerId = 'live'`).run(JSON.stringify({ composerId: 'live' }))
+  clock += 15000
+  await wait(120)
+  r.stop()
+  assert.equal(states.at(-1), 'idle')
+})
+
+test('growing thinking counts as work until it goes quiet', { skip }, async () => {
+  const c = makeCursor()
+  const t0 = Date.now()
+  c.addBubble('c1', 'b1', { type: 1, text: 'think hard' })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: t0 }])
+  let clock = t0
+  const states = []
+  const r = startCursorReader({
+    dir: c.project, userDir: c.userDir, pollMs: 20, now: () => clock,
+    onEntries: () => {}, onState: (s) => states.push(s.status)
+  })
+  await wait(80)
+  clock += 1000
+  c.addBubble('c1', 'b2', { type: 2, text: '', thinking: { text: 'starting' } })
+  c.setComposers(c.wsDb, [{ composerId: 'c1', lastUpdatedAt: clock }])
+  await wait(80)
+  assert.equal(states.at(-1), 'working')
+  clock += 1000
+  c.addBubble('c1', 'b2', { type: 2, text: '', thinking: { text: 'starting to plan the change' } })
+  await wait(80)
+  assert.equal(states.at(-1), 'working', 'more thinking is still work')
+  clock += 30000
+  await wait(80)
+  r.stop()
+  assert.equal(states.at(-1), 'idle')
+})

@@ -9,6 +9,7 @@ test('edits and reads show project-relative paths', () => {
   assert.equal(describeAction('MultiEdit', { file_path: '/home/me/app/b.js' }, dir), 'Edited b.js')
   assert.equal(describeAction('edit_file', { target_file: 'src/x.ts' }, dir), 'Edited src/x.ts')
   assert.equal(describeAction('search_replace', { file_path: './y.ts' }, dir), 'Edited y.ts')
+  assert.equal(describeAction('StrReplace', { path: '/home/me/app/src/ui/board.js' }, dir), 'Edited src/ui/board.js')
   assert.equal(describeAction('edit_file_v2', { target_file: 'src/x.ts' }, dir), 'Edited src/x.ts')
   assert.equal(describeAction('delete_file', { target_file: 'old.js' }, dir), 'Deleted old.js')
   assert.equal(describeAction('run_terminal_command_v2', { command: 'npm test' }, dir), 'Ran npm test')

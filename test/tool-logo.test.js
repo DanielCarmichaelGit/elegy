@@ -18,11 +18,13 @@ test('resolveToolKey matches known tools and aliases', () => {
   assert.equal(resolveToolKey(''), null)
 })
 
-test('toolLogo renders an SVG mark with accessible name', () => {
+test('toolLogo renders a favicon img with accessible name', () => {
   const html = toolLogo('Claude Code')
   assert.match(html, /aria-label="Claude Code"/)
   assert.match(html, /title="Claude Code"/)
-  assert.match(html, /<svg[\s\S]*<\/svg>/)
+  assert.match(html, /<img class="tool-mark"/)
+  assert.match(html, /google\.com\/s2\/favicons/)
+  assert.match(html, /domain=anthropic\.com/)
   assert.match(html, /class="tool-logo"/)
   assert.doesNotMatch(html, />Claude Code</)
 })
@@ -31,6 +33,7 @@ test('toolLogo uses a generic mark for unknown tools but keeps the label', () =>
   const html = toolLogo('MysteryBot')
   assert.match(html, /aria-label="MysteryBot"/)
   assert.match(html, /<svg[\s\S]*<\/svg>/)
+  assert.doesNotMatch(html, /google\.com\/s2\/favicons/)
 })
 
 test('toolLogo empty tool is labeled AI', () => {
@@ -39,10 +42,25 @@ test('toolLogo empty tool is labeled AI', () => {
   assert.match(html, /<svg/)
 })
 
-test('each known TOOLS name has a distinct logo', () => {
-  const tools = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider']
-  const marks = tools.map((t) => toolLogo(t))
-  // Every logo includes an svg; marks should not all be identical.
-  for (const m of marks) assert.match(m, /<svg/)
-  assert.equal(new Set(marks).size, marks.length)
+test('each known TOOLS name has a distinct favicon domain', () => {
+  const tools = [
+    ['Claude Code', 'anthropic.com'],
+    ['Cursor', 'cursor.com'],
+    ['Codex', 'openai.com'],
+    ['Windsurf', 'windsurf.com'],
+    ['GitHub Copilot', 'github.com'],
+    ['Zed', 'zed.dev'],
+    ['Aider', 'aider.chat/docs']
+  ]
+  const srcs = []
+  for (const [name, domain] of tools) {
+    const html = toolLogo(name)
+    assert.match(html, /google\.com\/s2\/favicons/)
+    assert.match(html, new RegExp(`domain=${domain.replace(/\./g, '\\.')}`))
+    assert.match(html, new RegExp(`aria-label="${name}"`))
+    assert.match(html, new RegExp(`title="${name}"`))
+    const src = html.match(/src="([^"]+)"/)[1]
+    srcs.push(src)
+  }
+  assert.equal(new Set(srcs).size, srcs.length)
 })

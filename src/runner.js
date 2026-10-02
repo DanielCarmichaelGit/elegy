@@ -9,11 +9,13 @@ import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { relayUrl, isHostedRelay } from './settings.js'
-import { createSummarizer } from './summarize.js'
+import { createSummarizer, createTaskTitler } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
 import { listProcesses } from './procs.js'
 import { JOIN_HOST, buildInvite, parseInvite } from './ui/invite.js'
+import { installHooks } from './setup.js'
+import { releaseLeftoverHookClaims } from './hooks.js'
 
 export { JOIN_HOST }
 
@@ -132,6 +134,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent, identity, passes })
   const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
   if (summarize) session.summarizer = summarizer()
+  session.taskTitler = createTaskTitler({ onWarn: (msg) => session.log(`📋 ${msg}`) })
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))
@@ -151,6 +154,11 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   session.on('identity', ({ name }) => saveName(name))
   const control = await startControl(session, { invite, viewInvite, joined })
   remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind })
+
+  // Claude Code claims files as it edits them (src/hooks.js). The hooks live in the shared
+  // .claude/settings.json so everyone in the session follows the same rule.
+  try { if (installHooks(dir)) session.log('🪝 added Quilt\'s Claude Code hooks to .claude/settings.json: files are claimed as they are edited') } catch {}
+  releaseLeftoverHookClaims(session).then((n) => { if (n) session.log(`🔓 released ${n} claim(s) left by an earlier AI session`) }).catch(() => {})
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.
   const readers = agentFeed

@@ -12,7 +12,7 @@ import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_CLAIM, MSG_CLAIMS, MS
 import { newPassKeys } from '../src/passes.js'
 import { PASS_KEYS, makePass } from './pass-helpers.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-rp-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-rp-home-'))
 const SIGN_IN = 'Update Quilt and sign in to continue'
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor (fn, ms = 5000) {

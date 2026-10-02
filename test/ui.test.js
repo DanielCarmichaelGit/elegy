@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-home-'))
-process.env.HOME = home // keep recent.json, account.json and the identity out of the real home
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home // keep recent.json, account.json and the identity out of the real home
 
 const { startUi } = await import('../src/ui-server.js')
 const { startServer } = await import('../src/server.js')
@@ -88,6 +88,45 @@ test('create a session, chat, send a file, stop', async () => {
   const after = await api('GET', '/api/state')
   assert.equal(after.body.sessions.length, 0)
   assert.equal(after.body.recent[0].dir, dir, 'stopped session shows up under Recent')
+})
+
+test('task board: add, move, rename, delete', async () => {
+  const dir = path.join(home, 'tasks')
+  fs.mkdirSync(dir)
+  const created = await api('POST', '/api/sessions', { mode: 'create', dir, tool: 'Cursor' })
+  assert.equal(created.status, 200, JSON.stringify(created.body))
+  const id = created.body.id
+  assert.deepEqual(created.body.status.tasks, [])
+
+  const added = await api('POST', `/api/sessions/${id}/tasks`, { title: 'Fix login' })
+  assert.equal(added.status, 200, JSON.stringify(added.body))
+  assert.equal(added.body.task.column, 'todo')
+  assert.equal(added.body.task.by, 'Mo')
+  const taskId = added.body.task.id
+
+  const moved = await api('POST', `/api/sessions/${id}/tasks/update`, { id: taskId, column: 'doing' })
+  assert.equal(moved.body.task.column, 'doing')
+  const renamed = await api('POST', `/api/sessions/${id}/tasks/update`, { id: taskId, title: 'Fix the login form' })
+  assert.equal(renamed.body.tasks[0].title, 'Fix the login form')
+  assert.equal(renamed.body.tasks[0].column, 'doing')
+
+  const mine = await api('POST', `/api/sessions/${id}/tasks`, { title: 'Pricing page', assignee: 'me', to_ai: true, files: ['./src/ui/home.js', 'src/ui/home.js'] })
+  assert.equal(mine.status, 200, JSON.stringify(mine.body))
+  assert.equal(mine.body.task.assignee, 'Mo')
+  assert.equal(mine.body.task.forAi, true)
+  assert.equal(mine.body.task.tool, 'Cursor')
+  assert.deepEqual(mine.body.task.files, ['src/ui/home.js'])
+  const cleared = await api('POST', `/api/sessions/${id}/tasks/update`, { id: mine.body.task.id, assignee: '' })
+  assert.equal(cleared.body.task.assignee, '')
+  assert.equal(cleared.body.task.forAi, false)
+  const bad = await api('POST', `/api/sessions/${id}/tasks/update`, { id: taskId, files: ['../secrets'] })
+  assert.equal(bad.status, 400)
+
+  const removed = await api('POST', `/api/sessions/${id}/tasks/delete`, { id: taskId })
+  assert.deepEqual(removed.body.tasks, [])
+  const empty = await api('POST', `/api/sessions/${id}/tasks`, { title: '   ' })
+  assert.equal(empty.status, 400)
+  await api('POST', `/api/sessions/${id}/stop`)
 })
 
 test('bad invite gives a friendly error', async () => {
@@ -297,6 +336,11 @@ test('the app page carries a Content-Security-Policy that blocks inline script',
   assert.match(csp, /(^|;)\s*default-src 'self'\s*(;|$)/)
   assert.match(csp, /object-src 'none'/)
   assert.match(csp, /base-uri 'none'/)
+  // Provider logos load via Google's favicon service (and its gstatic.com redirects).
+  assert.match(csp, /img-src[^;]*'self'/)
+  assert.match(csp, /img-src[^;]*data:/)
+  assert.match(csp, /img-src[^;]*https:\/\/www\.google\.com/)
+  assert.match(csp, /img-src[^;]*https:\/\/\*\.gstatic\.com/)
   assert.equal((await fetch(base + '/chat.js')).status, 200, 'the chat helpers are served to the page')
 })
 

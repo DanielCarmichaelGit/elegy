@@ -8,7 +8,7 @@ import path from 'node:path'
 import http from 'node:http'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-releases-home-'))
-process.env.HOME = home
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home
 
 const { parseReleases, compareVersions, currentVersion, localReleases, latestRelease, downloadUrl, releaseNotesBody, seenVersion, markSeen, ROOT } = await import('../src/releases.js')
 

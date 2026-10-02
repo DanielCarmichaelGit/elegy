@@ -38,7 +38,7 @@ test('stale registry entries are ignored and removed', async () => {
   fs.mkdirSync(procs, { recursive: true })
   fs.writeFileSync(path.join(procs, '999999.json'), JSON.stringify({ pid: 999999, kind: 'relay', port: 1, startedAt: 0 }))
   const { listProcesses } = await import('../src/procs.js')
-  process.env.HOME = home
+  process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home
   assert.deepEqual(listProcesses(), [])
   assert.equal(fs.existsSync(path.join(procs, '999999.json')), false)
 })

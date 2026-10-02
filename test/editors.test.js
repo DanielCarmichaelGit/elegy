@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { installedEditors, openCommand, claudeCli, claudeSessionCommand } from '../src/editors.js'
 
 const mac = (apps) => ({ platform: 'darwin', home: '/Users/me', exists: (p) => apps.includes(p) })
@@ -19,6 +20,31 @@ test('Cursor opens a classic window on the folder, not its Agents window', () =>
   const [file, args] = openCommand('cursor', '/Users/me/p', mac(['/Applications/Cursor.app']))
   assert.equal(file, '/Applications/Cursor.app/Contents/Resources/app/bin/cursor')
   assert.deepEqual(args, ['--classic', '--new-window', '/Users/me/p'])
+})
+
+test('Claude on Windows is found from a direct install, the Store package, or its link', () => {
+  const base = 'C:\\Users\\me\\AppData\\Local'
+  const win = { platform: 'win32', home: 'C:\\Users\\me', localAppData: base, protocols: () => false }
+  const direct = path.join(base, 'Programs', 'Claude', 'Claude.exe')
+  const pkg = path.join(base, 'Packages', 'Claude_pzs8sxrjxfjjc')
+  assert.deepEqual(installedEditors({ ...win, exists: (p) => p === direct }).map((e) => e.id), ['claude'])
+  assert.deepEqual(installedEditors({ ...win, exists: (p) => p === pkg }).map((e) => e.id), ['claude'])
+  assert.deepEqual(installedEditors({ ...win, exists: () => false, protocols: (name) => name === 'claude' }).map((e) => e.id), ['claude'])
+  assert.deepEqual(installedEditors({ ...win, exists: () => false }).map((e) => e.id), [])
+  const [file, args] = openCommand('claude', 'C:\\Users\\me\\My Project', { ...win, exists: (p) => p === pkg })
+  assert.equal(file, 'cmd')
+  assert.deepEqual(args, ['/c', 'start', '""', `claude://code/new?folder=${encodeURIComponent('C:\\Users\\me\\My Project')}`])
+})
+
+test('on Windows Cursor opens through its CLI so the window comes forward', () => {
+  const base = 'C:\\Users\\me\\AppData\\Local'
+  const exe = path.join(base, 'Programs', 'cursor', 'Cursor.exe')
+  const cli = path.join(base, 'Programs', 'cursor', 'resources', 'app', 'bin', 'cursor.cmd')
+  const opts = { platform: 'win32', home: 'C:\\Users\\me', localAppData: base, exists: (p) => p === exe || p === cli }
+  const [file, args, run] = openCommand('cursor', 'C:\\Users\\me\\My Project', opts)
+  assert.equal(file, 'cmd.exe')
+  assert.deepEqual(args, ['/c', 'start', '', cli, '--classic', '--new-window', 'C:\\Users\\me\\My Project'])
+  assert.equal(run.activate, true)
 })
 
 test('other apps get the folder handed to them', () => {

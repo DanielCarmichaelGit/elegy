@@ -1,6 +1,8 @@
 // Renders a session status snapshot as Markdown. Used for .quilt/STATUS.md,
 // `quilt status`, and the MCP `quilt_status` tool, so every tool sees the same view.
 
+import { taskMarkdown } from './tasks.js'
+
 const ago = (ts) => {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
   if (s < 60) return `${s}s ago`
@@ -8,7 +10,7 @@ const ago = (ts) => {
   return `${Math.round(s / 3600)}h ago`
 }
 
-export function renderStatus (st) {
+export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   const out = []
   out.push(`# Quilt pair session: room \`${st.room}\``)
   out.push('')
@@ -28,6 +30,10 @@ export function renderStatus (st) {
   }
   out.push('')
 
+  out.push('## Tasks')
+  out.push(taskMarkdown(st.tasks, st.me.name, { tool: st.me.tool, asAi, mentionYours }))
+  out.push('')
+
   out.push('## Claimed files')
   if (!st.claims.length) out.push('_No claims._')
   for (const c of st.claims) {
@@ -42,6 +48,18 @@ export function renderStatus (st) {
   for (const a of act) {
     const who = a.by === st.me.name ? 'you' : a.by
     out.push(`- ${ago(a.ts)}: ${who} ${a.kind} \`${a.path}\`${a.detail ? ` (${a.detail})` : ''}`)
+  }
+  out.push('')
+
+  out.push('## Changes')
+  const changes = st.changes || []
+  if (!changes.length) out.push('_No changes yet._')
+  for (const p of changes) {
+    const who = p.name === st.me.name ? 'you' : `**${p.name}**`
+    const n = p.fileCount ?? p.files.length
+    const files = p.files.map((f) => `\`${f.path}\` (${fileChange(f)})`)
+    if (n > p.files.length) files.push(`and ${n - p.files.length} more`)
+    out.push(`- ${who}: ${n} file${n === 1 ? '' : 's'}, +${p.added} -${p.removed} (${ago(p.ts)}): ${files.join(', ')}`)
   }
   out.push('')
 
@@ -75,4 +93,11 @@ export function formatBytes (n) {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** One file's change in a few words: "deleted", "new, +5" or "+12 -1". */
+function fileChange (f) {
+  if (f.kind === 'deleted') return 'deleted'
+  if (f.kind === 'created') return `new, +${f.added}${f.removed ? ` -${f.removed}` : ''}`
+  return `+${f.added} -${f.removed}`
 }

@@ -32,7 +32,7 @@ function cleanups (t) {
   return (fn) => fns.push(fn)
 }
 // Sessions without an identity create one in ~/.quilt; keep that out of the real home.
-process.env.HOME = tmp('home')
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = tmp('home')
 
 test('health endpoint, and nothing else for visitors', async (t) => {
   const defer = cleanups(t)

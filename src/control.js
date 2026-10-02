@@ -14,11 +14,18 @@ export async function startControl (session, extras = {}) {
     'GET /status': () => ({ ...session.status(), markdown: renderStatus(session.status()) }),
     'POST /say': (b) => session.say(b.text, { to: b.to }),
     'POST /send': (b) => session.sendFile(b.path, { to: b.to, text: b.text }),
-    'POST /messages': (b) => ({ messages: session.messages({ limit: b.limit || 50, unreadOnly: !!b.unreadOnly, withName: b.with || null }) }),
+    'POST /messages': (b) => ({ messages: session.messages({ limit: b.limit || 50, unreadOnly: !!b.unreadOnly, markRead: b.markRead !== false, withName: b.with || null }) }),
     'POST /get': async (b) => ({ path: await session.fetchFile(b.id, b.dest) }),
     'POST /focus': (b) => { session.setFocus(b.text); return { ok: true } },
     'POST /claim': (b) => session.claim(b.pattern, b.note),
     'POST /release': async (b) => ({ released: await session.release(b.pattern) }),
+    // Who owns one path (the hooks ask before every edit). `shared` is false for paths Quilt doesn't sync.
+    'POST /claim-for': (b) => {
+      const rel = String(b.path || '').replace(/\\/g, '/').replace(/^\.\//, '')
+      const shared = session.syncable(rel)
+      const c = shared ? session.claimFor(rel) : null
+      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
+    },
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     'GET /tree': () => session.tree(),
@@ -26,6 +33,10 @@ export async function startControl (session, extras = {}) {
     'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),
     'POST /commit-request': (b) => session.requestCommit(b.message),
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
+    'GET /tasks': () => ({ tasks: session.taskList() }),
+    'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
+    'POST /tasks/update': (b) => ({ task: session.updateTask(b), tasks: session.taskList() }),
+    'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
     'POST /commit': async (b) => {
       if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
       const open = session.commitStatus().open

@@ -22,6 +22,7 @@ import { currentVersion, localReleases, latestRelease, compareVersions, download
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
+const THEMES = ['light', 'dark', 'system']
 const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
 const SIGNED_OUT_MESSAGE = 'This computer was signed out. Sign in again.'
 const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
@@ -39,7 +40,8 @@ function profile () {
     joinDir: s.joinDir || '~/quilt',
     shareAgent: s.shareAgent !== false,
     summarize: !!s.summarize,
-    preferLocal: !!s.preferLocal
+    preferLocal: !!s.preferLocal,
+    theme: THEMES.includes(s.theme) ? s.theme : 'light'
   }
 }
 
@@ -60,6 +62,10 @@ function updateProfile (b) {
   if ('shareAgent' in b) patch.shareAgent = b.shareAgent ? undefined : false
   if ('summarize' in b) patch.summarize = b.summarize ? true : undefined
   if ('preferLocal' in b) patch.preferLocal = b.preferLocal ? true : undefined
+  if ('theme' in b) {
+    if (!THEMES.includes(b.theme)) throw httpError(400, 'Pick Light, Dark or System.')
+    patch.theme = b.theme === 'light' ? undefined : b.theme
+  }
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }
@@ -90,17 +96,20 @@ const STATIC = {
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/git.js': ['git.js', 'text/javascript; charset=utf-8'],
-  '/releases.js': ['releases.js', 'text/javascript; charset=utf-8']
+  '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
+  '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
+  '/board.js': ['board.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
 // event handlers, the second line of defence against injected markup), fonts and the event
-// stream from this server, inline style attributes allowed since the UI sets them.
+// stream from this server, inline style attributes allowed since the UI sets them, and
+// Google's favicon service (plus its gstatic.com redirect hosts) for provider logos.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: https://www.google.com https://*.gstatic.com",
   "font-src 'self'",
   "connect-src 'self'",
   "object-src 'none'",
@@ -394,6 +403,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     'POST /api/sessions/:id/release': async (b, id) => ({ released: await get(id).release(b.pattern) }),
     'POST /api/sessions/:id/read': (b, id) => { get(id).messages({ limit: 500 }); pushStatus(id); return { ok: true } },
     'GET /api/sessions/:id/messages': (b, id) => ({ messages: get(id).messages({ limit: 200, markRead: false }) }),
+    'GET /api/sessions/:id/tasks': (b, id) => ({ tasks: get(id).taskList() }),
+    'POST /api/sessions/:id/tasks': (b, id) => ({ task: get(id).addTask(b), tasks: get(id).taskList() }),
+    'POST /api/sessions/:id/tasks/update': (b, id) => ({ task: get(id).updateTask(b), tasks: get(id).taskList() }),
+    'POST /api/sessions/:id/tasks/delete': (b, id) => { get(id).deleteTask(b.id); return { tasks: get(id).taskList() } },
     'GET /api/sessions/:id/feed': (b, id, url) => {
       const s = get(id)
       return { entries: s.agentFeedFor(url.searchParams.get('who') || s.name) }
@@ -470,7 +483,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       const headers = { 'content-type': type, 'cache-control': 'no-store' }
       if (url.pathname === '/') headers['content-security-policy'] = CSP
       res.writeHead(200, headers)
-      return res.end(fs.readFileSync(path.join(UI_DIR, file)))
+      const body = fs.readFileSync(path.join(UI_DIR, file))
+      // The theme goes on <html> before anything paints, so dark mode never flashes light.
+      if (url.pathname === '/') return res.end(String(body).replace('<html lang="en">', `<html lang="en" data-theme="${profile().theme}">`))
+      return res.end(body)
     }
     const font = req.method === 'GET' && url.pathname.match(/^\/fonts\/([a-z-]+)\/([^/]+)$/)
     if (font) {
