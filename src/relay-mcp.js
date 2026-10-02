@@ -15,9 +15,11 @@ import { z } from 'zod'
 import * as Y from 'yjs'
 import { capText, toolLabel } from './agents/common.js'
 import { globMatcher, isSafeRelPath } from './pathrules.js'
-import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName } from './tasks.js'
+import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName, assigneeLabel, assignmentFields } from './tasks.js'
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
+import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
+import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -26,22 +28,28 @@ const MAX_WRITE_BYTES = 1024 * 1024
 const MAX_READ_CHARS = 200 * 1024
 const AGENT = 'agent-mcp' // transaction origin
 
-const INSTRUCTIONS =
+export const INSTRUCTIONS =
   'You are in a live quilt session: other people, each with their own AI, are editing this same project right now, ' +
   'and their changes appear in your files as they happen. ' +
   'When your user asks for something, call quilt_share with their request and a short plan before you start, and call it ' +
   'again with a short summary when you finish, so collaborators can follow along. ' +
-  'Before starting a task, call quilt_status to see who is working on what, and quilt_tasks for the shared board. ' +
-  'Do not edit files someone else has claimed; '
-  'message them with quilt_message instead. Claim files before larger changes. Always re-read a file right before editing it.'
+  'Before starting a task, call quilt_status to see who is working on what, and quilt_tasks for the shared board ' +
+  '(open tasks assigned to you are listed first). Assign work with quilt_assign_task. ' +
+  'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
+  'Do not edit files someone else has claimed; ' +
+  'message them with quilt_message instead. Claim files before larger changes. Always re-read a file right before editing it. ' +
+  TASK_WORKFLOW
 
-const HOSTED_INSTRUCTIONS =
+export const HOSTED_INSTRUCTIONS =
   'You are an AI agent in Quilt, where people and agents build one project together in real time. ' +
   'Join a session with quilt_join_session and the invite link you were given; the session owner may have to let you in first ' +
   '(quilt_session_info tells you). Then: quilt_status to see who is doing what, quilt_list_files and quilt_read_file to look ' +
   'around, quilt_write_file to change a file (always read it right before), quilt_claim before larger changes, quilt_share to ' +
-  'tell everyone what you are doing, and quilt_message to talk. Do not edit files someone else has claimed. ' +
-  'Everyone sees your changes on their own disk within moments.'
+  'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
+  'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
+  'Do not edit files someone else has claimed. ' +
+  'Everyone sees your changes on their own disk within moments. ' +
+  TASK_WORKFLOW
 
 const NOT_LINKED = 'Your user is not in a quilt session in their browser right now. Ask them to open quilt in their ' +
   'browser and share a folder or join one from an invite link, then try again. (This link is theirs and works for every session.)'
@@ -85,11 +93,34 @@ function sessionTools (server, ctx) {
     return out
   }
   const claimsOf = (room) => room.claimList ? room.claimList() : []
+  // One chronology writer per room, shared by every hosted agent's connection.
+  const historyOf = (room) => {
+    if (!room.historyLog) room.historyLog = new HistoryLog(room.doc, room.doc.getArray('history'), { origin: AGENT })
+    return room.historyLog
+  }
+
+  tool('quilt_history', {
+    description: 'The chronology of the project: who changed which file, when, what changed (diff) and for which task. ' +
+      'Filter by path or glob, person, task or time. Use it to understand recent changes before building on them, or to find what broke something.',
+    inputSchema: {
+      path: z.string().max(500).optional().describe('A file, a folder ending in "/", or a glob like src/ui/**'),
+      by: z.string().max(80).optional().describe('Only changes by this person or agent'),
+      since: z.string().max(40).optional().describe('"2h", "3d", "today", "yesterday" or a date'),
+      task: z.string().max(40).optional().describe('Only changes made for this task id'),
+      with_diff: z.boolean().optional().describe('Include each change\'s diff (capped per change)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest matching changes (default 30)')
+    }
+  }, ({ path: p, by, since, task, with_diff, limit }, { room }) => {
+    const from = parseSince(since)
+    if (from === undefined) return fail('since: use a duration like 2h or 3d, "today", "yesterday", or a date.')
+    const list = queryHistory(historyOf(room).entries(), { path: p ? cleanPath(p) : '', by, since: from ?? undefined, task, limit: limit || 30 })
+    return text(formatHistory(list, { withDiff: !!with_diff }))
+  })
 
   tool('quilt_status', {
     description: 'See who else is in the live session, what they and their AIs are doing, recent file changes, claimed files and recent messages. Call this before starting a task.',
     inputSchema: {}
-  }, (_, { room, chat, activity }) => {
+  }, (_, { room, doc, chat, activity }) => {
     const a = ctx.access(room)
     const lines = [`You are ${me} in a live quilt session (room ${room.name}).`]
     if (a && a.role === 'viewer') lines.push('You may only view this session: reading, chat and claims work, file changes are refused.')
@@ -109,7 +140,107 @@ function sessionTools (server, ctx) {
     lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
     const msgs = chat.toArray().filter(visible).slice(-8)
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
+    lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))
     return text(lines.join('\n') + ctx.warn(room))
+  })
+
+  const taskMap = (doc) => doc.getMap('tasks')
+
+  const reader = () => ({ name: me, tool: ctx.tool(), asAi: false })
+  const taskFields = ({ assignee, to_ai, files }, room) => {
+    const spec = { me, peers: peers(room) }
+    if (assignee != null) spec.assignee = assignee
+    else if (to_ai) spec.assignee = 'me'
+    if (to_ai) spec.to_ai = true
+    if (files !== undefined) spec.files = files
+    const name = spec.assignee === 'me' ? me : spec.assignee
+    if (to_ai && (name == null || name === me)) spec.tool = ctx.tool()
+    return assignmentFields(spec)
+  }
+  const assignedLine = (task) => {
+    const label = assigneeLabel(task, me)
+    const files = task.files?.length ? `\nFiles: ${task.files.join(', ')}` : ''
+    return `${label ? `Assigned to ${label}.` : 'Unassigned.'}${files}`
+  }
+
+  tool('quilt_tasks', {
+    description: 'List the shared task board (To do, In progress, Done), with an id on each task. Open tasks assigned to you are listed first.',
+    inputSchema: {}
+  }, (_, { doc }) => text(formatTasks(readTasks(taskMap(doc)), reader())))
+
+  tool('quilt_add_task', {
+    description: 'Add a task to the shared board, in To do. One short line. Optionally assign it to a person or their AI, and name the files it is about. It is added as you.',
+    inputSchema: {
+      title: z.string().describe('What needs doing, in a few words'),
+      assignee: z.string().optional().describe('Who should do it: a person\'s name, or "me". Omit to leave it unassigned.'),
+      to_ai: z.boolean().optional().describe('Assign it to that person\'s AI instead of the person. You are an agent in this session: leave to_ai unset to assign a task to yourself.'),
+      files: z.array(z.string()).max(20).optional().describe('Project files this task is about, relative paths such as src/app.js')
+    }
+  }, ({ title, assignee, to_ai, files }, { room, doc }) => {
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      const task = addTask(doc, taskMap(doc), { title, by: me, ...taskFields({ assignee, to_ai, files }, room) }, AGENT)
+      return text(`Added to To do: ${task.title}\n${task.id}\n${assignedLine(task)}`)
+    } catch (e) { return fail(e.message) }
+  })
+
+  const checklistOf = (files) => pickChecklist(files.get('AGENTS.md')?.toString(), files.get('CLAUDE.md')?.toString())
+  tool('quilt_move_task', {
+    description: 'Move a task on the shared board. "doing" when you start it: you get a briefing (its files, recent changes to them, claims, the project\'s checks). ' +
+      '"done" when you finish: requires `verified`, what you ran and what you saw; without it the move is refused.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done'),
+      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
+    }
+  }, ({ id, column, verified }, { room, doc, files }) => {
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      const cur = readTasks(taskMap(doc)).find((t) => t.id === id)
+      if (!cur) return fail('no such task')
+      if (column === 'done' && !verifiedEnough(verified)) return fail(doneRefusal({ task: cur, checklist: checklistOf(files) }))
+      const task = updateTask(doc, taskMap(doc), { id, column, ...(column === 'done' ? { verified } : {}) }, AGENT)
+      if (column === 'doing') {
+        const tf = task.files || []
+        const all = historyOf(room).entries()
+        const history = (tf.length ? all.filter((e) => tf.includes(e.path)) : all).slice(-8)
+        const claims = claimsOf(room).filter((c) => !tf.length || tf.some((f) => globMatcher(c.pattern)(f)))
+        return text(pickupBrief({ task, history, claims, checklist: checklistOf(files), me }))
+      }
+      if (column === 'done') return text(`Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`)
+      return text(`Moved "${task.title}" to ${columnName(task.column)}.`)
+    } catch (e) { return fail(e.message) }
+  })
+
+  tool('quilt_assign_task', {
+    description: 'Assign a shared task to a person or to their AI, and optionally set the files it is about. assignee "" clears it. You are an agent here: assignee "me" without to_ai assigns it to you.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      assignee: z.string().describe('A person\'s name, "me", or "" to unassign'),
+      to_ai: z.boolean().optional().describe('True: that person\'s AI. Omit or false: the person.'),
+      files: z.array(z.string()).max(20).optional().describe('Replace the file list. Omit to leave the files unchanged.')
+    }
+  }, ({ id, assignee, to_ai, files }, { room, doc }) => {
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      const task = updateTask(doc, taskMap(doc), { id, ...taskFields({ assignee, to_ai, files }, room) }, AGENT)
+      return text(assignedLine(task))
+    } catch (e) { return fail(e.message) }
+  })
+
+  tool('quilt_delete_task', {
+    description: 'Remove a task from the shared board.',
+    inputSchema: { id: z.string().describe('Task id from quilt_tasks') }
+  }, ({ id }, { room, doc }) => {
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      deleteTask(doc, taskMap(doc), id, AGENT)
+      return text('Removed.')
+    } catch (e) { return fail(e.message) }
   })
 
   tool('quilt_share', {
@@ -249,9 +380,12 @@ function sessionTools (server, ctx) {
       blobs.delete(rel)
       let ytext = files.get(rel)
       if (!ytext) { ytext = new Y.Text(); files.set(rel, ytext) }
+      const before = ytext.toString()
       detail = applyTextDiff(ytext, content)
-      activity.push([{ by: me, path: rel, kind: existed ? 'edited' : 'created', detail, ts: Date.now() }])
+      const kind = existed ? 'edited' : 'created'
+      activity.push([{ by: me, path: rel, kind, detail, ts: Date.now() }])
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
+      historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
     }, AGENT)
     return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.`)
   })

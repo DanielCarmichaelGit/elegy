@@ -21,6 +21,8 @@ Usage:
   quilt join <invite-link>                            Join a partner's session in this folder
   quilt setup                                         Connect Claude Code / Cursor / others via MCP
   quilt status                                        Show collaborators, claims, activity, chat
+  quilt history [path] [--by name] [--since 2h] [--task id] [--diff] [-n 30]
+                                                      Who changed what, when, and for which task
   quilt chat                                          Live chat (messages, DMs, files) in this terminal
   quilt say [@name] <message>                         Message everyone, or one person with @name
   quilt send <file> [@name] [message]                 Send a file (not added to the project)
@@ -61,6 +63,7 @@ async function main () {
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
     case 'hook': process.exitCode = await (await import('../src/hooks.js')).runHook(); return
     case 'status': return status()
+    case 'history': return history()
     case 'say': return say()
     case 'send': return sendFile()
     case 'messages': case 'inbox': return messages()
@@ -345,6 +348,12 @@ async function daemonOrFail () {
 async function status () {
   const { d, call } = await daemonOrFail()
   console.log((await call(d, 'GET', '/status')).markdown)
+}
+
+async function history () {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { by: { type: 'string' }, since: { type: 'string' }, task: { type: 'string' }, diff: { type: 'boolean' }, n: { type: 'string', short: 'n' } } })
+  const { formatHistory } = await import('../src/history.js')
+  await simple('/history', { path: positionals[0], by: values.by, since: values.since, task: values.task, limit: Number(values.n || 30) }, (r) => formatHistory(r.entries, { withDiff: !!values.diff }))
 }
 
 async function simple (route, body, format) {

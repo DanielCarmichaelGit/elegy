@@ -9,12 +9,16 @@ import { z } from 'zod'
 import fs from 'node:fs'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
-import { renderMessage } from './status.js'
+import { renderMessage, renderStatus } from './status.js'
+import { formatTasks, columnName, assigneeLabel } from './tasks.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
+import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
+import { formatHistory } from './history.js'
+import { getSettings } from './settings.js'
 
 /**
  * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
@@ -32,16 +36,23 @@ export { toolLabel }
 const NOT_RUNNING = 'There is no live quilt session for this project. If the user gave you an invite link, join with ' +
   'quilt_join_session. To start a new session, use quilt_start_session. A person can also run `quilt join` or `quilt ui`.'
 
+export const MCP_INSTRUCTIONS =
+  'quilt lets several people (and their AI agents) edit one project live, each in their own tool. ' +
+  'If you are given a quilt invite link, join with quilt_join_session. In a session, files may change underneath ' +
+  'you at any time. Call quilt_status before starting a task; use quilt_partner_feed to see what a partner\'s AI is ' +
+  'doing; announce your task with quilt_set_focus. The session has a shared task board: read it with quilt_tasks ' +
+  '(open tasks assigned to you are listed first), add work with quilt_add_task, assign it with quilt_assign_task, ' +
+  'and move a task with quilt_move_task when you start or finish it. ' +
+  'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
+  'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
+  'Claim files or folders before larger changes and do not edit files someone else has claimed. ' +
+  'Always re-read a file right before you edit it. ' +
+  TASK_WORKFLOW
+
 export async function runMcp () {
   const server = new McpServer(
     { name: 'quilt', version: '0.1.0' },
-    {
-      instructions: 'quilt lets several people (and their AI agents) edit one project live, each in their own tool. ' +
-        'If you are given a quilt invite link, join with quilt_join_session. In a session, files may change underneath ' +
-        'you at any time. Call quilt_status before starting a task; use quilt_partner_feed to see what a partner\'s AI is ' +
-        'doing; announce your task with quilt_set_focus; claim files or folders before larger changes and do not edit files ' +
-        'someone else has claimed. Always re-read a file right before you edit it.'
-    }
+    { instructions: MCP_INSTRUCTIONS }
   )
 
   // A session this MCP server runs itself, when the agent joined or started one.
@@ -59,10 +70,88 @@ export async function runMcp () {
     }
   }
 
+  const taskReader = (st) => ({ name: st.me.name, tool: st.me.tool, asAi: st.me.kind !== 'agent' })
+  const describeAssignment = (task, me) => {
+    const label = assigneeLabel(task, me)
+    const files = task.files?.length ? `\nFiles: ${task.files.join(', ')}` : ''
+    return `${label ? `Assigned to ${label}.` : 'Unassigned.'}${files}`
+  }
+
   server.registerTool('quilt_status', {
-    description: 'See who else is in the live session, what they are working on, which files they recently edited or claimed, and recent messages. Call this before starting work.',
+    description: 'See who else is in the live session, what they are working on, which files they recently edited or claimed, recent messages, and which open tasks are assigned to you. Call this before starting work.',
     inputSchema: {}
-  }, () => withDaemon(async (d) => (await call(d, 'GET', '/status')).markdown))
+  }, () => withDaemon(async (d) => {
+    const st = await call(d, 'GET', '/status')
+    return renderStatus(st, { asAi: taskReader(st).asAi, mentionYours: true })
+  }))
+
+  server.registerTool('quilt_tasks', {
+    description: 'List the shared task board (To do, In progress, Done), with an id on each task. Open tasks assigned to you are listed first. Call this before starting work.',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => {
+    const st = await call(d, 'GET', '/status')
+    return formatTasks(st.tasks, taskReader(st))
+  }))
+
+  server.registerTool('quilt_add_task', {
+    description: 'Add a task to the shared board, in To do. One short line. Optionally assign it to a person or their AI, and name the files it is about.',
+    inputSchema: {
+      title: z.string().describe('What needs doing, in a few words'),
+      assignee: z.string().optional().describe('Who should do it: a person\'s name, or "me". Omit to leave it unassigned.'),
+      to_ai: z.boolean().optional().describe('Assign it to that person\'s AI instead of the person. You are this person\'s AI unless you joined as your own agent: set assignee to "me" and to_ai to true to take the task yourself.'),
+      files: z.array(z.string()).max(20).optional().describe('Project files this task is about, relative paths such as src/app.js')
+    }
+  }, ({ title, assignee, to_ai, files }) => withDaemon(async (d) => {
+    const body = { title }
+    if (assignee != null) body.assignee = assignee
+    else if (to_ai) body.assignee = 'me'
+    if (to_ai) body.to_ai = true
+    if (files !== undefined) body.files = files
+    const { task } = await call(d, 'POST', '/tasks', body)
+    const me = (await call(d, 'GET', '/info')).name
+    return `Added to To do: ${task.title}\n${task.id}\n${describeAssignment(task, me)}`
+  }))
+
+  server.registerTool('quilt_move_task', {
+    description: 'Move a task on the shared board. "doing" when you start it: you get a briefing (its files, recent changes to them, claims, the project\'s checks). ' +
+      '"done" when you finish: requires `verified`, what you ran and what you saw; without it the move is refused.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done'),
+      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
+    }
+  }, ({ id, column, verified }) => withDaemon(async (d) => {
+    const brief = await call(d, 'POST', '/tasks/brief', { id })
+    if (column === 'done' && !verifiedEnough(verified)) return doneRefusal({ task: brief.task, checklist: brief.checklist })
+    const { task } = await call(d, 'POST', '/tasks/update', { id, column, ...(column === 'done' ? { verified } : {}) })
+    if (column === 'doing') return pickupBrief({ ...brief, task })
+    if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`
+    return `Moved "${task.title}" to ${columnName(task.column)}.`
+  }))
+
+  server.registerTool('quilt_assign_task', {
+    description: 'Assign a shared task to a person or to their AI, and optionally set the files it is about. assignee "" clears it. Set assignee to "me" and to_ai to true to take it yourself when you are that person\'s AI.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      assignee: z.string().describe('A person\'s name, "me", or "" to unassign'),
+      to_ai: z.boolean().optional().describe('True: that person\'s AI. Omit or false: the person.'),
+      files: z.array(z.string()).max(20).optional().describe('Replace the file list. Omit to leave the files unchanged.')
+    }
+  }, ({ id, assignee, to_ai, files }) => withDaemon(async (d) => {
+    const body = { id, assignee, forAi: !!to_ai }
+    if (files !== undefined) body.files = files
+    const { task } = await call(d, 'POST', '/tasks/update', body)
+    const me = (await call(d, 'GET', '/info')).name
+    return describeAssignment(task, me)
+  }))
+
+  server.registerTool('quilt_delete_task', {
+    description: 'Remove a task from the shared board.',
+    inputSchema: { id: z.string().describe('Task id from quilt_tasks') }
+  }, ({ id }) => withDaemon(async (d) => {
+    await call(d, 'POST', '/tasks/delete', { id })
+    return 'Removed.'
+  }))
 
   server.registerTool('quilt_set_focus', {
     description: 'Tell collaborators what you are working on right now (e.g. "adding dark mode to the settings page"). Shown to them live.',
@@ -324,6 +413,22 @@ export async function runMcp () {
   }, () => withDaemon(async (d) => describeSession(d.dir)))
 
   // ------------------------------------------------- the workspace, for agents --
+
+  server.registerTool('quilt_history', {
+    description: 'The chronology of the project: who changed which file, when, what changed (diff) and for which task. ' +
+      'Filter by path or glob, person, task or time. Use it to understand recent changes before building on them, or to find what broke something.',
+    inputSchema: {
+      path: z.string().max(500).optional().describe('A file, a folder ending in "/", or a glob like src/ui/**'),
+      by: z.string().max(80).optional().describe('Only changes by this person or agent'),
+      since: z.string().max(40).optional().describe('"2h", "3d", "today", "yesterday" or a date'),
+      task: z.string().max(40).optional().describe('Only changes made for this task id'),
+      with_diff: z.boolean().optional().describe('Include each change\'s diff (capped per change)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest matching changes (default 30)')
+    }
+  }, ({ path: p, by, since, task, with_diff, limit }) => withDaemon(async (d) => {
+    const { entries } = await call(d, 'POST', '/history', { path: p, by, since, task, limit: limit || 30 })
+    return formatHistory(entries, { withDiff: !!with_diff })
+  }))
 
   server.registerTool('quilt_partner_feed', {
     description: 'Read what a collaborator\'s AI is doing: their prompts, the AI\'s replies, and one-line actions like "Edited src/app.ts". Without "who", lists collaborators and their AI status. Use it to avoid duplicating or conflicting with their work.',

@@ -14,7 +14,7 @@ import { generateIdentity } from '../src/identity.js'
 import { signPass, PASS_TTL_MS } from '../src/passes.js'
 import { PASS_KEYS, testPasses } from './pass-helpers.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-hm-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-hm-home-'))
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-hm-${n}-`))
 async function waitFor (fn, ms = 8000) {
   const start = Date.now()
@@ -51,6 +51,10 @@ test('without a pass the hosted MCP is refused; with one, the tools are there', 
   await assert.rejects(client(''), /sign in to continue/)
   const tools = (await grok.listTools()).tools.map((t) => t.name)
   for (const t of ['quilt_join_session', 'quilt_session_info', 'quilt_leave_session', 'quilt_status', 'quilt_read_file', 'quilt_write_file', 'quilt_message', 'quilt_claim', 'quilt_share']) assert.ok(tools.includes(t), t)
+  const { TASK_WORKFLOW } = await import('../src/agent-task-workflow.js')
+  const instructions = grok.getInstructions()
+  assert.ok(instructions && instructions.includes(TASK_WORKFLOW), 'hosted MCP instructions embed TASK_WORKFLOW')
+  assert.match(instructions, /grok the codebase/i)
 })
 
 test('before joining, tools say to join; a bad invite is refused without touching the room', async () => {
@@ -84,6 +88,59 @@ test('joining puts the agent on the owner\'s list; the owner lets it in and it b
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1 as Grok-Bot \(editor\)/)
 })
 
+test('moving a task to In progress reminds the agent to grok → plan → build → test', async () => {
+  const added = await call('quilt_add_task', { title: 'Wire agent workflow' })
+  assert.ok(!added.isError, out(added))
+  const id = out(added).split('\n').find((l) => /^[0-9a-f]{16}$/.test(l.trim()))
+  assert.ok(id, `expected task id in:\n${out(added)}`)
+  const moved = await call('quilt_move_task', { id: id.trim(), column: 'doing' })
+  assert.ok(!moved.isError, out(moved))
+  assert.match(out(moved), /Picked up "Wire agent workflow"/)
+  assert.match(out(moved), /grok the codebase/i)
+  assert.match(out(moved), /implement a plan/i)
+  assert.match(out(moved), /build the change/i)
+  assert.match(out(moved), /test it/i)
+  assert.match(out(moved), /no "Verifying a change" section/)
+  // Done needs evidence; "tested" is not evidence.
+  const refused = await call('quilt_move_task', { id: id.trim(), column: 'done' })
+  assert.ok(refused.isError)
+  assert.match(out(refused), /needs `verified`/)
+  assert.ok((await call('quilt_move_task', { id: id.trim(), column: 'done', verified: 'tested' })).isError)
+  const done = await call('quilt_move_task', { id: id.trim(), column: 'done', verified: 'npm test passed (3 tests); opened the board and the new column rendered' })
+  assert.ok(!done.isError, out(done))
+  assert.match(out(done), /Moved "Wire agent workflow" to Done\. Verified: npm test passed/)
+  assert.match(out(await call('quilt_tasks')), /verified: npm test passed \(3 tests\)/)
+})
+
+test('picking up a task briefs the agent: files, their recent changes, claims and the project checks', async () => {
+  // The owner's AGENTS.md carries the project's checks; it syncs to the room like any file.
+  fs.writeFileSync(path.join(carlDir, 'AGENTS.md'), '# Notes\n\n## Verifying a change\n\n- Run `npm test`.\n- Open the app and click through the board.\n\n## Other\n\nignored\n')
+  fs.writeFileSync(path.join(carlDir, 'src.txt'), 'v1\n')
+  await waitFor(async () => out(await call('quilt_read_file', { path: 'src.txt' })) === 'v1\n')
+  assert.ok(!(await call('quilt_claim', { pattern: 'docs/**', note: 'rewriting the guide' })).isError)
+  await waitFor(() => carl.claims.has('docs/**'))
+  const added = out(await call('quilt_add_task', { title: 'Bump src', files: ['src.txt', 'docs/a.md'] }))
+  const id = added.split('\n').find((l) => /^[0-9a-f]{16}$/.test(l.trim())).trim()
+  const brief = out(await call('quilt_move_task', { id, column: 'doing' }))
+  assert.match(brief, /^Picked up "Bump src" \[[0-9a-f]{16}\]\.\nFiles: src\.txt, docs\/a\.md/)
+  assert.match(brief, /Recent changes to these files[^\n]*\n- \[\d+s ago\] Carl created src\.txt \(\+1 -0\)/)
+  assert.doesNotMatch(brief, /AGENTS\.md \(/, 'changes to other files are left out')
+  assert.doesNotMatch(brief, /Claims to respect/, 'my own claim is not a warning')
+  assert.match(brief, /This project's checks \(from AGENTS\.md\):\n- Run `npm test`\.\n- Open the app and click through the board\./)
+  assert.doesNotMatch(brief, /ignored/)
+  assert.match(brief, /grok the codebase/i)
+  // Another person's claim on one of the files is called out.
+  await carl.claim('src.txt', 'mine for a minute')
+  await waitFor(() => carl.claims.has('src.txt'))
+  await call('quilt_move_task', { id, column: 'todo' })
+  assert.match(out(await call('quilt_move_task', { id, column: 'doing' })), /Claims to respect[^\n]*\n- src\.txt by Carl \(mine for a minute\)/)
+  // The refusal quotes the checks too.
+  assert.match(out(await call('quilt_move_task', { id, column: 'done' })), /Run `npm test`/)
+  await carl.release('src.txt')
+  await call('quilt_release', { pattern: 'docs/**' })
+  fs.rmSync(path.join(carlDir, 'AGENTS.md'))
+})
+
 test('the agent reads what the owner has, and what it writes lands on the owner\'s disk', async () => {
   assert.equal(out(await call('quilt_read_file', { path: 'README.md' })), '# Project\n')
   assert.match(out(await call('quilt_read_file', { path: 'missing.txt' })), /no file called missing.txt/)
@@ -102,6 +159,30 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(status, /Grok-Bot created hello.md|Grok-Bot edited hello.md/)
   // The owner sees the agent as a member who is online.
   await waitFor(() => carl.members.find((m) => m.key === GROK)?.online === true)
+})
+
+test('the chronology records hosted and local changes with diffs, and is queryable', async () => {
+  // The owner is working a task; Grok has none in progress.
+  const task = carl.addTask({ title: 'Owner notes', assignee: 'me', column: 'doing' })
+  fs.writeFileSync(path.join(carlDir, 'notes.txt'), 'owner notes\nmore\n')
+  await waitFor(() => carl.history.entries().some((e) => e.path === 'notes.txt' && /\+more/.test(e.diff)))
+
+  const all = out(await call('quilt_history'))
+  // Grok's two writes within seconds fold into one entry; so do Carl's two saves of notes.txt.
+  assert.match(all, /Grok-Bot created hello\.md \(\+2 -0\)/)
+  assert.match(all, /Carl created notes\.txt \(\+2 -0\) for "Owner notes" \[/)
+  const mine = out(await call('quilt_history', { by: 'grok-bot', with_diff: true }))
+  assert.match(mine, /hello\.md/)
+  assert.doesNotMatch(mine, /notes\.txt/)
+  assert.match(mine, /\+hello from Grok/)
+  assert.match(out(await call('quilt_history', { path: 'notes.txt', task: task.id })), /Carl created notes\.txt/)
+  assert.equal(out(await call('quilt_history', { path: 'src/**' })), 'No changes match.')
+  assert.match(out(await call('quilt_history', { since: 'soonish' })), /since: use a duration/)
+  // The owner's local query sees the same record.
+  assert.ok(carl.historyQuery({ by: 'Grok-Bot' }).every((e) => e.by === 'Grok-Bot'))
+  assert.ok(carl.historyQuery({ since: '1h' }).length >= 2)
+  assert.throws(() => carl.historyQuery({ since: 'nope' }), /since: use a duration/)
+  carl.deleteTask(task.id)
 })
 
 test('messages, shares and claims reach the owner, and claims are respected', async () => {

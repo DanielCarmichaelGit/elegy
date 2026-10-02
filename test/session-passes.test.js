@@ -16,7 +16,7 @@ import { WebSocketServer } from 'ws'
 import { PassSource, SignedOutError, personPasses } from '../src/pass-source.js'
 import { PASS_KEYS, makePass, testPasses } from './pass-helpers.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-sp-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-sp-home-'))
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-sp-${n}-`))
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor (fn, ms = 8000) {

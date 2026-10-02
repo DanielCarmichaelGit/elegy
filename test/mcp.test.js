@@ -57,6 +57,16 @@ test('exposes the join and workspace tools', async () => {
   }
 })
 
+test('MCP instructions require grok → plan → build → test on pickup', async () => {
+  const { TASK_WORKFLOW } = await import('../src/agent-task-workflow.js')
+  const instructions = client.getInstructions()
+  assert.ok(instructions && instructions.includes(TASK_WORKFLOW), 'server instructions embed TASK_WORKFLOW')
+  assert.match(instructions, /grok the codebase/i)
+  assert.match(instructions, /implement a plan/i)
+  assert.match(instructions, /build the change/i)
+  assert.match(instructions, /test it/i)
+})
+
 test('without a session, tools explain how to join', async () => {
   const r = await call('quilt_status')
   assert.equal(r.isError, true)

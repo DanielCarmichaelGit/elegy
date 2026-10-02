@@ -1,6 +1,7 @@
 // Reads Cursor agent transcripts for one project folder. Current Cursor stores
 // the agent chat as JSONL under ~/.cursor/projects/<slug>/agent-transcripts/,
-// not in the composer database the older reader polls.
+// not in the composer database the older reader polls. The slug is Cursor's:
+// any character that is not a letter or digit becomes a hyphen.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,15 +17,21 @@ export function cursorProjectsDir (home = os.homedir()) {
   return path.join(home, '.cursor', 'projects')
 }
 
-/** Cursor's project folder drops the drive colon (`C:\Users\a` -> `c-Users-a`). */
+/** Cursor's ~/.cursor/projects folder name for an absolute path.
+ *  Every character that is not a letter or digit becomes a hyphen, runs of
+ *  hyphens collapse, and hyphens at either end are removed.
+ *  `C:\Quilt Test (1)` -> `C-Quilt-Test-1`, `/Users/a/my app` -> `Users-a-my-app`. */
+export function slugCursorPath (absPath) {
+  return String(absPath).replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+}
+
 export function cursorProjectSlug (dir) {
-  let resolved = path.resolve(dir)
-  if (process.platform === 'win32') resolved = resolved.replace(/^([A-Za-z]):/, (_, drive) => drive.toLowerCase())
-  return resolved.replace(/[\\/]/g, '-')
+  return slugCursorPath(path.resolve(dir))
 }
 
 export function projectMatches (name, dir) {
   const slug = cursorProjectSlug(dir)
+  if (!slug) return false
   return process.platform === 'win32' ? name.toLowerCase() === slug.toLowerCase() : name === slug
 }
 

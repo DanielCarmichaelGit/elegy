@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-git-')))
 const home = path.join(root, 'home')
 fs.mkdirSync(home)
-process.env.HOME = home
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home
 Object.assign(process.env, {
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com',

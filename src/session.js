@@ -20,6 +20,9 @@ import {
 import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob, blobId } from './largefiles.js'
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
+import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
+import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
+import { pickChecklist } from './agent-task-workflow.js'
 
 export { applyTextDiff }
 
@@ -79,8 +82,16 @@ export class Session extends EventEmitter {
     this.claims = new Map()
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
+    // The chronology: every change with its diff and the task it was for (src/history.js).
+    this.history = new HistoryLog(this.doc, this.doc.getArray('history'), { origin: LOCAL })
+    // "<name>\0<path>" -> { by, path, added, removed, edits, kind, ts }: what each
+    // person has changed in this room, every edit counted. Each person writes
+    // only their own keys, so there is nothing to merge.
+    this.tallies = this.doc.getMap('changes')
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
+    this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, order, ts }
+    this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
 
     this.ig = loadIgnore(this.root)
@@ -106,6 +117,8 @@ export class Session extends EventEmitter {
     // (kind, text) -> Promise<{ text, how }>; when set, prompts and replies are summarized before sharing.
     this.summarizer = summarize
     this.summaryQueue = Promise.resolve()
+    // (request, files) -> Promise<string|null>; when set, auto tasks get a short title.
+    this.taskTitler = null
     this.agentState = null
     this.access = null // from the relay: { state, role, scopes, owner, controlled }
     this.members = [] // everyone approved into a controlled session
@@ -308,6 +321,7 @@ export class Session extends EventEmitter {
       this.scheduleStatusWrite()
     })
     this.activity.observe(() => this.scheduleStatusWrite())
+    this.tasks.observe(() => this.scheduleStatusWrite())
     this.commitRequests.observe((ev, tr) => {
       for (const [id, change] of ev.changes.keys) {
         const r = this.commitRequests.get(id)
@@ -455,10 +469,14 @@ export class Session extends EventEmitter {
       onDisk.delete(rel)
       pulled++
     }
-    for (const rel of onDisk) {
-      if (this.lastKnown.has(rel)) continue
-      if (this.ingest(rel)) pushed++
-    }
+    // What the folder brings to the room is its starting point, not a change anyone made.
+    this.seeding = true
+    try {
+      for (const rel of onDisk) {
+        if (this.lastKnown.has(rel)) continue
+        if (this.ingest(rel)) pushed++
+      }
+    } finally { this.seeding = false }
     this.log(`initial sync: ${pulled} file(s) pulled, ${pushed} pushed` +
       (backedUp ? `, ${backedUp} local version(s) backed up to ${path.relative(this.root, backupDir)}` : ''))
   }
@@ -549,9 +567,11 @@ export class Session extends EventEmitter {
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
       this.doc.transact(() => {
+        const was = this.files.get(rel)
+        const before = was ? was.toString() : undefined
         this.files.delete(rel)
         this.blobs.delete(rel)
-        this.recordActivity(rel, 'deleted', '')
+        this.recordActivity(rel, 'deleted', '', { before, after: before === undefined ? undefined : '' })
       }, LOCAL)
       this.lastKnown.delete(rel)
       this.setOnDisk(rel, null)
@@ -574,6 +594,7 @@ export class Session extends EventEmitter {
     let detail = ''
     this.doc.transact(() => {
       const existed = this.files.has(rel) || this.blobs.has(rel)
+      let texts
       if (disk.binary) {
         this.files.delete(rel)
         this.blobs.set(rel, { hash: disk.hash, data: disk.buf.toString('base64') })
@@ -585,9 +606,10 @@ export class Session extends EventEmitter {
           ytext = new Y.Text()
           this.files.set(rel, ytext)
         }
+        texts = { before: ytext.toString(), after: disk.text }
         detail = applyTextDiff(ytext, disk.text)
       }
-      this.recordActivity(rel, existed ? 'edited' : 'created', detail)
+      this.recordActivity(rel, existed ? 'edited' : 'created', detail, texts)
     }, LOCAL)
     this.lastKnown.set(rel, disk.key)
     this.setOnDisk(rel, null)
@@ -627,14 +649,61 @@ export class Session extends EventEmitter {
     this.emit('file-changed', { path: rel, by: by || this.lastEditorOf(rel) || 'partner' })
   }
 
-  recordActivity (rel, kind, detail) {
+  /** `texts` is { before, after } for text files, so the chronology keeps the diff. */
+  recordActivity (rel, kind, detail, texts) {
     const now = Date.now()
+    this.tally(rel, kind, detail, now)
+    this.history.record({ by: this.name, path: rel, kind, detail, before: texts?.before, after: texts?.after, task: this.currentTask(), ts: now })
     const last = this.lastActivityPush.get(rel)
     // Collapse bursts of edits to the same file into one entry.
     if (kind === 'edited' && last && now - last < 20000) return
     this.lastActivityPush.set(rel, now)
     this.activity.push([{ by: this.name, path: rel, kind, detail, ts: now }])
     if (this.activity.length > 300) this.activity.delete(0, this.activity.length - 300)
+  }
+
+  /** Add one change of mine to the running count for rel (`detail` is "+a -r" for text). */
+  tally (rel, kind, detail, now) {
+    if (this.seeding) return
+    const key = `${this.name}\0${rel}`
+    const cur = this.tallies.get(key) || { added: 0, removed: 0, edits: 0, kind: 'edited' }
+    const m = /^\+(\d+) -(\d+)$/.exec(detail || '')
+    const state = kind === 'deleted' ? 'deleted' : kind === 'created' || cur.kind === 'created' ? 'created' : 'edited'
+    this.tallies.set(key, {
+      by: this.name,
+      path: rel,
+      added: cur.added + (m ? +m[1] : 0),
+      removed: cur.removed + (m ? +m[2] : 0),
+      edits: cur.edits + 1,
+      kind: state,
+      ts: now
+    })
+  }
+
+  /**
+   * What has changed in this room and by whom: per person (most recent first,
+   * with their files) and per file (with each person's share). Read from the
+   * shared doc, so everyone sees the same breakdown.
+   */
+  changes () {
+    const people = new Map()
+    const files = new Map()
+    for (const t of this.tallies.values()) {
+      if (!t || !t.by || !isSafeRelPath(t.path)) continue
+      const p = people.get(t.by) || { name: t.by, added: 0, removed: 0, edits: 0, ts: 0, files: [] }
+      p.added += t.added; p.removed += t.removed; p.edits += t.edits; p.ts = Math.max(p.ts, t.ts)
+      p.files.push({ path: t.path, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      people.set(t.by, p)
+      const f = files.get(t.path) || { path: t.path, added: 0, removed: 0, edits: 0, ts: 0, by: [] }
+      f.added += t.added; f.removed += t.removed; f.edits += t.edits; f.ts = Math.max(f.ts, t.ts)
+      f.by.push({ name: t.by, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      files.set(t.path, f)
+    }
+    const newest = (a, b) => b.ts - a.ts
+    const out = { people: [...people.values()].sort(newest), files: [...files.values()].sort(newest) }
+    for (const p of out.people) { p.files.sort(newest); p.fileCount = p.files.length }
+    for (const f of out.files) f.by.sort(newest)
+    return out
   }
 
   noteMyEdit (rel) {
@@ -1171,6 +1240,91 @@ export class Session extends EventEmitter {
     return r
   }
 
+  // ------------------------------------------------------------- tasks --
+
+  /** The shared board: To do, In progress, Done. Everyone in the room sees the same list. */
+  taskList () { return readTasks(this.tasks) }
+
+  /**
+   * The In-progress task this person (or, when their AI is working, their AI) is on,
+   * so a change can be filed under it. Null when there is none.
+   */
+  currentTask () {
+    const aiWorking = this.kind !== 'agent' && this.agentState?.status === 'working'
+    return currentTask(this.taskList(), this.name, { preferAi: aiWorking })
+  }
+
+  /** The project's own checks under "Verifying a change" in AGENTS.md (or CLAUDE.md); '' when there are none. */
+  readChecklist () {
+    const read = (f) => { try { return fs.readFileSync(path.join(this.root, f), 'utf8') } catch { return '' } }
+    return pickChecklist(read('AGENTS.md'), read('CLAUDE.md'))
+  }
+
+  /**
+   * What an agent needs when it picks up a task: the task, recent chronology for
+   * its files (or the project when it lists none), claims that touch them, and the checklist.
+   */
+  taskBrief (id) {
+    const task = this.taskList().find((t) => t.id === id)
+    if (!task) throw new Error('no such task')
+    const files = task.files || []
+    const all = this.history.entries()
+    const history = (files.length ? all.filter((e) => files.includes(e.path)) : all).slice(-8)
+    const claims = [...this.claims.values()]
+      .filter((c) => !files.length || files.some((f) => globMatcher(c.pattern)(f)))
+      .map((c) => ({ by: c.by, pattern: c.pattern, note: c.note }))
+    return { task, history, claims, checklist: this.readChecklist(), me: this.name }
+  }
+
+  /**
+   * The chronology, filtered: { path, by, since, task, limit }. `since` is "2h",
+   * "3d", "today", "yesterday" or a date.
+   */
+  historyQuery ({ path, by, since, task, limit } = {}) {
+    const from = parseSince(since)
+    if (from === undefined) throw new Error('since: use a duration like 2h or 3d, "today", "yesterday", or a date')
+    return queryHistory(this.history.entries(), { path, by, since: from ?? undefined, task, limit: Math.min(Number(limit) || 50, 500) })
+  }
+
+  /** `input` is a title, or { title, assignee, forAi, to_ai, tool, files }. "me" means this person. */
+  addTask (input) {
+    const fields = typeof input === 'string' ? { title: input } : { ...(input || {}) }
+    this.prepareAssign(fields, { creating: true })
+    return putTask(this.doc, this.tasks, {
+      title: fields.title,
+      by: this.name,
+      assignee: fields.assignee,
+      forAi: fields.forAi,
+      tool: fields.tool,
+      files: fields.files,
+      column: fields.column,
+      conv: fields.conv
+    }, LOCAL)
+  }
+
+  updateTask (fields) {
+    const f = { ...(fields || {}) }
+    this.prepareAssign(f)
+    return patchTask(this.doc, this.tasks, f, LOCAL)
+  }
+
+  /** Rewrites "me" to this person and fills in an AI tool when we know whose it is. */
+  prepareAssign (fields, { creating = false } = {}) {
+    if (typeof fields.assignee === 'string' && fields.assignee.trim() === 'me') fields.assignee = this.name
+    if (fields.to_ai != null && fields.forAi == null) fields.forAi = !!fields.to_ai
+    delete fields.to_ai
+    delete fields.by
+    if (fields.forAi !== true || fields.tool) return
+    const name = fields.assignee != null ? String(fields.assignee).trim() : ''
+    if (name === this.name || (creating && !name)) fields.tool = this.tool
+    else if (name) {
+      const peer = this.status().peers.find((p) => p.name === name)
+      if (peer?.tool && peer.tool !== 'unknown') fields.tool = peer.tool
+    }
+  }
+
+  deleteTask (id) { dropTask(this.doc, this.tasks, id, LOCAL) }
+
   /** Marks open requests as done by a commit. */
   resolveCommitRequests ({ hash = '', ids = null } = {}) {
     const open = [...this.commitRequests.values()].filter((r) => r.state === 'open' && (!ids || ids.includes(r.id)))
@@ -1401,9 +1555,65 @@ export class Session extends EventEmitter {
 
   // ------------------------------------------------------------ AI feed --
 
+  /**
+   * Opens or extends a shared task when this person's AI edits files for a
+   * request that is not already on the board. Failures stay out of the feed.
+   */
+  noteAgentWork (entries) {
+    let ops = []
+    try {
+      ops = planAutoTask({
+        entries,
+        tasks: this.taskList(),
+        prompts: this.agentPrompts,
+        now: Date.now(),
+        me: this.name,
+        sharing: this.agentSharing
+      })
+    } catch (err) {
+      this.log(`could not read an AI chat for tasks: ${err.message}`)
+      return
+    }
+    for (const op of ops) {
+      try {
+        if (op.update) this.updateTask(op.update)
+        else if (op.create) {
+          const task = this.addTask({
+            title: op.create.title,
+            assignee: this.name,
+            forAi: true,
+            tool: op.create.tool || this.tool,
+            files: op.create.files,
+            column: 'doing',
+            conv: op.create.conv
+          })
+          this.log(`📋 task from your AI chat: ${task.title}`)
+          this.retitleTask(task, op.create.request, op.create.files)
+        }
+      } catch (err) {
+        this.log(`could not add a task from your AI chat: ${err.message}`)
+      }
+    }
+  }
+
+  /**
+   * Swaps an auto task's stand-in title for a short one ("Add dark mode") once
+   * `taskTitler` answers, unless someone renamed or removed the task meanwhile.
+   */
+  async retitleTask (task, request, files) {
+    if (!this.taskTitler || !request) return
+    const title = await this.taskTitler(request, files).catch(() => null)
+    if (!title || title === task.title) return
+    const now = this.taskList().find((t) => t.id === task.id)
+    if (!now || now.title !== task.title) return
+    try { this.updateTask({ id: task.id, title }) } catch {}
+  }
+
   /** Adds entries from this person's AI chat reader. Dedupes by id, keeps the newest 300 per person. */
   pushAgentEntries (entries) {
-    if (!this.agentSharing || !entries || !entries.length) return 0
+    if (!entries || !entries.length) return 0
+    this.noteAgentWork(entries)
+    if (!this.agentSharing) return 0
     if (this.summarizer) {
       // Summaries take a moment; keep batches in order.
       const batch = entries
@@ -1602,7 +1812,9 @@ export class Session extends EventEmitter {
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
+      tasks: this.taskList(),
       activity: this.activity.toArray().slice(-30),
+      changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10) })),
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size

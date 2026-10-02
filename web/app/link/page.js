@@ -39,8 +39,11 @@ export default async function LinkPage ({ searchParams }) {
   }
   return (
     <>
-      <AppHeader user={user} />
-      <main className='wrap page' style={{ maxWidth: 520 }}><div className='card stack'>{body}</div></main>
+      <AppHeader user={user} space='personal' />
+      <main className='wrap page stack'>
+        <h1 style={{ fontSize: 32 }}>Link a computer</h1>
+        <section className='card stack'>{body}</section>
+      </main>
     </>
   )
 }

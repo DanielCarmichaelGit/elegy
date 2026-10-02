@@ -7,8 +7,10 @@ import os from 'node:os'
 
 const INSTRUCTIONS = {
   prompt: 'Summarize this request a developer gave their AI coding assistant in one plain sentence of at most 20 words. Output only the sentence.',
-  reply: 'Summarize this reply from an AI coding assistant in one or two plain sentences, at most 35 words in total. Mention files or decisions if there are any. Output only the summary.'
+  reply: 'Summarize this reply from an AI coding assistant in one or two plain sentences, at most 35 words in total. Mention files or decisions if there are any. Output only the summary.',
+  task: 'Name the coding task in this request as a short to-do title: 2 to 6 words, starting with a verb, like "Add dark mode" or "Fix login redirect". Output only the title.'
 }
+const MAX_TASK_TITLE = 80
 const SHORT_ENOUGH = 140 // characters: already short, share as is
 const TIMEOUT_MS = 45000
 const RETRY_AFTER_MS = 10 * 60 * 1000 // after the CLI fails, shorten instead for a while
@@ -75,5 +77,33 @@ export function createSummarizer ({ onWarn = () => {}, run = runCli } = {}) {
       }
     }
     return { text: shorten(text), how: 'shortened' }
+  }
+}
+
+/** One clean line from the model: no quotes, "Title:" label or trailing period. Empty when nothing is left. */
+export function cleanTaskTitle (out) {
+  const line = String(out || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) || ''
+  return line.replace(/^(task|title)\s*:\s*/i, '').replace(/^["'`*]+|["'`*]+$/g, '').replace(/[.!]+$/, '').trim().slice(0, MAX_TASK_TITLE)
+}
+
+/**
+ * Returns taskTitle(request, files) -> Promise<string|null>: a short title for an
+ * auto-created task ("Add dark mode"), or null when the CLI isn't available.
+ * Unlike summaries, short requests are titled too: "okay, go ahead" is short but no title.
+ */
+export function createTaskTitler ({ onWarn = () => {}, run = runCli } = {}) {
+  let brokenUntil = 0
+  return async function taskTitle (request, files = []) {
+    const text = String(request || '').trim()
+    if (!text || Date.now() < brokenUntil) return null
+    const input = files.length ? `${text.slice(0, 4000)}\n\nFiles it changed: ${files.slice(0, 10).join(', ')}` : text.slice(0, 4000)
+    try {
+      const [cmd, args] = command('task')
+      return cleanTaskTitle(await run(cmd, args, input)) || null
+    } catch (err) {
+      brokenUntil = Date.now() + RETRY_AFTER_MS
+      onWarn(`Task titles use the start of your prompt for now: ${err.message}`)
+      return null
+    }
   }
 }

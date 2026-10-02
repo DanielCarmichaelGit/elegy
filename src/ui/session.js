@@ -1,14 +1,16 @@
-// The session workspace: file tree on the left, a partner's live AI chat or a
-// shared file in the middle, and the team chat on the right.
+// The session workspace: file tree on the left, a partner's live AI chat, a
+// shared file, or the task board in the middle, and the team chat on the right.
 import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
+import { conversations } from './feed-convs.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
 import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
 import { fileCardHref, renderable } from './chat.js'
+import { renderBoard } from './board.js'
 
 let current = null // session id being shown
 let timers = []
@@ -24,6 +26,7 @@ function ws (id) {
       mode: 'ai',
       aiTabs: [],
       aiSel: null,
+      convSel: {}, // person -> pinned conversation id (absent: follow the newest)
       fileTabs: [],
       fileSel: null,
       expanded: {},
@@ -54,6 +57,7 @@ function personInfo (name) {
 // ------------------------------------------------------------------ mount --
 export function mountSession (id) {
   current = id
+  pendingAssign = ''
   mounted = new AbortController()
 
   $('#app').innerHTML = `
@@ -71,6 +75,7 @@ export function mountSession (id) {
       </div>
       ${gitMarkup()}
       ${openInMarkup()}
+      <button class="btn sm ghost" id="tasks-btn" type="button" aria-pressed="false" title="Tasks">${I.board}<span class="wide-only">Tasks</span><span class="tasks-n" id="tasks-count" hidden></span></button>
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-chat" title="Chat" aria-label="Show chat">${I.chat}<span class="badge" id="chat-badge" hidden></span></button>
       <button class="btn sm ghost icon" id="settings-btn" type="button" title="Settings" aria-label="Settings">${I.gear}</button>
@@ -121,6 +126,7 @@ export function mountSession (id) {
   bindMain()
   bindTreeEvents()
   bindChat()
+  bindBoard()
   renderTop()
   renderMainBar()
   renderMain()
@@ -141,6 +147,7 @@ export function sessionUnmount () {
   mounted = null
   closeTreeMenu()
   unbindGit()
+  pendingAssign = ''
   current = null
 }
 
@@ -155,6 +162,7 @@ export function sessionUpdated (id) {
   renderMainBar()
   renderRecipients()
   if (ws(id).mode === 'ai') renderMain()
+  if (ws(id).mode === 'tasks') paintBoard()
   scheduleTree()
 }
 
@@ -258,6 +266,16 @@ function bindOpenIn () {
 }
 
 function bindTop () {
+  $('#tasks-btn').onclick = () => {
+    const w = ws(current)
+    if (w.mode === 'tasks') w.mode = w.aiSel ? 'ai' : w.fileSel ? 'files' : 'ai'
+    else w.mode = 'tasks'
+    saveWs(current)
+    renderMainBar()
+    renderMain()
+    renderTop()
+    if (w.mode === 'tasks') $('#task-add')?.focus()
+  }
   $('#invite-btn').onclick = () => openInvite(current)
   bindOpenIn()
   $('#ask-commit').onclick = askForCommit
@@ -405,6 +423,7 @@ function renderTop () {
   renderAccess()
   renderCommitChip()
   $('#rename-btn').hidden = !st.access?.owner
+  renderTaskButton()
   $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
 }
 
@@ -620,6 +639,8 @@ function bindMain () {
     }
     const b = e.target.closest('[data-person]')
     if (b) openPerson(b.dataset.person)
+    const c = e.target.closest('[data-conv]')
+    if (c) pickConv(c.dataset.conv)
     const f = e.target.closest('[data-fv]')
     if (f && f.dataset.fv === 'claim') claimPath(ws(current).fileSel, '')
     if (f && f.dataset.fv === 'release') releasePattern(f.dataset.pattern)
@@ -636,6 +657,19 @@ function openPerson (name) {
   renderMain()
   renderTreePane()
   if (!state.feeds.get(current)?.has(name)) loadFeed(name)
+}
+
+/** Show one of the person's conversations. Picking the newest goes back to following whatever is newest. */
+function pickConv (conv) {
+  const w = ws(current)
+  if (!w.aiSel) return
+  const entries = state.feeds.get(current)?.get(w.aiSel) || []
+  const newest = conversations(entries)[0]
+  if (!w.convSel) w.convSel = {}
+  if (newest && newest.conv === conv) delete w.convSel[w.aiSel]
+  else w.convSel[w.aiSel] = conv
+  saveWs(current)
+  renderMain()
 }
 
 function openFile (path) {
@@ -672,11 +706,220 @@ function renderMainBar () {
   $('#mainbar').hidden = !w.aiTabs.length && !w.fileTabs.length
 }
 
+// A card being renamed, or a drag in progress, must not be rebuilt under the pointer.
+let draggingTask = false
+let boardDirty = false
+// Who the next task is for, chosen before Add. `p:name` or `a:name`.
+let pendingAssign = ''
+
+function renderTaskButton () {
+  const btn = $('#tasks-btn')
+  if (!btn || !current) return
+  const open = (sum()?.status.tasks || []).filter((t) => t.column === 'todo' || t.column === 'doing').length
+  const n = $('#tasks-count')
+  if (n) { n.hidden = open === 0; n.textContent = String(open) }
+  const on = ws(current).mode === 'tasks'
+  btn.classList.toggle('on', on)
+  btn.setAttribute('aria-pressed', String(on))
+}
+
+function editingTask () {
+  const el = document.activeElement
+  if (!el?.closest) return false
+  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-add-assign')
+}
+
+function taskPeople (st) {
+  return [st.me, ...(st.peers || [])].filter((p) => p && p.name).map((p) => ({
+    name: p.name,
+    tool: p.tool && p.tool !== 'unknown' ? p.tool : '',
+    agent: p.kind === 'agent'
+  }))
+}
+
+function assignmentFromValue (value, st) {
+  if (!value) return { assignee: '', forAi: false, tool: '' }
+  const forAi = value.startsWith('a:')
+  const assignee = value.slice(2)
+  const person = [st.me, ...(st.peers || [])].find((p) => p.name === assignee)
+  const saved = (st.tasks || []).find((t) => t.assignee === assignee && !!t.forAi === forAi)
+  const live = person?.tool && person.tool !== 'unknown' ? person.tool : ''
+  return { assignee, forAi, tool: forAi ? (live || saved?.tool || '') : '' }
+}
+
+function paintBoard ({ force = false } = {}) {
+  if (!current || !$('#main')) return
+  renderTaskButton()
+  if (ws(current).mode !== 'tasks') return
+  if (!force && (draggingTask || editingTask())) { boardDirty = true; return }
+  boardDirty = false
+  const add = !force && document.activeElement?.id === 'task-add'
+    ? { value: document.activeElement.value, pos: document.activeElement.selectionStart }
+    : null
+  renderMain()
+  if (!add) return
+  const input = $('#task-add')
+  if (!input) return
+  input.value = add.value
+  input.focus()
+  try { input.setSelectionRange(add.pos, add.pos) } catch {}
+}
+
+async function changeTasks (path, body, beforePaint) {
+  const id = current
+  const { tasks } = await api('POST', `/api/sessions/${id}/tasks${path}`, body)
+  if (id !== current) return
+  const s = state.sessions.get(id)
+  if (s) s.status.tasks = tasks
+  beforePaint?.()
+  paintBoard({ force: true })
+}
+
+function beginEdit (btn) {
+  const card = btn.closest('.task')
+  if (!card || card.querySelector('.task-edit')) return
+  const input = document.createElement('input')
+  input.className = 'task-edit'
+  input.value = btn.textContent
+  input.maxLength = 200
+  input.setAttribute('aria-label', 'Task')
+  const original = btn.textContent
+  card.draggable = false
+  btn.replaceWith(input)
+  input.focus()
+  input.select()
+  const finish = async (save) => {
+    if (input.dataset.done) return
+    input.dataset.done = '1'
+    const title = input.value.trim()
+    const taskId = card.dataset.task
+    if (!save || !title || title === original) { paintBoard({ force: true }); return }
+    try { await changeTasks('/update', { id: taskId, title }) }
+    catch (err) { toast(err.message); paintBoard({ force: true }) }
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true) }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false) }
+  })
+  input.addEventListener('blur', () => finish(true))
+}
+
+function bindBoard () {
+  const el = $('#main')
+  el.addEventListener('focusout', () => {
+    setTimeout(() => { if (!editingTask() && boardDirty) paintBoard() }, 0)
+  })
+  el.addEventListener('change', async (e) => {
+    const addAssign = e.target.closest?.('#task-add-assign')
+    if (addAssign) { pendingAssign = addAssign.value; return }
+    const sel = e.target.closest?.('select.task-assign')
+    if (!sel) return
+    const id = sel.closest('.task')?.dataset.task
+    if (!id) return
+    try { await changeTasks('/update', { id, ...assignmentFromValue(sel.value, sum().status) }) }
+    catch (err) { toast(err.message); paintBoard({ force: true }) }
+  })
+  el.addEventListener('submit', async (e) => {
+    if (e.target.classList.contains('task-file-form')) {
+      e.preventDefault()
+      const input = e.target.querySelector('input')
+      const path = input.value.trim()
+      const id = e.target.closest('.task')?.dataset.task
+      if (!path || !id) return
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      const files = [...(task?.files || [])]
+      if (!files.includes(path)) files.push(path)
+      try { await changeTasks('/update', { id, files }) }
+      catch (err) { toast(err.message); input.focus() }
+      return
+    }
+    if (e.target.id !== 'task-add-form') return
+    e.preventDefault()
+    const input = e.target.querySelector('input')
+    const title = input.value.trim()
+    if (!title) return
+    const button = e.target.querySelector('button[type="submit"]')
+    button.disabled = true
+    const who = assignmentFromValue(e.target.querySelector('#task-add-assign')?.value || pendingAssign, sum().status)
+    try {
+      await changeTasks('', { title, ...who }, () => { pendingAssign = '' })
+      $('#task-add')?.focus()
+    } catch (err) { toast(err.message); button.disabled = false }
+  })
+  el.addEventListener('click', async (e) => {
+    const move = e.target.closest('[data-move]')
+    if (move) {
+      const id = move.closest('.task')?.dataset.task
+      if (!id) return
+      try { await changeTasks('/update', { id, column: move.dataset.move }) }
+      catch (err) { toast(err.message) }
+      return
+    }
+    const removeFile = e.target.closest('[data-file-remove]')
+    if (removeFile) {
+      const id = removeFile.closest('.task')?.dataset.task
+      const path = removeFile.getAttribute('data-file-remove')
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      if (!id || !task) return
+      try { await changeTasks('/update', { id, files: (task.files || []).filter((f) => f !== path) }) }
+      catch (err) { toast(err.message) }
+      return
+    }
+    if (e.target.closest('[data-task-delete]')) {
+      const id = e.target.closest('.task')?.dataset.task
+      if (!id) return
+      try { await changeTasks('/delete', { id }) }
+      catch (err) { toast(err.message) }
+      return
+    }
+    const edit = e.target.closest('[data-task-edit]')
+    const title = edit ? edit.closest('.task')?.querySelector('.task-title') : e.target.closest('.task-title')
+    if (title) beginEdit(title)
+  })
+  el.addEventListener('dragstart', (e) => {
+    const card = e.target.closest?.('.task')
+    if (!card || e.target.closest('.task-icon, .task-move, .task-assign, .task-files, .task-file-form, .task-file-x, input, select')) { e.preventDefault(); return }
+    draggingTask = true
+    e.dataTransfer.setData('text/plain', card.dataset.task)
+    e.dataTransfer.effectAllowed = 'move'
+    card.classList.add('dragging')
+  })
+  el.addEventListener('dragover', (e) => {
+    const col = e.target.closest?.('.board-col')
+    if (!col) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    for (const n of el.querySelectorAll('.board-col.over')) if (n !== col) n.classList.remove('over')
+    col.classList.add('over')
+  })
+  el.addEventListener('drop', async (e) => {
+    const col = e.target.closest?.('.board-col')
+    if (!col) return
+    e.preventDefault()
+    const id = e.dataTransfer.getData('text/plain')
+    const before = e.target.closest('.task')?.dataset.task
+    col.classList.remove('over')
+    draggingTask = false
+    if (!id || before === id) { if (boardDirty) paintBoard(); return }
+    try { await changeTasks('/update', { id, column: col.dataset.column, ...(before ? { before } : {}) }) }
+    catch (err) { toast(err.message); paintBoard({ force: true }) }
+  })
+  el.addEventListener('dragend', () => {
+    draggingTask = false
+    for (const n of el.querySelectorAll('.over, .dragging')) n.classList.remove('over', 'dragging')
+    if (boardDirty) paintBoard()
+  })
+}
+
 function renderMain () {
   const el = $('#main')
   if (!current || !el) return
   const w = ws(current)
   const st = sum().status
+  if (w.mode === 'tasks') {
+    el.innerHTML = renderBoard(st.tasks || [], me(), taskPeople(st), pendingAssign)
+    return
+  }
   if (st.access && st.access.state === 'pending') {
     el.innerHTML = `<div class="main-empty">
       <div class="ill">${I.lock}</div>
@@ -719,7 +962,8 @@ function renderMain () {
     const entries = feeds && feeds.get(w.aiSel)
     if (!entries) { el.innerHTML = '<div class="main-empty"><p class="hint">Loading…</p></div>'; return }
     const p = personInfo(w.aiSel)
-    renderFeed(el, { entries, person: w.aiSel, isMe: !!p.isMe, color: p.color, agent: p.agent, online: p.online })
+    const convSel = w.convSel && w.convSel[w.aiSel]
+    renderFeed(el, { entries, person: w.aiSel, isMe: !!p.isMe, color: p.color, agent: p.agent, online: p.online, convSel })
   } else {
     if (!w.fileSel) {
       el.innerHTML = `<div class="main-empty"><div class="ill">${I.file}</div><h3>Open a file</h3>

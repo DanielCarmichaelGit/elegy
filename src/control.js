@@ -28,11 +28,19 @@ export async function startControl (session, extras = {}) {
     },
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
+    // The chronology: { path, by, since, task, limit } (see Session.historyQuery).
+    'POST /history': (b) => ({ entries: session.historyQuery(b) }),
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
     'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),
     'POST /commit-request': (b) => session.requestCommit(b.message),
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
+    'GET /tasks': () => ({ tasks: session.taskList() }),
+    'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
+    'POST /tasks/update': (b) => ({ task: session.updateTask(b), tasks: session.taskList() }),
+    // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
+    'POST /tasks/brief': (b) => session.taskBrief(b.id),
+    'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
     'POST /commit': async (b) => {
       if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
       const open = session.commitStatus().open

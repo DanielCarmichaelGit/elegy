@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ui-agents-'))
-process.env.HOME = home
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = home
 
 const { startUi } = await import('../src/ui-server.js')
 const { startTestApi, API_URL } = await import('./api-helpers.js')

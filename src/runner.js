@@ -9,7 +9,7 @@ import { startControl } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { relayUrl, isHostedRelay, getSettings } from './settings.js'
-import { createSummarizer } from './summarize.js'
+import { createSummarizer, createTaskTitler } from './summarize.js'
 import { quiltHome, migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
 import { listProcesses } from './procs.js'
@@ -134,6 +134,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const session = new Session({ dir, ...conn, name, tool, color, prefer, kind, shareAgent, identity, passes, startName })
   const summarizer = () => createSummarizer({ onWarn: (msg) => session.log(`✂️  ${msg}`) })
   if (summarize) session.summarizer = summarizer()
+  session.taskTitler = createTaskTitler({ onWarn: (msg) => session.log(`📋 ${msg}`) })
   if (onLog) session.on('log', onLog)
   if (onDebug) session.on('debug', onDebug)
   session.on('fatal', (err) => onFatal && onFatal(err))

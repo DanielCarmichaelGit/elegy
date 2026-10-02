@@ -15,7 +15,7 @@ import { generateIdentity } from '../src/identity.js'
 import { newPassKeys } from '../src/passes.js'
 import { testPasses } from './pass-helpers.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-am-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-am-home-'))
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-am-${n}-`))
 async function waitFor (fn, ms = 8000) {
   const start = Date.now()

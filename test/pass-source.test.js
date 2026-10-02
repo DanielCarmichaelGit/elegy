@@ -10,7 +10,7 @@ import { PassSource, SignedOutError, personPasses, agentPasses, sessionPasses } 
 import { newPassKeys, verifyPass } from '../src/passes.js'
 import { agentJoin, agentFile } from '../src/agent-join.js'
 
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ps-home-'))
+process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ps-home-'))
 const KEYS = newPassKeys()
 let t
 before(async () => { t = await startTestApi({ passKey: KEYS.privateKey }) })

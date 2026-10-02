@@ -1,8 +1,8 @@
 // Reads Cursor's AI chat ("composer") history for one project folder. Cursor
 // keeps it in SQLite: the workspace's state.vscdb (and, in newer versions, the
-// global ItemTable) lists the conversations, and the global cursorDiskKV table
-// holds each conversation's message order and each message ("bubble").
-// Opened read-only.
+// global ItemTable or the composerHeaders table) lists the conversations, and
+// the global cursorDiskKV table holds each conversation's message order and
+// each message ("bubble"). Opened read-only.
 //
 // Cursor writes these databases many times a second while it streams a reply,
 // so reads can briefly fail with "database is locked". Those are retried on
@@ -85,6 +85,7 @@ export function startCursorReader ({ dir, chatDir, onEntries, onState, onLog = (
   let lastScan = 0
   let first = true
   let lastChangeAt = 0
+  let running = false // a conversation with unfinishedRunAt is still thinking or working
   let busyCount = 0
   const versions = new Map() // db -> last PRAGMA data_version
   // composerId -> { emitted: Set<bubbleId>, pending: Map<bubbleId, { sig, since, entries }>, listTs, seenAt }
@@ -216,7 +217,32 @@ export function startCursorReader ({ dir, chatDir, onEntries, onState, onLog = (
       }
     }
     for (const id of focused) if (!out.has(id)) out.set(id, 0)
-    return { list: [...out].map(([id, ts]) => ({ id, ts })), focused }
+    // Current Cursor keeps the list in composerHeaders. unfinishedRunAt stays
+    // set through a long think, which often writes no new message. Status uses
+    // that flag; the transcript reader still shares the messages.
+    const unfinished = headerRuns(ids)
+    return { list: [...out].map(([id, ts]) => ({ id, ts })), focused, unfinished }
+  }
+
+  function headerRuns (ids) {
+    const unfinished = new Set()
+    if (!ids.size) return unfinished
+    let rows = []
+    try {
+      const marks = [...ids].map(() => '?').join(', ')
+      rows = globalDb.prepare(
+        `SELECT composerId, isArchived, value FROM composerHeaders WHERE workspaceId IN (${marks})`
+      ).all(...ids)
+    } catch (err) {
+      if (/no such table/i.test(err.message)) return unfinished
+      throw err
+    }
+    for (const row of rows) {
+      if (!row || !row.composerId || row.isArchived) continue
+      const meta = headerMeta(row.value)
+      if (meta && meta.unfinishedRunAt) unfinished.add(row.composerId)
+    }
+    return unfinished
   }
 
   function poll (t) {
@@ -228,7 +254,8 @@ export function startCursorReader ({ dir, chatDir, onEntries, onState, onLog = (
       // Nothing was written: only let streaming bubbles that went quiet settle.
       for (const st of composers.values()) settle(st, t, out)
     } else {
-      const { list, focused } = listComposers()
+      const { list, focused, unfinished } = listComposers()
+      running = unfinished.size > 0
       for (const { id, ts } of list) {
         let st = composers.get(id)
         if (!st) {
@@ -249,7 +276,7 @@ export function startCursorReader ({ dir, chatDir, onEntries, onState, onLog = (
       const active = new Set(recent.slice(0, ACTIVE_COUNT))
       for (const id of recent) {
         const st = composers.get(id)
-        if (focused.has(id) || st.pending.size || t - rank(id) < HOT_MS || (first && t - st.listTs <= BACKFILL_MS)) active.add(id)
+        if (focused.has(id) || unfinished.has(id) || st.pending.size || t - rank(id) < HOT_MS || (first && t - st.listTs <= BACKFILL_MS)) active.add(id)
       }
       for (const id of active) {
         const fresh = readComposer(id, composers.get(id), t)
@@ -258,7 +285,7 @@ export function startCursorReader ({ dir, chatDir, onEntries, onState, onLog = (
     }
 
     first = false
-    setState(t - lastChangeAt < WORKING_MS ? 'working' : 'idle')
+    setState(running || t - lastChangeAt < WORKING_MS ? 'working' : 'idle')
     if (out.length) onEntries(out)
   }
 
@@ -339,10 +366,27 @@ function headers (data) {
   throw new Error('unexpected composer layout (no fullConversationHeadersOnly)')
 }
 
+function headerMeta (value) {
+  if (value == null) return null
+  try {
+    const s = typeof value === 'string' ? value : Buffer.from(value).toString('utf8')
+    return JSON.parse(s)
+  } catch { return null }
+}
+
+function thinkingText (b) {
+  const t = b && b.thinking
+  if (typeof t === 'string') return t
+  if (t && typeof t.text === 'string') return t.text
+  return ''
+}
+
 function signature (b) {
   const tool = b.toolFormerData || {}
   const args = tool.params || tool.rawArgs || ''
-  return `${b.type}|${(b.text || '').length}|${b.text || ''}|${tool.name || ''}|${typeof args === 'string' ? args : JSON.stringify(args)}`
+  // Thinking text and tool status change while a reply is still in progress,
+  // before any visible message text is written.
+  return `${b.type}|${(b.text || '').length}|${b.text || ''}|${thinkingText(b).length}|${tool.name || ''}|${tool.status || ''}|${typeof args === 'string' ? args : JSON.stringify(args)}`
 }
 
 function transient (err) {

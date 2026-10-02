@@ -25,7 +25,7 @@ export function startAgentReaders ({ dir, onEntries, onState, onLog = () => {}, 
     const all = [...states.values()]
     // Until a tool shows activity, don't claim anyone uses it.
     const pick = all.find((s) => s.status === 'working') ||
-      (lastActive && states.get(lastActive)) ||
+      (lastActive != null && states.get(lastActive)) ||
       (all.length && all.every((s) => s.status === 'unavailable') ? all[0] : { tool: null, status: 'idle' })
     const unavailable = all.filter((s) => s.status === 'unavailable')
     const out = { ...pick }
@@ -37,7 +37,9 @@ export function startAgentReaders ({ dir, onEntries, onState, onLog = () => {}, 
   }
 
   const handles = []
-  for (const [tool, start] of readers) {
+  // Two readers can share a tool name (Cursor's composer db and its transcripts).
+  // Keep their states apart so one going idle cannot hide the other still working.
+  readers.forEach(([tool, start], i) => {
     const guard = (fn) => (...args) => { try { fn(...args) } catch (err) { onLog(`${tool} feed error: ${err.message}`) } }
     try {
       handles.push(start({
@@ -46,19 +48,19 @@ export function startAgentReaders ({ dir, onEntries, onState, onLog = () => {}, 
         onLog,
         onEntries: guard((entries) => {
           if (!entries.length) return
-          lastActive = tool
+          lastActive = i
           onEntries(entries)
           report()
         }),
         onState: guard((s) => {
-          states.set(tool, s)
-          if (s.status === 'working') lastActive = tool
+          states.set(i, s)
+          if (s.status === 'working') lastActive = i
           report()
         })
       }))
     } catch (err) {
       onLog(`${tool} feed could not start: ${err.message}`)
     }
-  }
+  })
   return { stop () { for (const h of handles) { try { h.stop() } catch {} } } }
 }

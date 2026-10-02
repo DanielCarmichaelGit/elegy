@@ -11,10 +11,14 @@ nothing else is.
 
 ## 0.3.4 — 2026-10-02
 
-Two AIs can no longer overwrite each other, sessions are named, and Quilt keeps track of what goes wrong.
+Agents prove a ticket works and see what changed first, two AIs can no longer overwrite each other, sessions are named, and Quilt keeps track of what goes wrong.
 
 - **Sessions are named.** A new session takes its folder's name. Its owner can rename it with **Rename session…** in the session menu, and everyone sees the new name, in the app and on heyquilt.com.
 - **Your sessions on heyquilt.com.** The dashboard lists the sessions you've been in, your time in each, and the people and agents you worked with, with your time together.
+- **A chronology of every change.** Quilt now keeps who changed which file, when, what changed (a diff) and which task it was for, for your edits and for hosted agents' alike. Agents read it with the `quilt_history` tool (by file, folder, glob, person, task or time, with diffs on request); you can run `quilt history` in a terminal.
+- **Picking up a ticket briefs the agent.** Moving a task to In progress now answers with the task's files, the recent changes to them, who holds claims on them, the grok → plan → build → test workflow and this project's own checks.
+- **Done needs evidence.** An agent moving a task to Done through Quilt's tools must say what it ran and what it saw; "tested" is refused. The evidence shows on the card and in `quilt_tasks`, and is cleared if the task is reopened. Moving cards in the app is unchanged.
+- **Your project's own checks.** `quilt setup` adds a "Verifying a change" section to AGENTS.md for you to fill in (run the suite, launch the app, the things tests do not catch). Agents get it when they pick up a ticket and when a Done is refused.
 - **Quilt notices problems.** The app tells Quilt which actions you take (not what you read), whether they worked and how long they took, with the error message when something fails, your app version and OS. Never your files, your chats or your links. Turn it off in Settings under **Send problem reports to Quilt**.
 - **Two AIs can't edit the same file at once.** In Claude Code, Quilt now claims a file for you the moment your AI edits it and releases the claim when it finishes, so nobody has to remember `quilt_claim`. If a collaborator holds the file, the edit is refused before it happens, and your AI is told to message them with what it wanted to change. Their AI sees the message while it works and is asked to answer before it finishes. The hooks live in the project's `.claude/settings.json`, added when a session starts, so everyone follows the same rule.
 
