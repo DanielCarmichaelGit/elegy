@@ -6,7 +6,13 @@ import crypto from 'node:crypto'
 import { HttpError, UUID } from '../http.js'
 import { cleanEvent, MAX_BATCH } from '../issues.js'
 
-const sameKey = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
+// Compares by byte length, not by UTF-16 string length: a header with the right character
+// count but non-ASCII (or otherwise multi-byte) bytes would otherwise reach
+// timingSafeEqual with mismatched buffer lengths, which throws rather than answering false.
+const sameKey = (a, b) => {
+  const bufA = Buffer.from(a); const bufB = Buffer.from(b)
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)
+}
 
 export function issueRoutes ({ store, device, bearer, now, reportKey = '', limitReports }) {
   /** Who is reporting: { surface, userId, deviceId }. */
