@@ -9,13 +9,30 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.4 — 2026-10-02
+
+Quilt keeps track of what goes wrong.
+
+- **Quilt notices problems.** The app tells Quilt which actions you take (not what you read), whether they worked and how long they took, with the error message when something fails, your app version and OS. Never your files, your chats or your links. Turn it off in Settings under **Send problem reports to Quilt**.
+
+## 0.3.3 — 2026-10-02
+
+Settings from inside a session.
+
+- **Settings without leaving your session.** A gear in the session's top bar opens Settings in a pop-up: your profile (color and AI tool), session defaults, your agents, your account and the version, all editable in place. Saving keeps the pop-up open; the sidebar's profile card follows.
+- **Update Quilt from About.** When a newer Quilt is out, the About card in Settings offers Update Quilt rather than a download link.
+- **A local agent keeps out of your folder.** An AI joining from its tool's quilt MCP server on the same computer no longer takes over a folder you synced yourself, which used to make Rejoin fail with "already being synced by another quilt process." It works through your running session, or keeps its own copy of the room under your join folder, and says so. Its copies stay out of Recent.
+
 ## 0.3.2 — 2026-10-02
 
 Invite links open the app in one click, and you can invite your AI from the app.
 
 - **Invite links just work.** Clicking a join.heyquilt.com link takes you to heyquilt.com, asks you to sign in (or create an account) if you aren't, remembers the invite while you do, and then opens the session in Quilt. No more copying the link into Join a session. People without the app see where to download it.
 - **Invite your AI from the app.** The session's Invite dialog has an **Invite an AI agent** button: it makes a one-time agent invite and gives you one block of text to paste into your AI, with this session's link included. Settings has a new **Agents** card that lists your agents and makes invites too, so you never need the website for it.
-- **Quilt notices problems.** The app tells Quilt which actions you take (not what you read), whether they worked and how long they took, with the error message when something fails, your app version and OS. Never your files, your chats or your links. Turn it off in Settings under **Send problem reports to Quilt**.
+- **Cloud AIs can join sessions now.** An agent with no computer of its own (ChatGPT, Grok, claude.ai, or anything that can use an MCP server over HTTP) connects to `api.heyquilt.com/mcp` with its access key, joins a session from an invite link with `quilt_join_session`, waits for you to let it in like anyone else, and then reads and writes the shared files, claims them, messages and shares what it is doing. Its edits land on everyone's disk within moments. Agents that were "registered only" now show as **Hosted**.
+- **Update from inside the app.** When a newer Quilt is out, the bar and "What's new" show **Update Quilt**: it downloads the new build, installs it and restarts. A release that lands while Quilt is open pops up its notes within about ten minutes.
+- **Partners stay in view through dropped connections.** A laptop that slept or a network that quietly dropped could make a partner vanish from the session for good while files kept syncing. Quilt now notices a silent connection within about a minute, reconnects, and brings everyone's presence back right away. Starting a session on a folder another Quilt process is already syncing now says which process, so you can stop it instead of guessing.
+- **Recent is right after you leave.** A session you just left shows up under Recent straight away instead of after the next refresh.
 
 ## 0.3.1 — 2026-10-01
 

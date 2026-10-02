@@ -4,7 +4,7 @@ import AgentInviteList from '@/components/AgentInviteList.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { when } from '@/lib/org-view.js'
-import { agentStatus, AGENT_JOIN_COMMAND, REGISTERED_ONLY_NOTE } from '@/lib/agent-view.js'
+import { agentStatus, AGENT_JOIN_COMMAND, HOSTED_NOTE } from '@/lib/agent-view.js'
 import { revokeAgent, createAgentInvite, cancelAgentInvite, agentInviteWaiting } from '../actions.js'
 
 export const metadata = { title: 'Agents' }
@@ -34,15 +34,15 @@ export default async function Agents () {
                 return (
                   <div key={a.id} className='list-row'>
                     <span>
-                      <b>{a.name}</b> <span className='pill'>Agent</span> {s && <span className='pill'>{s.label}</span>} {!a.canJoinSessions && <span className='pill'>Registered only</span>}
+                      <b>{a.name}</b> <span className='pill'>Agent</span> {s && <span className='pill'>{s.label}</span>} {a.hosted && <span className='pill'>Hosted</span>}
                       <br />
                       <span className='muted'>{a.provider} · {a.type}{a.description ? ` · ${a.description}` : ''}</span>
                       <br />
                       <span className='muted'>{s ? s.why : `Added ${when(a.createdAt)} · last used ${when(a.lastUsedAt)}`}</span>
-                      {!a.canJoinSessions && (
+                      {a.hosted && (
                         <>
                           <br />
-                          <span className='muted'>{REGISTERED_ONLY_NOTE}</span>
+                          <span className='muted'>{HOSTED_NOTE}</span>
                         </>)}
                     </span>
                     <form action={revokeAgent}><input type='hidden' name='id' value={a.id} /><button className='btn ghost danger'>Revoke</button></form>

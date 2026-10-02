@@ -4,6 +4,7 @@ import { I, state, $, esc, basename, ago, toast, api, ask, decodeInvite, avatar,
 import { go, pickFolder, signedOutNow, agentInviteHtml } from './app.js'
 import { agentPaste } from './invite.js'
 import { quiltMark } from './mark.js'
+import { updateControl } from './releases.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -26,7 +27,7 @@ export function renderShell (view) {
   if (page && view === state.shellView) $('#page').scrollTop = scroll
   state.shellView = view
   bindSidebar()
-  if (view === 'settings') bindSettings()
+  if (view === 'settings') bindSettings($('#page'), () => renderShell('settings'))
   else bindHome()
 }
 
@@ -447,14 +448,14 @@ function toggle (name, checked, label, hint) {
     <span class="tg-text"><b>${label}</b><span class="hint">${hint}</span></span></label>`
 }
 
-function settingsHtml () {
+function settingsHtml ({ head = true } = {}) {
   const p = state.profile
   const a = state.account || { name: p.name, email: '' }
   return `
-  <header class="page-head">
+  ${head ? `<header class="page-head">
     <h1>Settings</h1>
     <p>Saved on this computer and used for every new session.</p>
-  </header>
+  </header>` : ''}
 
   <section class="card settings-sec" id="account-sec">
     <div class="sec-intro"><h2>Account</h2><p>This computer is signed in to your heyquilt.com account.</p></div>
@@ -523,7 +524,7 @@ function settingsHtml () {
     <div class="sec-body">
       <div class="kv"><span>Version</span><span>${esc(state.release?.version || '…')}${state.release?.outOfDate ? ` <span class="pill warn">update available</span>` : state.release ? ' <span class="pill">up to date</span>' : ''}</span></div>
       <div class="sec-actions"><span class="hint">Everything that changed, release by release.</span><span class="row">
-        ${state.release?.outOfDate ? `<a class="btn primary" href="${esc(state.release.downloadUrl)}" target="_blank" rel="noopener">${I.down}<span>Download ${esc(state.release.latest.version)}</span></a>` : ''}
+        ${state.release?.outOfDate ? updateControl() : ''}
         <button class="btn" type="button" data-release-notes>${I.sparkle}<span>What's new</span></button></span></div>
     </div>
   </section>
@@ -547,32 +548,33 @@ function agentRow (a) {
 }
 
 /** The Agents card: your agents from the accounts API, and a one-time invite for a new one. */
-function bindAgents () {
-  const list = $('#agents-list')
+function bindAgents (root) {
+  const list = $('#agents-list', root)
   api('GET', '/api/agents').then(({ agents }) => {
     list.innerHTML = agents.length ? agents.map(agentRow).join('') : '<p class="hint">No agents yet. Invite one below.</p>'
   }).catch((err) => { list.innerHTML = `<p class="hint warn">${esc(err.message)}</p>` })
-  const sec = $('#agents-sec')
+  const sec = $('#agents-sec', root)
   sec.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-copy]')
     if (!b) return
     try { await navigator.clipboard.writeText($(`#${b.dataset.copy}`, sec).textContent); toast('Copied') } catch { toast('Select the text and press ⌘/Ctrl+C to copy') }
   })
-  $('#agents-make').onclick = async () => {
-    const btn = $('#agents-make')
+  const btn = $('#agents-make', root)
+  btn.onclick = async () => {
     btn.disabled = true
     try {
       const inv = await api('POST', '/api/agent-invites')
-      $('#agents-invite').innerHTML = agentInviteHtml(agentPaste({ link: inv.link }), 'agents-paste')
+      $('#agents-invite', root).innerHTML = agentInviteHtml(agentPaste({ link: inv.link }), 'agents-paste')
       btn.innerHTML = `${I.bot}<span>Invite another</span>`
     } catch (err) {
-      $('#agents-error').textContent = err.message
+      $('#agents-error', root).textContent = err.message
     }
     btn.disabled = false
   }
 }
 
-function bindSettings () {
+/** Wires the settings cards inside `root`; `refresh()` redraws them after a save. */
+function bindSettings (root, refresh) {
   const saveForm = (form, pick, done) => {
     form.onsubmit = async (e) => {
       e.preventDefault()
@@ -581,7 +583,7 @@ function bindSettings () {
       try {
         state.profile = await api('POST', '/api/settings', pick(new FormData(form)))
         toast('Saved')
-        renderShell('settings')
+        refresh()
         done && done()
       } catch (err) {
         toast(err.message)
@@ -591,23 +593,23 @@ function bindSettings () {
   }
 
   // Profile: live preview while picking. The name comes from the account.
-  const prof = $('#profile-sec')
+  const prof = $('#profile-sec', root)
   const preview = () => {
     const f = new FormData(prof)
-    $('#pv').querySelector('.avatar').outerHTML = avatar(state.profile.name, f.get('color') || null)
-    $('#pv-tool').textContent = `coding with ${f.get('tool')}`
+    $('#pv', root).querySelector('.avatar').outerHTML = avatar(state.profile.name, f.get('color') || null)
+    $('#pv-tool', root).textContent = `coding with ${f.get('tool')}`
   }
   prof.addEventListener('input', preview)
   prof.addEventListener('change', preview)
   saveForm(prof, (f) => ({ color: f.get('color'), tool: f.get('tool') }))
 
-  const sess = $('#sessions-sec')
-  sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir'))
+  const sess = $('#sessions-sec', root)
+  sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir', root))
   saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal'), report: !!f.get('report') }))
 
-  bindAgents()
+  bindAgents(root)
 
-  $('#sign-out').onclick = async () => {
+  $('#sign-out', root).onclick = async () => {
     if (!await ask({ title: 'Sign out of Quilt?', message: 'This stops your sessions on this computer. Your files stay where they are.', ok: 'Sign out', danger: true })) return
     try {
       await api('POST', '/api/account/signout')
@@ -616,4 +618,40 @@ function bindSettings () {
       toast(err.message)
     }
   }
+}
+
+/**
+ * Settings in a pop-up, for inside a session: the same cards as the Settings page, so you
+ * can change your profile without leaving. Saving redraws the cards in place.
+ */
+export function openSettings () {
+  $('#settings-back')?.remove()
+  const back = document.createElement('div')
+  back.id = 'settings-back'
+  back.className = 'modal-back settings-back'
+  back.innerHTML = `
+  <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <header class="settings-head">
+      <h2 id="settings-title">${I.gear}<span>Settings</span></h2>
+      <p>Saved on this computer and used for every new session.</p>
+      <button class="btn icon ghost settings-close" type="button" data-settings-close aria-label="Close">${I.x}</button>
+    </header>
+    <div class="settings-body" id="settings-body"></div>
+  </div>`
+  document.body.appendChild(back)
+  const body = $('#settings-body', back)
+  const draw = () => {
+    const scroll = body.scrollTop
+    body.innerHTML = settingsHtml({ head: false })
+    bindSettings(body, draw)
+    body.scrollTop = scroll
+    // The sidebar's profile card, if it is showing, follows the saved profile.
+    if (state.shellView && $('#app .side')) renderShell(state.shellView)
+  }
+  draw()
+  const close = () => back.remove()
+  back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
+  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') close() })
+  back.querySelector('[data-settings-close]').onclick = close
+  back.querySelector('[data-settings-close]').focus()
 }

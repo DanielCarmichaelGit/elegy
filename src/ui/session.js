@@ -7,6 +7,7 @@ import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
 import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
 import { quiltMark } from './mark.js'
+import { openSettings } from './home.js'
 import { fileCardHref, renderable } from './chat.js'
 
 let current = null // session id being shown
@@ -72,6 +73,7 @@ export function mountSession (id) {
       ${openInMarkup()}
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
       <button class="btn sm ghost icon narrow-only" id="toggle-chat" title="Chat" aria-label="Show chat">${I.chat}<span class="badge" id="chat-badge" hidden></span></button>
+      <button class="btn sm ghost icon" id="settings-btn" type="button" title="Settings" aria-label="Settings">${I.gear}</button>
       <div class="overflow">
         <button class="btn sm ghost icon" id="more-btn" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false">${I.more}</button>
         <div class="popover more-menu" id="more-menu" role="menu" hidden>
@@ -266,6 +268,7 @@ function bindTop () {
     if (!await ask({ title: 'Leave this session?', message: 'Quilt stops syncing this folder. Your files stay where they are, and you can rejoin later.', ok: 'Leave', danger: true })) return
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
   }
+  $('#settings-btn').onclick = () => openSettings()
   const moreBtn = $('#more-btn')
   const moreMenu = $('#more-menu')
   const setMore = (open) => { moreMenu.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)) }

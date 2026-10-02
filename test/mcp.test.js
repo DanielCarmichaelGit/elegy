@@ -17,7 +17,7 @@ import { agentJoin } from '../src/agent-join.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-mcp-${n}-`))
-let relay, human, client, humanDir, agentCwd, accounts
+let relay, human, client, humanDir, agentCwd, accounts, home
 const text = (r) => r.content.map((c) => c.text).join('\n')
 const call = async (name, args = {}) => client.callTool({ name, arguments: args })
 async function waitFor (fn, ms = 8000) {
@@ -34,7 +34,7 @@ before(async () => {
   human = new Session({ dir: humanDir, server: `ws://127.0.0.1:${relay.port}`, room: 'pair', secret: 's3cret', name: 'dana' })
   await human.start({ waitTimeoutMs: 5000 })
   agentCwd = tmp('agent')
-  const home = tmp('home')
+  home = tmp('home')
   // The agent joined Quilt first (as `quilt agent join` does); sessions then use its keys.
   accounts = await startTestApi({ passKey: newPassKeys().privateKey })
   const link = (await accounts.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.replace(API_URL, accounts.api.url)
@@ -115,4 +115,49 @@ test('agent edits sync back to people, and leaving removes the agent', async () 
   assert.match(info, /Invite link.*\/join\/pair#s3cret/)
   assert.match(text(await call('quilt_leave_session')), /Left the session/)
   await waitFor(() => !human.status().peers.some((p) => p.kind === 'agent'))
+})
+
+const rx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+
+test("an agent started in a person's folder works in its own copy and leaves theirs alone", async (t) => {
+  // Dana's own folder for the room, from the app: saved, but not being synced right now.
+  const personDir = tmp('person')
+  fs.mkdirSync(path.join(personDir, '.quilt'))
+  fs.writeFileSync(path.join(personDir, 'notes.md'), 'mine\n')
+  const saved = { server: `ws://127.0.0.1:${relay.port}`, room: 'pair', secret: 's3cret', name: 'dana', tool: 'Cursor' }
+  fs.writeFileSync(path.join(personDir, '.quilt', 'config.json'), JSON.stringify(saved))
+  const c2 = new Client({ name: 'claude-code', version: '1.0.0' })
+  await c2.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: personDir, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
+  t.after(() => c2.close().catch(() => {}))
+  const call2 = (name, args = {}) => c2.callTool({ name, arguments: args })
+  const invite = encodeInvite({ server: `ws://127.0.0.1:${relay.port}`, room: 'pair', secret: 's3cret' })
+
+  // Before: the agent synced Dana's folder itself, and Rejoin in her app failed with
+  // "already being synced by another quilt process" until the agent left.
+  const r = await call2('quilt_join_session', { invite })
+  assert.ok(!r.isError, text(r))
+  const copy = path.join(home, 'quilt', 'quilt-pair')
+  assert.match(text(r), rx(`Files are synced into ${copy}`))
+  // The aside names the folder as the MCP server's cwd resolves it (/private/var on macOS).
+  assert.match(text(r), rx(`(${fs.realpathSync(personDir)} is a person's own copy of this session on this computer and stays theirs`))
+  await waitFor(() => fs.existsSync(path.join(copy, 'src', 'app.js')))
+  assert.equal(JSON.parse(fs.readFileSync(path.join(copy, '.quilt', 'config.json'), 'utf8')).kind, 'agent')
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(personDir, '.quilt', 'config.json'), 'utf8')), saved, "Dana's saved session is untouched")
+  assert.equal(fs.existsSync(path.join(personDir, '.quilt', 'daemon.json')), false, 'nothing runs in her folder')
+  assert.equal(fs.existsSync(path.join(personDir, 'src')), false, 'nothing is synced into it')
+  assert.match(text(await call2('quilt_leave_session')), /Left the session/)
+
+  // Starting a new session from her folder would hand it to another room: refused.
+  const s = await call2('quilt_start_session', {})
+  assert.equal(s.isError, true)
+  assert.match(text(s), /already belongs to a session a person started on this computer/)
+
+  // Naming her folder outright, or the agent's own copy, both land in the copy.
+  for (const folder of [personDir, copy]) {
+    const again = await call2('quilt_join_session', { invite, folder })
+    assert.ok(!again.isError, text(again))
+    assert.match(text(again), rx(`Files are synced into ${copy}`))
+    if (folder === copy) assert.doesNotMatch(text(again), /stays theirs/)
+    assert.match(text(await call2('quilt_leave_session')), /Left the session/)
+  }
 })

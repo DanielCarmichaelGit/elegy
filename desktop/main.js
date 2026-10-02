@@ -11,6 +11,8 @@ import { startUi } from '../src/ui-server.js'
 import { registerProcess } from '../src/procs.js'
 import { decodeInvite } from '../src/runner.js'
 import { quiltHome, adoptLegacyEnv } from '../src/legacy.js'
+import { downloadUrl } from '../src/releases.js'
+import { installUpdate } from './updater.js'
 
 adoptLegacyEnv()
 
@@ -103,9 +105,33 @@ async function start () {
     return r.canceled ? null : r.filePaths[0]
   })
 
+  ipcMain.handle('install-update', () => update())
+
   Menu.setApplicationMenu(appMenu())
   makeTray()
   createWindow()
+}
+
+// ---------------------------------------------------------------- update --
+// "Update Quilt" in the app: download the newest build, install it, restart.
+let updating = null
+function update () {
+  if (updating) return updating
+  updating = (async () => {
+    if (!app.isPackaged) throw new Error('Updates install into the packaged app only; from source, pull and restart.')
+    const progress = (p) => { if (win && !win.isDestroyed()) win.webContents.send('update-progress', p) }
+    try {
+      const next = await installUpdate(downloadUrl(), { tempDir: app.getPath('temp'), onProgress: progress })
+      quitting = true
+      if (next === 'relaunch') app.relaunch()
+      setTimeout(() => app.quit(), 300) // let the renderer show "Restarting…"
+      return { ok: true }
+    } catch (err) {
+      updating = null
+      throw new Error(err.message || 'The update failed.')
+    }
+  })()
+  return updating
 }
 
 function createWindow () {

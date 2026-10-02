@@ -1,6 +1,6 @@
 {
   "name": "heyquilt",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
   "type": "module",
   "bin": {
@@ -61,6 +61,7 @@
       "assets/**",
       "desktop/main.js",
       "desktop/preload.cjs",
+      "desktop/updater.js",
       "desktop/icons/*.png",
       "package.json",
       "RELEASES.md"

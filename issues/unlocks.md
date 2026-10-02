@@ -87,3 +87,77 @@ off (today), same email domain as the owner, or anyone with the link. The
 relay checks the pass's email against the rule and skips the approval step
 when it matches. Skip public domains like gmail.com for the domain rule.
 Quick let-in is an actionable notification ("Sam wants to join. Let in").
+
+## Quitting the app never ends a live session
+**Status:** Idea
+**Unlocks:** You can quit Quilt (or shut your laptop) while your partners
+keep working. The session stays up on the relay with its files on disk, and
+when you come back you rejoin where it is now. Nothing anyone else is doing
+stops because one person left.
+**Rough shape:** Today quitting stops every local run (`desktop/main.js`
+`before-quit` → `ui.close()` → `stop(id)` → `run.stop()`), which only
+leaves the room; make sure that path never calls `endForEveryone`, and
+say so in the UI ("You left. The session keeps running for the others").
+On the relay, a room is alive while any member is connected: keep the
+Fly machine running with the session files on its disk while that is true.
+When the **last** member leaves, empty the room's files from the machine so
+it can be reused, and if no room on the machine has anyone in it, stop the
+machine (`fly.toml` has `auto_stop_machines = "off"` and
+`min_machines_running = 1` today, so this is a relay-driven stop, not
+Fly's idle timer). Owner-initiated "End for everyone" stays the only thing
+that ends a session for others.
+
+## View-only guests don't get a local folder
+**Status:** Idea
+**Unlocks:** Someone invited to view can follow the session without the
+project ever being written to their computer. Only edit (and above) gets a
+synced directory. That keeps read-only truly read-only: nothing to copy,
+nothing left behind when they're removed.
+**Rough shape:** Viewers read through the relay instead of syncing. The
+relay already holds every room's full file tree, and the hosted MCP already
+serves file reads from that copy to cloud agents with no folder; a viewer
+is the same case with a human UI. The app connects like any member, keeps
+room state in memory instead of writing it, and renders a file tree, a
+read-only file viewer, the feed and chat in place. It skips the "choose a
+folder" step and never starts the sync client. Viewers lose "Open in
+Cursor" and running the code, which is what viewing means; promotion to
+edit is the moment to ask for a folder. An editor demoted to view keeps
+their folder but syncing to it stops, and the app says so. See role
+handling in `src/session.js` (`access.role === 'viewer'`).
+
+**Security:** three attackers, two of them beatable.
+- *The viewer themself:* anything the app can show, the viewer can take
+  (screenshot, camera, or patching the Electron renderer to dump room
+  state). Encrypting content "whenever it's not on screen" doesn't change
+  that, because the viewer owns the machine doing the decrypting. Don't
+  promise "viewers can't leak"; make leaking slow, artifact-free and
+  attributable:
+  - Nothing on disk, ever: room state in memory only, renderer disk cache
+    off for file content, nothing in localStorage or logs.
+  - Watermark the view: the viewer's name and email faintly tiled over
+    rendered content, so screenshots carry it.
+  - Audit per file: the relay records which files each viewer opened; the
+    owner can see the list.
+  - No bulk path: viewers fetch one file on demand, throttled. No
+    download-all or export, so dumping a tree is slow and shows in the log.
+  - Scopes for viewers: owners limit a viewer to a folder or two, as edit
+    scopes already do.
+  - Soft blocks: no text selection, copy or context menu for viewers.
+    Easy to bypass; stops the casual case.
+- *A removed member or an old link:* rotate the room key on removal so a
+  kept secret opens nothing new; view tokens short-lived and tied to a
+  signed-in account.
+- *The relay, Fly, or a breach of either:* end-to-end encryption, as large
+  files already do (per-file keys wrapped under a key from the room
+  secret, relay holds ciphertext). Extending it to the text tree makes the
+  relay a dumb store with clients doing the merging, and the hosted MCP
+  and agents would hold a key like any client. A separate, larger project.
+
+## Toasts stay while hovered, and can be copied
+**Status:** Idea
+**Unlocks:** A toast with something you need (an error, a path, an invite
+link) doesn't vanish while you're reading it, and one click copies its text.
+**Rough shape:** `src/ui/common.js` `toast()` hides after a fixed 2.4 s.
+Pause that timer on `mouseenter` and restart it on `mouseleave`. Add a small
+copy button inside `#toast` that writes the message text to the clipboard
+(and briefly confirms "Copied").

@@ -42,6 +42,11 @@ within milliseconds. Your agents can also see what the other agents are doing.
   are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `quilt` CLI or read `.quilt/STATUS.md`.
+- **Cloud AIs too.** An AI with no computer of its own (ChatGPT, Grok, claude.ai,
+  anything that can use an MCP server over HTTP) joins through Quilt's hosted
+  MCP at `api.heyquilt.com/mcp` with the access key it got from an agent
+  invite. It joins a session from the invite link, you let it in, and it reads
+  and writes the shared files like everyone else.
 
 ## Quick start
 
@@ -326,10 +331,15 @@ Every release ships with notes, and the app tells people when it's out of date.
    notes from `RELEASES.md` as its body (`--dry-run` to see the steps first,
    `--notes` to print the body, `--notes-only` to fix the notes of a published release).
 
-The app checks GitHub's latest release about once an hour. Older versions show a bar
-across the top with a Download button, and **What's new** (also under Settings and in
-the app menu) opens the release notes. The notes for a new version open by themselves
-the first time it runs.
+The app checks GitHub's latest release every ten minutes. Older versions show a bar
+across the top with an **Update Quilt** button (a Download link in a browser), and
+**What's new** (also under Settings and in the app menu) opens the release notes. Each
+newer release opens the notes by itself once, even while the app is open, and the notes
+for a new version open the first time it runs. Update Quilt downloads the build for this
+computer and installs it: on a Mac it mounts the DMG and swaps the app in place (asking
+for an administrator only if the Applications folder needs one), on Windows it runs the
+installer; then Quilt restarts. The builds are unsigned, so this is done by hand in
+`desktop/updater.js` rather than with Electron's updater.
 
 Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),

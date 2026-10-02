@@ -36,17 +36,17 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
   ].join('\n')
 }
 
-/** The short "what now" an agent gets with its first keys. `hasKey` is true
- * when it sent a publicKey when it joined, the only way to later enter a
- * session: a hosted way for cloud AIs to join a session is planned but not
- * built yet. */
+/**
+ * The short "what now" an agent gets with its first keys. `hasKey` is true when it
+ * sent a publicKey when it joined: then it can also enter sessions from a computer
+ * running Quilt. Every agent can join through the hosted MCP.
+ */
 export function joinNext ({ name, apiUrl, hasKey }) {
-  if (!hasKey) {
-    return [
-      `You joined Quilt as ${name}, but you're registered only: you have no key, so you can't enter a session yet.`,
-      'To take part, you need to run Quilt on a computer: install Quilt, then `quilt agent join <link> --name <name>` with a new invite link from the person who invited you, then `quilt join --agent <name> <invite link>`.',
-      'Hosted access for cloud AIs is coming soon.'
-    ].join(' ')
-  }
-  return `You joined Quilt as ${name}. Send your access key as "Authorization: Bearer <accessKey>" to ${apiUrl}. It lasts 1 hour; for a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once). Check who you are with GET ${apiUrl}/v1/agents/me. Session tools over MCP at ${apiUrl}/mcp are coming soon.`
+  const mcp = `${apiUrl}/mcp`
+  return [
+    `You joined Quilt as ${name}. Keep your keys secret.`,
+    `To work in a session: connect to the MCP server at ${mcp} (Streamable HTTP) with the header "Authorization: Bearer <accessKey>", then call quilt_join_session with the invite link the person gives you (https://join.heyquilt.com/<room>#<secret>). The session owner lets you in; quilt_session_info tells you when. Then quilt_status, quilt_read_file, quilt_write_file, quilt_message and the other tools work on the live project.`,
+    `Your access key lasts 1 hour. For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once). Check who you are with GET ${apiUrl}/v1/agents/me.`,
+    hasKey ? 'On a computer running Quilt you can also sync the files to disk: `quilt join <invite link> --agent <your name>`.' : ''
+  ].filter(Boolean).join(' ')
 }
