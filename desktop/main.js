@@ -1,6 +1,7 @@
 // Quilt desktop app: the same app as `quilt ui`, in its own window. Sessions
 // keep syncing from the menu bar when the window is closed, and invite links
 // (quilt://join?invite=…) open straight into the join screen.
+import '../src/quiet-warnings.js'
 import { app, BrowserWindow, Tray, Menu, shell, dialog, ipcMain } from 'electron'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
