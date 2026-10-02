@@ -23,6 +23,7 @@ import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
+import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
@@ -52,7 +53,7 @@ const RETRY_MS = 30 * 1000
 const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, webhookTransport = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -102,6 +103,10 @@ export class Session extends EventEmitter {
     this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, order, ts }
     // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
     this.inboxTracker = new Inbox()
+    // The agent's webhook subscription (webhooks.js), kept in .quilt/webhook.json: inbox events are POSTed there.
+    this.webhook = null
+    this.webhookTransport = webhookTransport // { fetch, delays } for tests
+    this.webhookSending = Promise.resolve()
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
     this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
@@ -173,6 +178,7 @@ export class Session extends EventEmitter {
 
   async start ({ waitTimeoutMs = 0 } = {}) {
     fs.mkdirSync(this.stateDir, { recursive: true })
+    this.loadWebhook()
     const hadState = this.loadState()
     if (hadState) this.loadClaims()
 
@@ -1674,11 +1680,56 @@ export class Session extends EventEmitter {
       this.emit('debug', `inbox: ${err.message}`)
       return
     }
-    if (events.length) this.emit('inbox', events)
+    if (!events.length) return
+    this.emit('inbox', events)
+    if (this.webhook) this.sendWebhook(events)
   }
 
   /** Inbox events after sequence number `after` (0 for all kept), and the latest number. */
   inbox ({ after = 0 } = {}) { return this.inboxTracker.since(after) }
+
+  // ---------------------------------------------------------- webhook --
+
+  get webhookFile () { return path.join(this.stateDir, 'webhook.json') }
+
+  loadWebhook () {
+    try {
+      const w = JSON.parse(fs.readFileSync(this.webhookFile, 'utf8'))
+      this.webhook = w && typeof w.url === 'string' && typeof w.secret === 'string' && Array.isArray(w.events) ? w : null
+    } catch { this.webhook = null }
+  }
+
+  /**
+   * Subscribes this member's webhook: from now on each inbox event (a mention, a direct
+   * message, a task handed over) is POSTed to `url`, signed with `secret` (made when not
+   * given). Kept on disk for this folder. Returns the subscription (`made`: the secret is new).
+   */
+  setWebhook ({ url, secret, events } = {}) {
+    const sub = makeSubscription({ url, secret, events }, { allowLocal: true })
+    this.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since }
+    fs.writeFileSync(this.webhookFile, JSON.stringify(this.webhook))
+    return { ...this.webhook, made: sub.made }
+  }
+
+  /** Removes the webhook; true when there was one. */
+  clearWebhook () {
+    const had = !!this.webhook
+    this.webhook = null
+    try { fs.rmSync(this.webhookFile, { force: true }) } catch {}
+    return had
+  }
+
+  /** The subscription without its secret, or null. */
+  webhookInfo () { return this.webhook ? { url: this.webhook.url, events: this.webhook.events, since: this.webhook.since } : null }
+
+  /** POSTs `events` to the webhook, one after another, in order; failures are logged, never thrown. */
+  sendWebhook (events) {
+    const sub = this.webhook
+    const t = this.webhookTransport || {}
+    const opts = { log: (m) => this.log(m), ...(t.fetch ? { fetch: t.fetch } : {}), ...(t.delays ? { delays: t.delays } : {}) }
+    this.webhookSending = this.webhookSending.then(() => deliverEvents(sub, events, { room: this.room, to: this.name }, opts)).catch(() => {})
+    return this.webhookSending
+  }
 
   /** Marks open requests as done by a commit. */
   resolveCommitRequests ({ hash = '', ids = null } = {}) {

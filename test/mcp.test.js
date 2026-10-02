@@ -152,6 +152,35 @@ test('mentions, direct messages and handed-over tasks reach the agent: pushed as
   client.fallbackNotificationHandler = undefined
 })
 
+test('the agent subscribes a webhook through the tools and is POSTed a mention; unsubscribing stops it', async () => {
+  const posts = []
+  const receiver = http.createServer((req, res) => {
+    let raw = ''
+    req.on('data', (c) => { raw += c })
+    req.on('end', () => { posts.push({ headers: req.headers, body: JSON.parse(raw) }); res.writeHead(200); res.end() })
+  })
+  await new Promise((r) => receiver.listen(0, '127.0.0.1', r))
+  try {
+    const tools = (await client.listTools()).tools.map((t) => t.name)
+    assert.ok(tools.includes('quilt_webhook_subscribe') && tools.includes('quilt_webhook_unsubscribe'))
+    assert.match(text(await call('quilt_webhook_subscribe', { url: 'http://example.com/hook' })), /must use https/)
+    const r = text(await call('quilt_webhook_subscribe', { url: `http://127.0.0.1:${receiver.address().port}/hook`, events: ['chat.mention'] }))
+    assert.match(r, /Webhook: Quilt POSTs to http:\/\/127\.0\.0\.1:\d+\/hook on chat\.mention\./)
+    assert.match(r, /Secret \(shown once/)
+    human.say('private, not sent', { to: 'helper' })
+    human.say('@helper via the webhook')
+    await waitFor(() => posts.length === 1)
+    assert.equal(posts[0].headers['x-quilt-event'], 'chat.mention')
+    assert.match(posts[0].headers['x-quilt-signature'], /^sha256=[a-f0-9]{64}$/)
+    assert.deepEqual([posts[0].body.event, posts[0].body.by, posts[0].body.to, posts[0].body.text], ['chat.mention', 'dana', 'helper', '@helper via the webhook'])
+    assert.match(text(await call('quilt_webhook_unsubscribe')), /Webhook removed/)
+    human.say('@helper after')
+    await waitFor(async () => /@helper after/.test(text(await call('quilt_inbox'))))
+    await new Promise((r) => setTimeout(r, 100))
+    assert.equal(posts.length, 1)
+  } finally { receiver.close() }
+})
+
 test('an agent whose Quilt is behind the newest release is told to update in every answer', async () => {
   // GitHub, as far as this agent's `quilt mcp` knows, has a far newer release.
   const gh = http.createServer((req, res) => {

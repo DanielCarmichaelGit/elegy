@@ -19,6 +19,7 @@ import { pickAgent } from './agent-join.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
+import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
 
@@ -58,6 +59,7 @@ export const MCP_INSTRUCTIONS =
   'Always re-read a file right before you edit it. ' +
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
+  'To be woken instead of polling, quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
   'When Claude Code is started with the quilt channel, they arrive on their own as <channel source="quilt"> events while you work: treat each like a request from that person, answer with quilt_message, and take a task with quilt_move_task. ' +
   TASK_WORKFLOW
 
@@ -273,6 +275,28 @@ export async function runMcp () {
     const r = await call(d, 'POST', '/inbox', { after: all ? 0 : c.seq })
     c.seq = r.seq
     return renderInbox(r.events) || (all ? 'Nothing has been waiting for you.' : 'Nothing new for you.')
+  }))
+
+  server.registerTool('quilt_webhook_subscribe', {
+    description: 'Be told as it happens, by an HTTP POST to a URL of yours, when you are mentioned in chat (@yourname), sent a direct message or handed a task: ' +
+      'no need to poll quilt_inbox. One subscription per session folder; calling again replaces it. Each POST is JSON, signed with the secret ' +
+      '(x-quilt-signature: sha256=HMAC-SHA256(secret, "<x-quilt-timestamp>.<body>")); answer 2xx. Give a secret of your own or get one back (shown once).',
+    inputSchema: {
+      url: z.string().min(1).max(2000).describe('The URL to POST to: https, or http on this computer (a webhook trigger of your routine, for example)'),
+      secret: z.string().max(200).optional().describe('16 to 200 characters for signing; omit to have Quilt make one'),
+      events: z.array(z.enum(WEBHOOK_EVENTS)).max(WEBHOOK_EVENTS.length).optional().describe(`Which events to send (default: all): ${WEBHOOK_EVENTS.join(', ')}`)
+    }
+  }, ({ url, secret, events }) => withDaemon(async (d) => {
+    const { webhook } = await call(d, 'POST', '/webhook', { url, secret, events })
+    return describeSubscription(webhook, { showSecret: webhook.made })
+  }))
+
+  server.registerTool('quilt_webhook_unsubscribe', {
+    description: 'Stop the webhook: Quilt no longer POSTs mentions, direct messages and tasks to you. quilt_inbox still has them.',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => {
+    const { had } = await call(d, 'POST', '/webhook/clear', {})
+    return had ? 'Webhook removed. Mentions, direct messages and tasks still wait in quilt_inbox.' : 'You had no webhook.'
   }))
 
   // Claude Code started with the quilt channel gets each new inbox event as a turn. Other

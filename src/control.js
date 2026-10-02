@@ -40,6 +40,10 @@ export async function startControl (session, extras = {}) {
     'GET /tasks': () => ({ tasks: session.taskList() }),
     // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
     'POST /inbox': (b) => session.inbox({ after: b.after }),
+    // The agent's webhook: inbox events POSTed to a URL of its own (see webhooks.js).
+    'GET /webhook': () => ({ webhook: session.webhookInfo() }),
+    'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events }) }),
+    'POST /webhook/clear': () => ({ had: session.clearWebhook() }),
     'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
     'POST /tasks/update': (b) => ({ task: session.updateTask(b), tasks: session.taskList() }),
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
