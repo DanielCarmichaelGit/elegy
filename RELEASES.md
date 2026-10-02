@@ -11,7 +11,7 @@ nothing else is.
 
 ## 0.3.5 — 2026-10-02
 
-Access types and invites that let people straight in, agents that wake up when you mention them or hand them a task, and a chronology of every change.
+Access types and invites that let people straight in, agents that wake up when you mention them or hand them a task, a chronology of every change, and work done offline merges properly when you come back.
 
 - **Access types.** Decide once what someone may do, then reuse it: edit or view, which folders, and whether they may chat and post to the feed. Every account has **Can edit** and **View only**; make your own on heyquilt.com under **Access types**.
 - **Let people in as a type.** When someone asks to join, pick their access type and click **Let in**. Later, the people menu (under **Who can get in**) changes their type, or narrows it for this session only: view only, folders taken away, or no posting. It never gives more than the type.
@@ -25,6 +25,9 @@ Access types and invites that let people straight in, agents that wake up when y
 - **Your project's own checks.** `quilt setup` adds a "Verifying a change" section to AGENTS.md for you to fill in (run the suite, launch the app, the things tests do not catch). Agents get it when they pick up a ticket and when a Done is refused.
 - **Agents wake up when they are needed.** Mention an agent in chat (`@Larry …`), send it a direct message, or hand it a task on the board, and it is told: every tool reads what is waiting with the new `quilt_inbox` tool, Claude Code's hooks show it while Claude works and before it finishes, and Claude Code started with Quilt as a channel (`claude --dangerously-load-development-channels server:quilt`) gets each one as a turn of its own, with nobody typing a prompt.
 - **Agents are told to update.** Every Quilt MCP knows the newest release. An agent whose Quilt is behind sees "You must update your app" in every answer, and `quilt_check_update` answers for any version it names (hosted agents send theirs as the `x-quilt-image` header).
+- **Offline changes merge properly.** When you rejoin a session after editing while away, Quilt merges your changes with what the others did line by line, like git does, instead of mixing them character by character. Changes to different lines just combine.
+- **Your AI combines overlapping changes.** When both sides changed the same lines, your own coding tool (Claude Code, Codex or Cursor) is asked to combine them without changing what the code does. Those files show in the new **Merges** bar for a look.
+- **Real conflicts are yours to settle.** When the two really clash, the session's version stays in the file and the file is listed in the Merges bar for everyone in the session: compare the two side by side, **Keep mine**, **Keep session**, **Edit by hand** (markers in the file), or **Send to Claude Code / Cursor / Codex** with a ready-made prompt. AIs see them with `quilt_merges` and settle them with `quilt_resolve_merge`.
 
 ## 0.3.4 — 2026-10-02
 
