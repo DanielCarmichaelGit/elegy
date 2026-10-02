@@ -1,6 +1,6 @@
 # 032: One file that cannot be written drops the rest of a remote update, and the stale local copy is then pushed back over the partner's edit
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** sync client from main, reproduced locally
+**Status:** **Fixed** (26262b4) · **Reported:** 2026-10-01 (audit) · **Seen on:** sync client from main, reproduced locally
 
 ## What happens
 `observeDeep` (`src/session.js:246-255`) writes each changed path with no
@@ -39,3 +39,4 @@ Reproduced: `scratchpad/sync/t2b-readonly-revert.mjs`
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: fixed in 26262b4. Remote updates are applied path by path (`applyRemote`): a failed write is logged, kept in `writeFailed`, retried on reconnect and every retry tick, and `ingest` skips it, so a stale copy is never pushed back; a read-only file is made writable or moved into `.quilt/conflicts`. `state.json` keeps a sha1 of `lastKnown` per path, and `reconcileOffline` writes (rather than pushes or deletes) a path whose disk content is still what we last wrote, or that was never written. First join moves a colliding folder or file into `.quilt/conflicts/<time>/`. `isSafeRelPath` rejects Windows device names, trailing dots and spaces, and names over 255 bytes. Six tests in test/sync.test.js; the audit script now ends with every file at `v2` on both sides.

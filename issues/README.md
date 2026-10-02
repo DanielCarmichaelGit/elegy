@@ -24,9 +24,9 @@ the commit, so the history stays in one place.
 | [014](014-session-ownership-first-come.md) | Session ownership and creation go to whoever connects first | Open, high |
 | [015](015-relay-disk-errors.md) | A disk error stops the relay; a half-written session file is deleted on restart | Open, high |
 | [021](021-chat-xss.md) | Stored XSS in the chat panel through a peer-controlled message id | Open, high |
-| [032](032-remote-write-failure-reverts-edits.md) | One unwritable file drops the rest of an update and reverts the partner's edit; first-join name collisions abort | Open, high |
-| [033](033-symlink-read-on-rejoin.md) | On rejoin, a shared path under a local symlink reads a file outside the project into the room | Open, high |
-| [034](034-chat-attachment-lands-in-project.md) | A crafted chat message id puts an attachment in the project root; a malformed message breaks status for everyone | Open, high |
+| [032](032-remote-write-failure-reverts-edits.md) | One unwritable file drops the rest of an update and reverts the partner's edit; first-join name collisions abort | **Fixed** (26262b4) |
+| [033](033-symlink-read-on-rejoin.md) | On rejoin, a shared path under a local symlink reads a file outside the project into the room | **Fixed** (83e39bf) |
+| [034](034-chat-attachment-lands-in-project.md) | A crafted chat message id puts an attachment in the project root; a malformed message breaks status for everyone | **Fixed** (53c067d) |
 | [016](016-relay-limits-bypass-and-leaks.md) | Relay limits bypassable (X-Forwarded-For), rooms pinned in memory, pending guests stranded, quotas by declared size | Open, medium |
 | [017](017-public-keys-not-canonical.md) | API accepts public keys with junk, defeating one-key-per-agent/computer | Open, medium |
 | [018](018-names-not-cleaned.md) | Person and computer names not cleaned: bidi/invisible characters reach passes, sessions, the approve page | Open, medium |

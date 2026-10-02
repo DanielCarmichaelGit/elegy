@@ -1,6 +1,6 @@
 # 034: A crafted chat message id makes the auto-downloaded attachment land in the project root, where it syncs to everyone
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** sync client from main, reproduced locally
+**Status:** **Fixed** (53c067d) · **Reported:** 2026-10-01 (audit) · **Seen on:** sync client from main, reproduced locally
 
 ## What happens
 `inboxPath` (`src/session.js:1143-1145`) builds the inbox file name from
@@ -33,3 +33,4 @@ Reproduced (`scratchpad/sync/t4-inbox-id.mjs`): `bob root listing: [ '-evil.txt'
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: fixed in 53c067d. `validMessage(m)` (hex `id` and `file.id`) sits inside `canSee`, so `messages()`, `unreadCount()`, `status()`, `fetchFile` and the chat observer skip a malformed message; the observer catches per message, so the rest of the update is still delivered. The file id is URL-encoded and the inbox path is asserted to stay under `.quilt/inbox` unless a `dest` was given. The UI-side guard (step 3) stays with 021. Two tests in test/sync.test.js.
