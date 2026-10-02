@@ -14,6 +14,9 @@ import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, decoding, bytesMessage, j
 import { PRESENCE_FILE } from '../src/presence.js'
 import { PASS_KEYS, makePass, testPasses } from './pass-helpers.js'
 import { startTestApi } from './api-helpers.js'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { signPass, PASS_TTL_MS } from '../src/passes.js'
 
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-home-'))
 const SECRET = 'relay-api-secret-for-tests'
@@ -216,4 +219,26 @@ test('end to end: two accounts in one session see each other on their dashboards
   const hers = (await accounts.call('GET', '/v1/me/sessions', null, 'admin')).body.sessions.find((s) => s.room === r)
   assert.deepEqual([hers.name, hers.mine, hers.owner.name, hers.people.map((p) => p.name)], ['quilt-site', false, 'Mo', ['Mo']])
   assert.ok(hers.people[0].togetherMs > 0)
+})
+
+test('a hosted agent (HTTP only, no connection) works with presence on, and records no visit yet', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  const pass = signPass({ v: 1, sub: 'agent-grok', kind: 'agent', name: 'Grok-Bot', key: '', exp: Date.now() + PASS_TTL_MS }, PASS_KEYS.privateKey)
+  const grok = new Client({ name: 'grok', version: '1.0.0' })
+  await grok.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${srv.port}/mcp`), { requestInit: { headers: { 'x-quilt-pass': pass } } }))
+  try {
+    const call = async (name, args = {}) => (await grok.callTool({ name, arguments: args })).content.map((c) => c.text).join('\n')
+    assert.match(await call('quilt_join_session', { invite: `https://join.heyquilt.com/${r}#s` }), /Asked to join/)
+    await admin(o, { op: 'approve', key: 'agent:agent-grok' })
+    assert.match(await call('quilt_write_file', { path: 'a.txt', content: 'a' }), /Created a.txt/)
+    assert.equal((await admin(o, { op: 'name', name: 'hosted' })).ok, true)
+    await admin(o, { op: 'remove', key: 'agent:agent-grok' })
+    assert.match(await call('quilt_leave_session'), /Left room/)
+    await srv.presence.flush()
+    // Only the owner's visit and the rename: hosted agents are not reported as visits (yet).
+    assert.deepEqual(api.events.map((e) => [e.type, e.account || e.name]), [['start', 'person:user-olive'], ['name', 'hosted']])
+  } finally { await grok.close() }
 })
