@@ -16,5 +16,7 @@
   NODE_VERSION = "22"
 
 # Netlify adds this runtime itself on its build servers; declaring it lets CLI deploys build the same way
+# Environment (Netlify UI): NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, QUILT_API_URL, QUILT_REPORT_KEY (same value as the quilt-api Fly secret).
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

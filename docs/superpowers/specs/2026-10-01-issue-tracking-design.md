@@ -116,7 +116,8 @@ measured. A 404 (no route), a 5xx, or any request over 2 s is recorded straight
 through `store.recordEvents` (no HTTP), surface `api`, name = `METHOD
 /path-with-ids-replaced` (uuids and tokens in the path become `:id` so names
 group), kind `http404` for the 404, `action` otherwise. The 4xx a route throws
-on purpose (401, 409, …) is not recorded: it's the API working.
+on purpose (401, 409, …) is not recorded: it's the API working. A deliberate
+4xx that was slow is recorded with outcome `slow`, never `error`.
 
 Recording is fire-and-forget (`.catch(log)`); a store failure never delays or
 fails the request.
@@ -153,8 +154,10 @@ reporter.record({ kind, name, outcome, durationMs, status, message, context })
 - Unknown routes record `http404`.
 - `POST /api/report` (open before sign-in): the renderer's own errors, body
   `{ name, message, context }`, recorded as kind `error`.
-- `process.on('uncaughtException' | 'unhandledRejection')` records a `crash`
-  and flushes, then continues to whatever the process did before.
+- The UI server installs no process-level handlers. `desktop/main.js` reports
+  `start` and `main` crashes through `ui.report` and `ui.flushReports()` before
+  showing Electron's error box. A `quilt ui` run in plain Node keeps Node's
+  default crash behaviour.
 - `startUi` closes the reporter (flush) in `close()`.
 
 ### Settings
@@ -187,9 +190,10 @@ today.
   (invite links carry secrets in the fragment).
 - `web/app/error.js`: the Next error boundary; posts `{ kind: 'error', name:
   pathname, message }` once and shows a short retry page.
-- `web/lib/api.js` `apiCall`: a non-ok reply, a thrown fetch, or a call over
-  3 s is reported server-side through a shared `web/lib/report.js` (same
-  forwarder the route uses), name `METHOD path-with-ids-replaced`.
+- `web/lib/api.js` `apiCall`: reports calls that fail (no answer, a 404 or a
+  5xx) or take over 3 s, through a shared `web/lib/report.js` (same forwarder
+  the route uses), name `METHOD path-with-ids-replaced`. The report is
+  fire-and-forget.
 
 Netlify gets `QUILT_REPORT_KEY`; Fly's `quilt-api` gets the same value.
 

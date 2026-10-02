@@ -15,6 +15,7 @@ Invite links open the app in one click, and you can invite your AI from the app.
 
 - **Invite links just work.** Clicking a join.heyquilt.com link takes you to heyquilt.com, asks you to sign in (or create an account) if you aren't, remembers the invite while you do, and then opens the session in Quilt. No more copying the link into Join a session. People without the app see where to download it.
 - **Invite your AI from the app.** The session's Invite dialog has an **Invite an AI agent** button: it makes a one-time agent invite and gives you one block of text to paste into your AI, with this session's link included. Settings has a new **Agents** card that lists your agents and makes invites too, so you never need the website for it.
+- **Quilt notices problems.** When something in the app fails or takes too long (say, Open in Cursor), the app tells Quilt what happened: the action, the error message, how long it took, your app version and OS. Never your files, your chats or your links. Turn it off in Settings under **Send problem reports to Quilt**.
 
 ## 0.3.1 — 2026-10-01
 
