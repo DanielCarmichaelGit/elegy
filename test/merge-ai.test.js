@@ -27,6 +27,12 @@ test('CONFLICT answers are refused with the reason', async () => {
   assert.deepEqual(await aiMerge({ ...opts, run }), { refused: 'both sides rewrote the return statement differently' })
 })
 
+test('a fenced merged file containing a CONFLICT: line is accepted, not refused', async () => {
+  const merged = 'function add (a, b) {\n  // bob: guard\n  // CONFLICT: see changelog\n  return Number(a) + Number(b)\n}\n'
+  const run = async () => '```\n' + merged + '```\n'
+  assert.deepEqual(await aiMerge({ ...opts, run }), { text: merged })
+})
+
 test('an answer that drops a line nobody touched is refused', async () => {
   const run = async () => '```\nfunction add (a, b) {\n  return Number(a) + Number(b)\n```\n'
   const r = await aiMerge({ ...opts, run })

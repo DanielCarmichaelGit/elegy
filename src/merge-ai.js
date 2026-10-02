@@ -116,9 +116,11 @@ export async function aiMerge ({ path: rel, base, ours, theirs, mine, theirsBy, 
   } catch (err) {
     return { refused: err.message }
   }
-  const conflict = /^\s*CONFLICT:\s*(.*)$/m.exec(answer)
-  if (conflict) return { refused: conflict[1].trim() || 'the AI says the changes conflict' }
+  // A refusal is the whole answer saying CONFLICT:, not any line of a valid
+  // merged file that happens to start with those words (e.g. a comment).
   const text = fencedFile(answer)
+  const conflict = text === null ? /^CONFLICT:\s*(.*)/.exec(answer.trim()) : null
+  if (conflict) return { refused: conflict[1].trim() || 'the AI says the changes conflict' }
   if (text === null) return { refused: 'the AI gave no file back' }
   const dropped = droppedLine(base, ours, theirs, text)
   if (dropped !== null) return { refused: `the AI's merge dropped a line nobody changed: ${dropped.trim().slice(0, 60)}` }
