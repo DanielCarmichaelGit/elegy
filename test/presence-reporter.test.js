@@ -46,7 +46,7 @@ test('a visit starts and ends once, with the account, name and owner; a rename i
 test('sends at most 500 events per request, in order', async () => {
   const api = fakeApi()
   const { r } = reporter({ fetch: api.fetch })
-  for (let i = 0; i < 1201; i++) r.rename({ room: 'r1', name: `n${i}` })
+  for (let i = 0; i < 1201; i++) r.rename({ room: `r${i}`, name: `n${i}` }) // one room each: a room keeps only its newest name
   assert.equal(await r.flush(), true)
   assert.deepEqual(api.requests.map((q) => q.events.length), [500, 500, 201])
   assert.deepEqual(api.events().map((e) => e.name), Array.from({ length: 1201 }, (_, i) => `n${i}`))
@@ -101,12 +101,12 @@ test('beyond the cap, the oldest tenth drops in one go, as whole start/end pairs
     assert.ok(r.queue.some((y) => y.ev.id === x.ev.start), `end ${x.ev.id} has no matching start left in the queue`)
   }
   // More overflows while nothing is sent: still the one log line, not one per event.
-  for (let i = 0; i < 10; i++) r.rename({ room: 'r1', name: `more${i}` })
+  for (let i = 0; i < 10; i++) r.rename({ room: `more${i}`, name: `more${i}` })
   assert.equal(logs.length, 1, 'the episode has not drained: no second log line')
   await r.flush()
   assert.equal(r.size, 0)
   // Once the queue has actually drained (by sending), a fresh overflow logs again.
-  for (let i = 0; i < 25; i++) r.rename({ room: 'r1', name: `again${i}` })
+  for (let i = 0; i < 25; i++) r.rename({ room: `again${i}`, name: `again${i}` })
   assert.equal(logs.length, 2, 'a new overflow episode after a drain logs again')
 })
 
@@ -233,4 +233,94 @@ test('with no file the queue lives in memory', async () => {
   r.rename({ room: 'r1', name: 'x' })
   r.persist()
   assert.equal(await r.flush(), true)
+})
+
+test('a room keeps at most one name waiting: 1,000 rapid renames queue just the newest', async () => {
+  const api = fakeApi()
+  const { r } = reporter({ fetch: api.fetch })
+  r.rename({ room: 'other', name: 'Other' })
+  for (let i = 0; i < 1000; i++) r.rename({ room: 'r1', name: `n${i}` })
+  assert.deepEqual(r.queue.filter((x) => x.ev.room === 'r1').map((x) => x.ev.name), ['n999'])
+  assert.equal(r.size, 2, "another room's name is left alone")
+  assert.equal(await r.flush(), true)
+  assert.deepEqual(api.events().map((e) => e.name), ['Other', 'n999'])
+})
+
+/** A fetch that waits until the test lets it answer, so a send can be caught in flight. */
+function heldApi () {
+  const api = fakeApi()
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const fetch = async (url, init) => { await gate; return api.fetch(url, init) }
+  return { ...api, fetch, release }
+}
+
+test('a rename while the room\'s last name is being sent queues the new one; neither is lost', async () => {
+  const api = heldApi()
+  const { r } = reporter({ fetch: api.fetch })
+  r.rename({ room: 'r1', name: 'first' })
+  const sending = r.flush()
+  r.rename({ room: 'r1', name: 'second' })
+  api.release()
+  assert.equal(await sending, true)
+  assert.deepEqual(api.events().map((e) => e.name), ['first', 'second'])
+})
+
+test('an overflow never drops the end of a visit whose start was already sent', async () => {
+  const api = fakeApi()
+  const { r } = reporter({ fetch: api.fetch, maxQueue: 10 })
+  const sent = r.visitStart({ room: 'r1', account: 'person:sent', name: 'Sent' })
+  await r.flush() // its start reached the API: only its end can close the visit there
+  r.visitEnd(sent)
+  // The queue fills with dropped visits' leftovers: open starts first, then ends whose starts went.
+  const later = []
+  for (let i = 0; i < 30; i++) later.push(r.visitStart({ room: 'r1', account: `person:u${i}`, name: `u${i}` }))
+  for (const v of later) r.visitEnd(v)
+  assert.ok(r.queue.some((x) => x.ev.type === 'end' && x.ev.start === sent.start), 'the sent visit\'s end is still queued')
+  await r.flush()
+  assert.ok(api.events().some((e) => e.type === 'end' && e.start === sent.start))
+})
+
+test('an overflow never drops a start that is in the batch being sent', async () => {
+  const api = heldApi()
+  const { r } = reporter({ fetch: api.fetch, maxQueue: 10 })
+  const inFlight = []
+  for (let i = 0; i < 5; i++) inFlight.push(r.visitStart({ room: 'r1', account: `person:f${i}`, name: `f${i}` }))
+  const sending = r.flush()
+  // While those five are on their way, their visits end and the queue overflows.
+  for (const v of inFlight) r.visitEnd(v)
+  for (let i = 0; i < 30; i++) r.visitStart({ room: 'r1', account: `person:u${i}`, name: `u${i}` })
+  for (const v of inFlight) {
+    assert.ok(r.queue.some((x) => x.ev.id === v.start), 'the start in flight is still queued')
+    assert.ok(r.queue.some((x) => x.ev.type === 'end' && x.ev.start === v.start), 'and so is its end')
+  }
+  api.release()
+  await sending
+  const events = api.events()
+  for (const v of inFlight) assert.ok(events.some((e) => e.type === 'end' && e.start === v.start), 'every visit sent is closed')
+})
+
+test('while the disk is failing, appends are given up for one rewrite later, and logged once per episode', () => {
+  const file = tmp()
+  fs.mkdirSync(file) // the queue file's path is a folder: every write fails
+  const { r, logs, advance } = reporter({ file })
+  for (let i = 0; i < 3; i++) {
+    r.visitStart({ room: 'r1', account: `person:u${i}`, name: `u${i}` })
+    r.persist()
+    advance(1000)
+  }
+  assert.equal(logs.filter((l) => l.includes('could not save the queue')).length, 1, 'one line per failure episode, not every second')
+  assert.deepEqual(r.unwritten, [], 'nothing piles up waiting for an append')
+  assert.equal(r.rewrite, true, 'the next save writes the queue whole')
+  // The disk recovers: the rewrite brings the file back in line with the queue.
+  fs.rmdirSync(file)
+  advance(60_000)
+  r.persist()
+  assert.equal(fs.readFileSync(file, 'utf8').trim().split('\n').length, 4, 'the header line and all three starts')
+  // A new failure is a new episode, and logs again.
+  fs.rmSync(file)
+  fs.mkdirSync(file)
+  r.visitStart({ room: 'r1', account: 'person:later', name: 'Later' })
+  r.persist()
+  assert.equal(logs.filter((l) => l.includes('could not save the queue')).length, 2)
 })

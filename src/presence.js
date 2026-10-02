@@ -41,14 +41,18 @@ export class PresenceReporter {
     this.timeoutMs = timeoutMs
     this.rewriteMs = rewriteMs
     this.closeTimeoutMs = closeTimeoutMs
-    this.queue = [] // { seq, ev }, oldest first
+    this.queue = [] // { seq, ev, startSeq? }, oldest first; an `end` notes its `start`'s seq (0: sent by an earlier run)
     this.seq = 0
+    this.sentSeq = 0 // the highest seq the accounts API has taken
+    this.inFlight = 0 // the highest seq in the request being sent; 0 when nothing is
     this.open = new Map() // start event id -> { start, room, account }: visits not ended yet
+    this.startSeqs = new Map() // start event id -> its seq, for visits not ended yet
     this.unwritten = [] // queue lines not yet appended to the file
     this.rewrite = false // the file no longer matches the queue: write it whole next time
     this.lastRewriteAt = -Infinity // so the first rewrite (from load(), or the first drop) is never throttled
     this.urgent = false // a rewrite a successful send is waiting on: never throttled
     this.full = false // logged once per overflow episode; cleared once the queue drains below the cap
+    this.saveFailing = false // logged once per failure episode; cleared by the next save that works
     this.failures = 0
     this.retryAt = 0
     this.sending = null
@@ -65,6 +69,8 @@ export class PresenceReporter {
     let text = ''
     try { text = fs.readFileSync(this.file, 'utf8') } catch (err) { if (err.code !== 'ENOENT') this.log(`presence: could not read ${this.file}: ${err.message}`); return 0 }
     let bad = 0
+    const seqs = new Map() // start event id -> seq, for the starts in the file
+    const lastName = new Map() // room -> seq of its newest name in the file
     for (const line of text.split('\n')) {
       if (!line.trim()) continue
       let row
@@ -76,10 +82,19 @@ export class PresenceReporter {
         continue
       }
       if (!row.id || !row.type) { bad++; continue }
-      this.queue.push({ seq: ++this.seq, ev: row })
-      if (row.type === 'start') this.open.set(row.id, { start: row.id, room: row.room, account: row.account })
+      const seq = ++this.seq
+      if (row.type === 'start') {
+        this.open.set(row.id, { start: row.id, room: row.room, account: row.account })
+        seqs.set(row.id, seq)
+      }
       if (row.type === 'end') this.open.delete(row.start)
+      if (row.type === 'name') lastName.set(row.room, seq)
+      // A start this file doesn't hold was sent by an earlier run: 0 marks that.
+      this.queue.push(row.type === 'end' ? { seq, ev: row, startSeq: seqs.get(row.start) || 0 } : { seq, ev: row })
     }
+    // A room's older names (from saves between the queue's rewrites) would only be overwritten.
+    this.queue = this.queue.filter((x) => x.ev.type !== 'name' || lastName.get(x.ev.room) === x.seq)
+    for (const id of this.open.keys()) if (seqs.has(id)) this.startSeqs.set(id, seqs.get(id))
     if (bad) this.log(`presence: skipped ${bad} unreadable line(s) in ${this.file}`)
     const ended = this.open.size
     this.endAll()
@@ -105,19 +120,28 @@ export class PresenceReporter {
     const ev = { id: crypto.randomUUID(), type: 'start', room, account, name, ...(owner ? { owner: true } : {}), at: this.now() }
     const visit = { start: ev.id, room, account }
     this.open.set(ev.id, visit)
-    this.enqueue(ev)
+    this.startSeqs.set(ev.id, this.enqueue(ev))
     return visit
   }
 
   /** That connection left (closed, removed, ended, or its pass lapsed). Once per visit. */
   visitEnd (visit) {
     if (this.closed || !visit || !this.open.delete(visit.start)) return
-    this.enqueue({ id: crypto.randomUUID(), type: 'end', start: visit.start, room: visit.room, account: visit.account, at: this.now() })
+    this.enqueueEnd(visit)
   }
 
-  /** The owner named the session. */
+  /**
+   * The owner named the session. Only the newest name matters, so a room keeps at most
+   * one waiting: a rename replaces the one queued before it (unless that one is already
+   * on its way to the API), and renames can never pile up in the queue.
+   */
   rename ({ room, name }) {
     if (this.closed) return
+    const i = this.queue.findIndex((x) => x.ev.type === 'name' && x.ev.room === room && x.seq > this.inFlight)
+    if (i >= 0) {
+      this.queue.splice(i, 1)
+      this.rewrite = true // the replaced line is still in the file
+    }
     this.enqueue({ id: crypto.randomUUID(), type: 'name', room, name, at: this.now() })
   }
 
@@ -125,14 +149,23 @@ export class PresenceReporter {
   endAll () {
     for (const visit of [...this.open.values()]) {
       this.open.delete(visit.start)
-      this.enqueue({ id: crypto.randomUUID(), type: 'end', start: visit.start, room: visit.room, account: visit.account, at: this.now() })
+      this.enqueueEnd(visit)
     }
   }
 
-  enqueue (ev) {
-    this.queue.push({ seq: ++this.seq, ev })
+  enqueueEnd (visit) {
+    const startSeq = this.startSeqs.get(visit.start) || 0
+    this.startSeqs.delete(visit.start)
+    this.enqueue({ id: crypto.randomUUID(), type: 'end', start: visit.start, room: visit.room, account: visit.account, at: this.now() }, startSeq)
+  }
+
+  /** Returns the event's seq. */
+  enqueue (ev, startSeq) {
+    const seq = ++this.seq
+    this.queue.push(startSeq === undefined ? { seq, ev } : { seq, ev, startSeq })
     this.unwritten.push(ev)
     if (this.queue.length > this.maxQueue) this.dropOldest()
+    return seq
   }
 
   /**
@@ -144,11 +177,14 @@ export class PresenceReporter {
    * A `name` is never dropped: renames are rare, and since the `name` op is now
    * idempotent (a repeat is never re-queued), a dropped one is gone for good. If every
    * `start` has already been paired off or dropped and more still needs to go, the
-   * oldest unmatched `end`s go next (an `end` whose `start` is gone is harmless: the
-   * accounts API ignores it). One `filter` pass over the queue, never a per-element
-   * shift: a drop must stay cheap even at ~100,000 events.
+   * oldest unmatched `end`s go next (an `end` whose `start` was dropped is harmless: the
+   * accounts API ignores it). Never dropped: anything in the request being sent (it
+   * reaches the API anyway), and an `end` whose `start` was sent or is being sent (the
+   * visit would stay open on the dashboard forever). One `filter` pass over the queue,
+   * never a per-element shift: a drop must stay cheap even at ~100,000 events.
    */
   dropOldest () {
+    const sent = Math.max(this.sentSeq, this.inFlight)
     const drop = Math.max(this.queue.length - this.maxQueue, Math.ceil(this.maxQueue / 10))
     const endIndexByStart = new Map() // start event id -> index of its `end`, if queued
     this.queue.forEach((x, i) => { if (x.ev.type === 'end') endIndexByStart.set(x.ev.start, i) })
@@ -156,7 +192,7 @@ export class PresenceReporter {
     let dropped = 0
     for (let i = 0; i < this.queue.length && dropped < drop; i++) {
       const x = this.queue[i]
-      if (x.ev.type !== 'start' || remove.has(i)) continue
+      if (x.ev.type !== 'start' || x.seq <= this.inFlight || remove.has(i)) continue
       remove.add(i); dropped++
       const endIndex = endIndexByStart.get(x.ev.id)
       if (endIndex !== undefined && !remove.has(endIndex)) { remove.add(endIndex); dropped++ }
@@ -164,7 +200,7 @@ export class PresenceReporter {
     // Nothing left to pair off a `start` with: the oldest leftover `end`s are next.
     for (let i = 0; i < this.queue.length && dropped < drop; i++) {
       const x = this.queue[i]
-      if (x.ev.type === 'end' && !remove.has(i)) { remove.add(i); dropped++ }
+      if (x.ev.type === 'end' && x.seq > this.inFlight && x.startSeq > sent && !remove.has(i)) { remove.add(i); dropped++ }
     }
     if (remove.size) this.queue = this.queue.filter((_, i) => !remove.has(i))
     this.rewrite = true
@@ -208,8 +244,14 @@ export class PresenceReporter {
         try { fs.writeSync(fd, this.unwritten.map((ev) => JSON.stringify(ev)).join('\n') + '\n'); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
         this.unwritten = []
       }
+      this.saveFailing = false
     } catch (err) {
-      this.log(`presence: could not save the queue: ${err.message}`)
+      // An append that failed may have left part of a line: the next save that works
+      // writes the whole file, which has every queued event, so nothing waits to be appended.
+      this.rewrite = true
+      this.unwritten = []
+      if (!this.saveFailing) this.log(`presence: could not save the queue: ${err.message}`)
+      this.saveFailing = true
     }
   }
 
@@ -233,6 +275,7 @@ export class PresenceReporter {
     try {
       while (this.queue.length) {
         const chunk = this.queue.slice(0, this.batch)
+        this.inFlight = chunk[chunk.length - 1].seq
         const res = await this.fetch(this.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${this.secret}` },
@@ -241,7 +284,9 @@ export class PresenceReporter {
         })
         if (!res.ok) throw new Error(`the accounts API answered ${res.status}`)
         // By sequence number: the queue may have dropped its oldest while this was in flight.
-        const last = chunk[chunk.length - 1].seq
+        const last = this.inFlight
+        this.sentSeq = last
+        this.inFlight = 0
         const i = this.queue.findIndex((x) => x.seq > last)
         this.queue = i < 0 ? [] : this.queue.slice(i)
         this.checkDrained()
@@ -257,6 +302,7 @@ export class PresenceReporter {
       this.log(`presence: could not report to the accounts API (${err.cause?.code || err.message}); trying again in ${Math.round(wait / 1000)} s`)
       return false
     } finally {
+      this.inFlight = 0
       if (sent) { this.rewrite = true; this.urgent = true; this.persist() }
     }
   }
