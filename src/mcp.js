@@ -54,6 +54,7 @@ export const MCP_INSTRUCTIONS =
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
   'Claim files or folders before larger changes and do not edit files someone else has claimed. ' +
   'Always re-read a file right before you edit it. ' +
+  'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
   'When Claude Code is started with the quilt channel, they arrive on their own as <channel source="quilt"> events while you work: treat each like a request from that person, answer with quilt_message, and take a task with quilt_move_task. ' +
   TASK_WORKFLOW
@@ -192,6 +193,35 @@ export async function runMcp () {
   }, ({ pattern }) => withDaemon(async (d) => {
     const r = await call(d, 'POST', '/release', { pattern })
     return `Released ${r.released} claim(s).`
+  }))
+
+  const mergeLine = (m, me) => {
+    const who = m.by === me ? 'you' : m.by
+    const other = m.others[0] ? (m.others[0] === me ? 'you' : m.others[0]) : 'the session'
+    const what = m.kind === 'ai' ? `merged by AI, waiting for a look` : m.kind === 'claimed' ? `${who} changed it offline but ${m.claimedBy} has it claimed` : `${who} changed it offline and ${other} changed it in the session`
+    return `- \`${m.path}\` (id ${m.id}, ${m.state}): ${what}${m.reason ? ` — ${m.reason}` : ''}`
+  }
+
+  server.registerTool('quilt_merges', {
+    description: 'Files whose offline edits and in-session edits could not be combined automatically. Each has an id. The file currently holds the session\'s version; the other version is under .quilt/merges/<id>/ours (with base and theirs beside it). To settle one yourself: write the merged file, then call quilt_resolve_merge with how "agent".',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => {
+    const { merges } = await call(d, 'GET', '/merges')
+    const me = (await call(d, 'GET', '/info')).name
+    const open = merges.filter((m) => m.state !== 'done')
+    if (!open.length) return 'Nothing to merge.'
+    return `Merges to settle:\n${open.map((m) => mergeLine(m, me)).join('\n')}`
+  }))
+
+  server.registerTool('quilt_resolve_merge', {
+    description: 'Settle a merge from quilt_merges. how: "agent" after you wrote the merged file yourself; "mine" to keep the offline version; "theirs" to keep the session version; "review" to accept an AI merge as it is.',
+    inputSchema: {
+      id: z.string().describe('The merge id'),
+      how: z.enum(['agent', 'mine', 'theirs', 'review']).describe('How it was settled')
+    }
+  }, ({ id, how }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/merges/resolve', { id, how })
+    return `Settled the merge of ${r.path} (${how}).`
   }))
 
   server.registerTool('quilt_message', {

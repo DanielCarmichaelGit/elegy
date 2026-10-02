@@ -179,6 +179,19 @@ test('an agent whose Quilt is behind the newest release is told to update in eve
   assert.doesNotMatch(text(await call('quilt_status')), /update your app/)
 })
 
+test('merges are listed and settled through the MCP tools', async () => {
+  // Two tool calls on an empty list, then a record made directly in the shared doc.
+  assert.match(text(await call('quilt_merges')), /nothing to merge/i)
+  const { openMerge } = await import('../src/merges.js')
+  const rec = openMerge(human.doc, human.merges, { path: 'src/app.js', by: 'dana', others: ['helper'], kind: 'conflict', ours: 'console.log("dana")\n', base: 'console.log("hi")\n', theirsHash: 'x', binary: false }, null)
+  const listed = await waitFor(async () => { const t = text(await call('quilt_merges')); return t.includes(rec.id) ? t : null })
+  assert.match(listed, /src\/app\.js/)
+  assert.match(listed, /dana/)
+  const r = text(await call('quilt_resolve_merge', { id: rec.id, how: 'theirs' }))
+  assert.match(r, /settled/i)
+  await waitFor(() => human.mergeList().find((m) => m.id === rec.id)?.state === 'done')
+})
+
 test('agent edits sync back to people, and leaving removes the agent', async () => {
   fs.writeFileSync(path.join(agentCwd, 'src', 'app.js'), 'console.log("hi from the agent")\n')
   await waitFor(() => fs.readFileSync(path.join(humanDir, 'src', 'app.js'), 'utf8').includes('agent'))

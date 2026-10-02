@@ -43,6 +43,9 @@ export async function startControl (session, extras = {}) {
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
     'POST /tasks/brief': (b) => session.taskBrief(b.id),
     'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
+    'GET /merges': () => ({ merges: session.mergeList() }),
+    'POST /merges/resolve': (b) => session.resolveMerge(String(b.id || ''), { how: b.how }),
+    'POST /merges/send': (b) => session.prepareMergeSend(String(b.id || '')),
     'POST /commit': async (b) => {
       if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
       const open = session.commitStatus().open

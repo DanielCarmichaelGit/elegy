@@ -42,6 +42,16 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   }
   out.push('')
 
+  const merges = (st.merges || []).filter((m) => m.state !== 'done')
+  if (merges.length) {
+    out.push('## Merges to settle')
+    for (const m of merges) {
+      const who = m.by === st.me.name ? 'you' : m.by
+      out.push(`- \`${m.path}\` (id ${m.id}): ${who} changed it offline${m.others[0] ? `, ${m.others[0] === st.me.name ? 'you' : m.others[0]} changed it in the session` : ''}${m.kind === 'ai' ? '; merged by AI, needs a look' : ''}. See quilt_merges.`)
+    }
+    out.push('')
+  }
+
   out.push('## Recent activity')
   const act = st.activity.slice(-15).reverse()
   if (!act.length) out.push('_Nothing yet._')
