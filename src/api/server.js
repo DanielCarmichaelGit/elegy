@@ -14,6 +14,7 @@ import { agentRoutes } from './routes/agents.js'
 import { makeAgentAuth } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
+import { relayRoutes } from './routes/relay.js'
 
 const LINK_TTL_MS = 10 * 60 * 1000
 // An approved link the app never collects stops working this long after its code expires.
@@ -21,7 +22,7 @@ const COLLECT_GRACE_MS = 5 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relaySecret = '' }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -205,8 +206,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx))
+  const ctx = { store, user, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
@@ -235,7 +236,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
       if (!route) throw new HttpError(404, 'not found')
-      const body = ['POST', 'PUT'].includes(req.method) ? await readJson(req) : {}
+      // A route may take a bigger body than usual (the relay's presence reports): route[3].maxBody.
+      const body = ['POST', 'PUT'].includes(req.method) ? await readJson(req, route[3]?.maxBody || MAX_BODY) : {}
       const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodePart))
       if (out instanceof Raw) send(out.status, out.body, out.type)
       else if (Array.isArray(out)) send(out[0], out[1])
@@ -270,10 +272,10 @@ function decodePart (s) {
   try { return decodeURIComponent(s) } catch { throw new HttpError(400, 'bad path') }
 }
 
-function readJson (req) {
+function readJson (req, limit) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = []
-    req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { req.destroy(); reject(new HttpError(413, 'too large')) } else chunks.push(c) })
+    req.on('data', (c) => { size += c.length; if (size > limit) { req.destroy(); reject(new HttpError(413, 'too large')) } else chunks.push(c) })
     req.on('end', () => {
       if (!chunks.length) return resolve({})
       let body

@@ -138,12 +138,15 @@ async function apiCmd () {
   const port = Number(values.port || env.PORT || 8787)
   const api = await startApi({
     port, host, store, verifyUser, mailer, passKey,
+    // The relay signs its presence reports with this (scripts/relay-api-secret.mjs).
+    relaySecret: env.RELAY_API_SECRET || '',
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
   })
   console.log(`quilt accounts API listening on ${api.url}`)
+  if (!env.RELAY_API_SECRET) console.log('RELAY_API_SECRET is not set: the relay cannot report sessions for the dashboard')
   const shutdown = async () => { await api.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
 }
