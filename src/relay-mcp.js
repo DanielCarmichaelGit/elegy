@@ -242,7 +242,6 @@ function sessionTools (server, ctx) {
     if (!isSafeRelPath(rel)) return fail('That is not a path inside the project.')
     const a = ctx.access(room)
     if (a && a.role === 'viewer') return fail('You can only view this session; file changes are refused.')
-    if (a && a.scopes && a.scopes.length && !a.scopes.some((s) => globMatcher(s)(rel))) return fail(`You may only change files in ${a.scopes.join(', ')}.`)
     const refusal = a && changeRefusal(a, rel)
     if (refusal) return fail(`${refusal[0].toUpperCase()}${refusal.slice(1)}.`)
     const claim = claimsOf(room).find((c) => c.by !== me && globMatcher(c.pattern)(rel))

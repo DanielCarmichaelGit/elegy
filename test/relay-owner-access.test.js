@@ -11,6 +11,7 @@ import { startServer } from '../src/server.js'
 import { generateIdentity, signChallenge } from '../src/identity.js'
 import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, CLOSE_DENIED, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
 import { PASS_KEYS, makePass } from './pass-helpers.js'
+import { PASS_TTL_MS } from '../src/passes.js'
 
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-roa-home-'))
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -180,4 +181,14 @@ test('someone the owner let in before access types still comes back without a ro
   const back = await connect(srv, r, { identity, pass: makePass({ identity, sub: 'lee', name: 'lee' }) })
   assert.deepEqual([last(back).state, last(back).role], ['approved', 'viewer'])
   back.ws.close()
+})
+
+test('removals are kept only while a pass from before them could still be valid', async (t) => {
+  const { srv, r, owner, as } = await ownedRoom(t)
+  const rm = srv.rooms.get(r)
+  rm.meta.removed = { 'person:long-ago': Date.now() - PASS_TTL_MS - 1000 }
+  const pat = await as('pat', EDIT_ALL)
+  await admin(owner, { op: 'remove', key: 'person:pat' })
+  await pat.closed
+  assert.deepEqual(Object.keys(rm.meta.removed), ['person:pat'], 'the old one could match no valid pass')
 })

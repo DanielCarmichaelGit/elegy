@@ -22,7 +22,7 @@ export async function sessionOwner (store, person, req, room, forbidden = 'Only 
   return { me, userId, session }
 }
 
-export function grantRoutes ({ store, person }) {
+export function grantRoutes ({ store, person, now = Date.now }) {
   return [
     ['GET', /^\/v1\/sessions\/([^/]+)\/grants$/, async (req, body, [room]) => {
       await sessionOwner(store, person, req, room)
@@ -43,7 +43,11 @@ export function grantRoutes ({ store, person }) {
 
     ['DELETE', /^\/v1\/sessions\/([^/]+)\/grants\/([^/]+)$/, async (req, body, [room, account]) => {
       await sessionOwner(store, person, req, room)
+      if (!ACCOUNT.test(account)) throw new HttpError(400, 'no such account')
       await store.deleteGrant(room, account)
+      // Their open invite would still list as waiting, for access they no longer have.
+      const open = await store.openSessionInvite(room, { account }, now())
+      if (open) await store.cancelSessionInvite(open.id)
       return { ok: true }
     }]
   ]

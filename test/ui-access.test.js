@@ -61,7 +61,11 @@ test('the owner lets someone in as a type, narrows it, invites people, and remov
   await lin.start({ waitTimeoutMs: 5000 })
   await waitFor(() => lin.access?.state === 'pending')
 
-  const approved = await api('POST', `/api/sessions/${id}/members/approve`, { key: 'person:lim', typeId: 'builtin:view' })
+  // The built-in types are known here: letting someone in as one doesn't need the type list.
+  const listTypes = accounts.store.listAccessTypes
+  accounts.store.listAccessTypes = async () => { throw new Error('the database is down') }
+  let approved
+  try { approved = await api('POST', `/api/sessions/${id}/members/approve`, { key: 'person:lim', typeId: 'builtin:view' }) } finally { accounts.store.listAccessTypes = listTypes }
   assert.deepEqual([approved.status, approved.body], [200, { ok: true }])
   await waitFor(() => lin.access?.state === 'approved' && lin.access.role === 'viewer')
   assert.deepEqual((await grants(room)).map((g) => [g.account, g.typeName]), [['person:lim', 'View only']])
@@ -86,6 +90,7 @@ test('the owner lets someone in as a type, narrows it, invites people, and remov
   const list = await api('GET', `/api/sessions/${id}/invites`)
   assert.deepEqual(list.body.invites.map((i) => [i.email, i.status]), [['pat@example.com', 'waiting']])
   assert.deepEqual((await api('POST', `/api/sessions/${id}/invites/cancel`, { inviteId: invited.body.invite.id })).body, { ok: true })
+  assert.equal((await api('POST', `/api/sessions/${id}/invites/cancel`, {})).status, 400, 'which invite?')
   assert.equal((await api('GET', `/api/sessions/${id}/invites`)).body.invites[0].status, 'cancelled')
 
   // Removing Lin takes her grant away too.

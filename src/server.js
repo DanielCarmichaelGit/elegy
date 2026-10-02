@@ -679,8 +679,10 @@ class Room {
       // An account goes with any older entries for keys it has used here, so it can't get back in by key.
       const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
       for (const id of gone) delete this.meta.members[id]
-      // A pass issued before now can't bring them back by its grant (see passGrant).
-      const removed = Object.entries({ ...(this.meta.removed || {}), [key]: Date.now() })
+      // A pass issued before now can't bring them back by its grant (see passGrant). Removals
+      // older than a pass lasts can match no valid pass, so they go; the newest are kept.
+      const cutoff = Date.now() - PASS_TTL_MS
+      const removed = Object.entries({ ...(this.meta.removed || {}), [key]: Date.now() }).filter(([, at]) => at > cutoff).sort((a, b) => a[1] - b[1])
       this.meta.removed = Object.fromEntries(removed.slice(-MAX_REMOVED))
       this.saveMeta()
       for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')

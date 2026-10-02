@@ -15,7 +15,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite } from './account.js'
-import { effectiveAccess } from './session-access.js'
+import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
@@ -392,7 +392,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     return s
   }
   const typeById = async (token, typeId) => {
-    const type = (await listAccessTypes({ token })).find((t) => t.id === typeId)
+    // The built-ins are known here, so letting someone in as one works while the API is down.
+    const type = builtinType(typeId) || (await listAccessTypes({ token })).find((t) => t.id === typeId)
     if (!type) throw httpError(400, 'Pick an access type.')
     return type
   }
@@ -470,7 +471,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     'POST /api/sessions/:id/members/access': (b, id) => setAccess(id, b),
     'GET /api/sessions/:id/invites': (b, id) => { const s = owned(id); return asAccount(async (token) => ({ invites: await listSessionInvites({ token, room: s.room }) })) },
     'POST /api/sessions/:id/invites': (b, id) => invite(id, b),
-    'POST /api/sessions/:id/invites/cancel': (b, id) => { const s = owned(id); return asAccount(async (token) => { await cancelSessionInvite({ token, room: s.room, id: String(b.inviteId || '') }); return { ok: true } }) },
+    'POST /api/sessions/:id/invites/cancel': (b, id) => {
+      const s = owned(id)
+      if (!b.inviteId) throw httpError(400, 'Which invite?')
+      return asAccount(async (token) => { await cancelSessionInvite({ token, room: s.room, id: String(b.inviteId) }); return { ok: true } })
+    },
     'GET /api/agents': () => asAccount(async (token) => ({ agents: await listAgents({ token }) })),
     'POST /api/agent-invites': () => asAccount((token) => createAgentInvite({ token })),
     'POST /api/account/start': () => beginLink(),

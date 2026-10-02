@@ -9,7 +9,7 @@ export default function ConfirmDelete ({ action, what, note }) {
   return (
     <span className='row' role='group' aria-label={`Delete ${what}?`}>
       <span className='muted'>Delete {what}?{note ? ` ${note}` : ''}</span>
-      <button className='btn danger' formAction={action}>Delete it</button>
+      <button className='btn danger' formAction={action} formNoValidate>Delete it</button>
       <button type='button' className='btn ghost' onClick={() => setAsking(false)}>Keep it</button>
     </span>
   )

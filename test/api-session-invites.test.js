@@ -150,3 +150,13 @@ test('someone who already has access is changed from the people menu, not invite
   assert.deepEqual([res.status, res.body.error], [409, 'They already have access to this session. Change it from the people menu.'])
   assert.deepEqual(await grants(room), [['person:lim', 'View only']], 'their grant is untouched')
 })
+
+test('taking away an account\'s grant also closes its open invite; only accounts have grants to take away', async () => {
+  const room = await session()
+  const inv = (await invite(room, { to: { account: 'agent:a1' } })).body.invite
+  assert.deepEqual((await t.call('DELETE', `/v1/sessions/${room}/grants/agent:a1`, null, 'mem')).body, { ok: true })
+  const list = (await t.call('GET', `/v1/sessions/${room}/invites`, null, 'mem')).body.invites
+  assert.deepEqual(list.map((i) => [i.id, i.status]), [[inv.id, 'cancelled']])
+  const bad = await t.call('DELETE', `/v1/sessions/${room}/grants/email:pat@example.com`, null, 'mem')
+  assert.equal(bad.status, 400)
+})
