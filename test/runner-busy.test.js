@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { describeOtherSync, runSession } from '../src/runner.js'
+import { describeOtherSync, runSession, recentSessions } from '../src/runner.js'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-busy-home-'))
 process.env.HOME = home
@@ -55,4 +55,20 @@ test('a `quilt join` in a terminal, and any other quilt process', async (t) => {
 
   fs.writeFileSync(path.join(procs, `${other.child.pid}.json`), JSON.stringify({ pid: other.child.pid, kind: 'app', startedAt: Date.now() }))
   assert.match(await describeOtherSync(dir), /another copy of the Quilt app \(process \d+\) has it open\. Leave it there, or quit that app, then rejoin here\.$/)
+})
+
+test("an agent's own copies of rooms stay out of the person's recent list", () => {
+  const folders = {}
+  for (const kind of ['human', 'agent']) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `quilt-recent-${kind}-`))
+    fs.mkdirSync(path.join(dir, '.quilt'))
+    fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify({ room: 'r', kind }))
+    folders[kind] = dir
+  }
+  fs.mkdirSync(path.join(home, '.quilt'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.quilt', 'recent.json'), JSON.stringify([
+    { dir: folders.agent, room: 'r', kind: 'agent', lastUsed: 2 },
+    { dir: folders.human, room: 'r', kind: 'human', lastUsed: 1 }
+  ]))
+  assert.deepEqual(recentSessions().map((r) => r.dir), [folders.human])
 })
