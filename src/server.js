@@ -38,6 +38,7 @@ import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
 import { PresenceReporter, PRESENCE_FILE } from './presence.js'
 import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
+import { hostedWebhooks } from './relay-webhooks.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -1118,6 +1119,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const refused = (name) => unreadable.has(name) ? [503, UNREADABLE] : [413, TOO_BIG]
 
   /** The room, loading it if needed; null if it's too big to load, or its files can't be read. */
+  let webhooks = null // hosted agents' webhook subscriptions (set below, once `hosted` exists)
   const getRoom = (name) => {
     let room = rooms.get(name)
     if (!room) {
@@ -1132,6 +1134,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       }
       unreadable.delete(name)
       rooms.set(name, room)
+      if (webhooks) webhooks.watch(room) // hosted agents' webhooks fire on its chat and board
       room.presence = presence
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
@@ -1214,6 +1217,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     }, 2000)
     hostedTimer.unref()
   }
+  webhooks = hostedWebhooks({ hosted, saveHosted, log, fetch: opts.webhookFetch, delays: opts.webhookDelays })
+  for (const room of rooms.values()) webhooks.watch(room)
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
@@ -1296,7 +1301,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (!passKey) return text(404, 'this relay has sign-in off; hosted agents need it on')
       const pass = httpPass(req)
       if (!pass) return text(401, SIGN_IN)
-      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, log, endedMessage: ENDED_MESSAGE, updates } })
+      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates } })
         .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)

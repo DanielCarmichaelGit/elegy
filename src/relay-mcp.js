@@ -23,6 +23,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
+import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -53,6 +54,8 @@ export const HOSTED_INSTRUCTIONS =
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Do not edit files someone else has claimed: a refused write tells you who holds the file; message them with quilt_message and carry on with other work. ' +
   'Everyone sees your changes on their own disk within moments. ' +
+  'Mentions of you (@yourname), direct messages and tasks handed to you wait in quilt_inbox. To be woken instead of polling, ' +
+  'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
   TASK_WORKFLOW
 
 const NOT_LINKED = 'Your user is not in a quilt session in their browser right now. Ask them to open quilt in their ' +
@@ -193,6 +196,7 @@ function sessionTools (server, ctx) {
     const msgs = chat.toArray().filter(visible).slice(-8)
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
     lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))
+    if (ctx.webhook) { const w = ctx.webhook.get(); lines.push('', w ? `Webhook: Quilt POSTs to ${w.url} on ${w.events.join(', ')}.` : 'No webhook: subscribe with quilt_webhook_subscribe to be told of mentions, direct messages and tasks as they happen.') }
     return text(lines.join('\n') + ctx.warn(room))
   })
 
@@ -361,6 +365,29 @@ function sessionTools (server, ctx) {
     if (ctx.saveInbox) ctx.saveInbox()
     return text(renderInbox(r.events) || 'Nothing new for you.')
   })
+
+  if (ctx.webhook) {
+    tool('quilt_webhook_subscribe', {
+      description: 'Be told as it happens, by an HTTP POST to a URL of yours, when you are mentioned in chat (@yourname), sent a direct message or handed a task: ' +
+        'no need to poll quilt_inbox. One subscription per agent; calling again replaces it. Each POST is JSON, signed with the secret ' +
+        '(x-quilt-signature: sha256=HMAC-SHA256(secret, "<x-quilt-timestamp>.<body>")); answer 2xx. Give a secret of your own or get one back (shown once).',
+      inputSchema: {
+        url: z.string().min(1).max(2000).describe('The https URL to POST to (a webhook trigger of your routine, for example)'),
+        secret: z.string().max(200).optional().describe('16 to 200 characters for signing; omit to have Quilt make one'),
+        events: z.array(z.enum(WEBHOOK_EVENTS)).max(WEBHOOK_EVENTS.length).optional().describe(`Which events to send (default: all): ${WEBHOOK_EVENTS.join(', ')}`)
+      }
+    }, ({ url, secret, events }, { room }) => {
+      try {
+        const sub = ctx.webhook.subscribe(room, { url, secret, events })
+        return text(describeSubscription(sub, { showSecret: sub.made }))
+      } catch (e) { return fail(e.message) }
+    })
+
+    tool('quilt_webhook_unsubscribe', {
+      description: 'Stop the webhook: Quilt no longer POSTs mentions, direct messages and tasks to you. quilt_inbox still has them.',
+      inputSchema: {}
+    }, () => text(ctx.webhook.unsubscribe() ? 'Webhook removed. Mentions, direct messages and tasks still wait in quilt_inbox.' : 'You had no webhook.'))
+  }
 
   tool('quilt_message', {
     description: 'Send a chat message to everyone in the session, or to one person with `to`.',
@@ -557,6 +584,11 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
       return h.inbox
     },
     saveInbox: () => relay.saveHosted(),
+    webhook: relay.webhooks ? {
+      get: () => relay.hosted.get(account)?.webhook || null,
+      subscribe: (room, given) => relay.webhooks.subscribe(account, { name: me, room }, given),
+      unsubscribe: () => relay.webhooks.unsubscribe(account)
+    } : null,
     updates: relay.updates || null,
     image: () => image,
     withSession: (fn) => {
@@ -579,7 +611,9 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     const auth = room.authorize(inv.secret, '')
     if (auth !== 'editor' && auth !== 'viewer') return fail('Wrong room secret: copy the whole invite link, including the part after #.')
     const a = room.hostedRequest(pass, auth)
-    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', inbox: takeStock(room.doc, me) })
+    // A webhook outlives the session it was set in: it carries over to the next one, with a fresh take of its room.
+    const webhook = relay.webhooks ? relay.webhooks.rejoin(relay.hosted.get(account)?.webhook, { name: me, room }) : undefined
+    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}) })
     relay.saveHosted()
     tellRoom()
     if (a.state === 'pending') return text(`Asked to join room ${inv.room} as ${auth === 'viewer' ? 'a viewer' : 'an editor'}. ${WAITING}`)

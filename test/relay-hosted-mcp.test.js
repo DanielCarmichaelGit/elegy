@@ -13,6 +13,7 @@ import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
 import { signPass, PASS_TTL_MS } from '../src/passes.js'
 import { PASS_KEYS, testPasses } from './pass-helpers.js'
+import { verifyWebhook } from '../src/webhooks.js'
 
 process.env.HOME = process.env.USERPROFILE = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-hm-home-'))
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-hm-${n}-`))
@@ -27,6 +28,8 @@ const GROK = 'agent:agent-grok'
 const hostedPass = (over = {}) => signPass({ v: 1, sub: 'agent-grok', kind: 'agent', name: 'Grok-Bot', key: '', exp: Date.now() + PASS_TTL_MS, ...over }, PASS_KEYS.privateKey)
 
 let srv, http, carl, carlDir, grok
+// Where the relay's webhook POSTs go (a test swaps the handler in).
+const hook = { fetch: async () => ({ ok: true, status: 200 }) }
 async function client (pass, headers = {}) {
   const c = new Client({ name: 'grok', version: '1.0.0' })
   await c.connect(new StreamableHTTPClientTransport(new URL(`${http}/mcp`), { requestInit: { headers: { ...(pass ? { 'x-quilt-pass': pass } : {}), ...headers } } }))
@@ -35,7 +38,7 @@ async function client (pass, headers = {}) {
 const call = (name, args = {}) => grok.callTool({ name, arguments: args })
 
 before(async () => {
-  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, passPublicKey: PASS_KEYS.publicKey })
+  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, passPublicKey: PASS_KEYS.publicKey, webhookFetch: (url, init) => hook.fetch(url, init), webhookDelays: [1, 1, 1] })
   http = `http://127.0.0.1:${srv.port}`
   const id = generateIdentity()
   carlDir = tmp('carl')
@@ -229,6 +232,73 @@ test('quilt_inbox shows mentions, direct messages and tasks handed to the hosted
   assert.doesNotMatch(inbox, /nothing for the bot here/)
   assert.doesNotMatch(inbox, /hello from the cloud/, 'its own messages')
   assert.equal(out(await call('quilt_inbox')), 'Nothing new for you.')
+  carl.deleteTask(task.id)
+})
+
+test('a hosted agent subscribes a webhook and is POSTed mentions, direct messages and tasks as they happen', async () => {
+  const posts = []
+  const answers = []
+  hook.fetch = async (url, init) => { posts.push({ url, init }); const status = answers.shift() || 200; return { ok: status < 300, status } }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const bodies = () => posts.map((p) => JSON.parse(p.init.body))
+
+  assert.match(out(await call('quilt_webhook_subscribe', { url: 'http://hooks.example.com/grok' })), /must use https/)
+  assert.match(out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok', events: ['chat.nope'] })), /Invalid|Unknown event/)
+  const r = out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok' }))
+  assert.match(r, /Webhook: Quilt POSTs to https:\/\/hooks.example.com\/grok on chat.mention, chat.dm, task.assigned\./)
+  const secret = r.match(/Secret \(shown once[^:]*: ([a-f0-9]+)/)[1]
+  assert.match(out(await call('quilt_status')), /Webhook: Quilt POSTs to https:\/\/hooks.example.com\/grok/)
+  await sleep(50)
+  assert.equal(posts.length, 0, 'what was already in the room is not POSTed')
+
+  carl.say('@Grok-Bot now via webhook')
+  await waitFor(() => posts.length === 1)
+  const { url, init } = posts[0]
+  assert.equal(url, 'https://hooks.example.com/grok')
+  const body = JSON.parse(init.body)
+  assert.deepEqual({ event: body.event, room: body.room, to: body.to, by: body.by, text: body.text }, { event: 'chat.mention', room: 'hm-1', to: 'Grok-Bot', by: 'Carl', text: '@Grok-Bot now via webhook' })
+  assert.equal(init.headers['x-quilt-event'], 'chat.mention')
+  assert.equal(verifyWebhook(secret, init.headers['x-quilt-timestamp'], init.body, init.headers['x-quilt-signature']), true, 'signed with the secret it was given')
+
+  carl.say('between us, via webhook', { to: 'Grok-Bot' })
+  carl.say('nothing for the bot')
+  await call('quilt_message', { text: '@Grok-Bot talking to myself' })
+  const task = carl.addTask({ title: 'Webhook task', assignee: 'Grok-Bot', files: ['README.md'] })
+  await waitFor(() => posts.length === 3)
+  await sleep(50)
+  assert.deepEqual(bodies().slice(1).map((b) => [b.event, b.text]), [['chat.dm', 'between us, via webhook'], ['task.assigned', 'Webhook task']])
+  assert.deepEqual(bodies()[2].task, { id: task.id, title: 'Webhook task', column: 'todo', assignee: 'Grok-Bot', forAi: false, tool: '', files: ['README.md'] })
+  // quilt_inbox still has everything the webhook carried.
+  const inbox = out(await call('quilt_inbox'))
+  assert.match(inbox, /mentioned you in chat: @Grok-Bot now via webhook/)
+  assert.match(inbox, /direct message: between us, via webhook/)
+  assert.match(inbox, /handed you a task: "Webhook task"/)
+
+  // A receiver that is down for a moment gets the POST again.
+  answers.push(503, 500)
+  carl.say('@Grok-Bot once more')
+  await waitFor(() => posts.length === 6)
+  assert.deepEqual(bodies().slice(3).map((b) => b.text), ['@Grok-Bot once more', '@Grok-Bot once more', '@Grok-Bot once more'])
+  assert.equal(new Set(posts.slice(3).map((p) => p.init.headers['x-quilt-delivery'])).size, 1, 'the same delivery id on every try')
+
+  // Only the events asked for; a secret of its own; joining again keeps the subscription.
+  assert.doesNotMatch(out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok2', secret: 'my-own-secret-of-16+', events: ['chat.dm'] })), /shown once/)
+  assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1/)
+  carl.say('@Grok-Bot not sent')
+  carl.say('sent', { to: 'Grok-Bot' })
+  await waitFor(() => posts.length === 7)
+  await sleep(50)
+  assert.equal(posts.length, 7)
+  assert.equal(bodies()[6].event, 'chat.dm')
+  assert.equal(verifyWebhook('my-own-secret-of-16+', posts[6].init.headers['x-quilt-timestamp'], posts[6].init.body, posts[6].init.headers['x-quilt-signature']), true)
+
+  assert.match(out(await call('quilt_webhook_unsubscribe')), /Webhook removed/)
+  assert.match(out(await call('quilt_webhook_unsubscribe')), /had no webhook/)
+  carl.say('after', { to: 'Grok-Bot' })
+  await sleep(80)
+  assert.equal(posts.length, 7, 'nothing after unsubscribing')
+  assert.match(out(await call('quilt_status')), /No webhook/)
+  await call('quilt_inbox')
   carl.deleteTask(task.id)
 })
 
