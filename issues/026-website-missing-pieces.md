@@ -17,6 +17,7 @@ All verified live.
    could not be found.", no header, no link home. A visitor with a mistyped
    invite or download link is stranded. Add `web/app/not-found.js` with the
    site header/footer and a link home; a `join/[room]/not-found.js` for bad room ids.
+   Styled 404 (and an error page) added with issue tracking, 2026-10-01.
 4. **Pricing copy contradicts the product** (`web/lib/pricing.js`): Free is
    "Sessions on your own network", hosted sessions are Pro-only, while README
    says the app only ever connects through Quilt's hosted relay and the landing

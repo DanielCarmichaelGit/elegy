@@ -33,6 +33,7 @@ Usage:
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
   quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
   quilt mcp                                           Run the MCP server (used by AI tools)
+  quilt hook                                          Claude Code hook (installed by quilt setup; reads the event on stdin)
 
 Join options:
   --agent <name>      Join as a Quilt agent saved with \`quilt agent join\` (default: your account)
@@ -58,6 +59,7 @@ async function main () {
     case 'join': return join()
     case 'setup': return doSetup()
     case 'mcp': return (await import('../src/mcp.js')).runMcp()
+    case 'hook': process.exitCode = await (await import('../src/hooks.js')).runHook(); return
     case 'status': return status()
     case 'say': return say()
     case 'send': return sendFile()
@@ -139,6 +141,7 @@ async function apiCmd () {
   const port = Number(values.port || env.PORT || 8787)
   const api = await startApi({
     port, host, store, verifyUser, mailer, passKey,
+    reportKey: env.QUILT_REPORT_KEY || '',
     // The relay signs its presence reports with this (scripts/relay-api-secret.mjs).
     relaySecret: env.RELAY_API_SECRET || '',
     // Where agents reach this API (invite links point here).
@@ -179,7 +182,7 @@ async function join () {
       tool: { type: 'string' }, dir: { type: 'string' }, prefer: { type: 'string' }, agent: { type: 'string' }
     }
   })
-  const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
+  const { runSession, decodeInvite, newConn, readConfig, personsFolder, agentCopyFolder } = await import('../src/runner.js')
   const { sessionPasses } = await import('../src/pass-source.js')
   const { clearAccount } = await import('../src/account.js')
   // Every session signs in: as this computer's account, or as a saved agent.
@@ -190,7 +193,7 @@ async function join () {
     clearAccount()
     return 'This computer was signed out. Run quilt login again.'
   }
-  const dir = path.resolve(values.dir || '.')
+  let dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
   const { unsupportedRelay } = await import('../src/settings.js')
@@ -207,6 +210,14 @@ async function join () {
     if (saved.server) console.log("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Starting a new session.")
     conn = newConn()
     console.log('starting a new session')
+  }
+
+  // An agent never takes over a folder a person synced from this computer (they'd lose it
+  // from the app's Recent list and couldn't get back in): it keeps its own copy of the room.
+  if (auth.kind === 'agent' && personsFolder(dir)) {
+    const copy = agentCopyFolder(conn.room, auth.name)
+    console.log(`${dir} is a person's own copy of a session on this computer and stays theirs: syncing ${copy} instead.`)
+    dir = copy
   }
 
   const stamp = () => new Date().toLocaleTimeString()

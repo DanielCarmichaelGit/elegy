@@ -21,6 +21,7 @@ import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { loadIdentity } from './identity.js'
 import { currentVersion, localReleases, latestRelease, compareVersions, downloadUrl, seenVersion, markSeen } from './releases.js'
+import { createReporter } from './report.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
@@ -28,7 +29,7 @@ const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
 const SIGNED_OUT_MESSAGE = 'This computer was signed out. Sign in again.'
 const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
 // Until this computer is signed in, only these answer.
-const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown'])
+const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown', 'POST /api/report'])
 
 /** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. */
 function profile () {
@@ -41,7 +42,8 @@ function profile () {
     joinDir: s.joinDir || '~/quilt',
     shareAgent: s.shareAgent !== false,
     summarize: !!s.summarize,
-    preferLocal: !!s.preferLocal
+    preferLocal: !!s.preferLocal,
+    report: s.report !== false
   }
 }
 
@@ -62,6 +64,7 @@ function updateProfile (b) {
   if ('shareAgent' in b) patch.shareAgent = b.shareAgent ? undefined : false
   if ('summarize' in b) patch.summarize = b.summarize ? true : undefined
   if ('preferLocal' in b) patch.preferLocal = b.preferLocal ? true : undefined
+  if ('report' in b) patch.report = b.report ? undefined : false
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }
@@ -87,6 +90,7 @@ const STATIC = {
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
   '/feed.js': ['feed.js', 'text/javascript; charset=utf-8'],
+  '/tool-logo.js': ['tool-logo.js', 'text/javascript; charset=utf-8'],
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
@@ -113,7 +117,26 @@ const CSP = [
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
 // link, so a dev preview pane can show the app. Any local page could then open it too.
-export async function startUi ({ port = 7420, onShutdown, preview = false } = {}) {
+export async function startUi ({ port = 7420, onShutdown, preview = false, reporter, slowMs = 3000 } = {}) {
+  // What this app tells Quilt about itself (see report.js). Off with the "report" setting.
+  reporter = reporter || createReporter({ token: () => readAccount()?.token || null, enabled: () => getSettings().report !== false })
+  // Body fields worth keeping with a route's outcome: which editor, which kind of start. Never free text.
+  const CONTEXT_FIELDS = { 'POST /api/sessions/:id/open-in': ['app'], 'POST /api/sessions': ['mode', 'tool', 'prefer'] }
+  const contextFor = (key, body) => Object.fromEntries((CONTEXT_FIELDS[key] || []).filter((f) => typeof body?.[f] === 'string').map((f) => [f, body[f].slice(0, 40)]))
+  // Not recorded: reports about reports. (The event stream never reaches the dispatch block
+  // below — it returns earlier — so it needs no entry here.)
+  const UNRECORDED = new Set(['POST /api/report'])
+  function recordRoute (key, { startedAt, status, body, error }) {
+    // The reporter's own `enabled()` is the single gate on the "report" setting.
+    if (UNRECORDED.has(key)) return
+    const durationMs = Date.now() - startedAt
+    const outcome = error ? 'error' : durationMs > slowMs ? 'slow' : 'ok'
+    // A successful read (GET) isn't worth a row: the renderer polls and refreshes
+    // constantly, and an `ok` there would just be a usage log nobody was told about.
+    // Every non-GET outcome, and every slow or failed GET, is still kept.
+    if (outcome === 'ok' && key.startsWith('GET ')) return
+    reporter.record({ kind: 'action', name: key, outcome, status, durationMs, message: error ? error.message : '', context: contextFor(key, body) })
+  }
   const token = crypto.randomBytes(18).toString('base64url')
   const runs = new Map() // id -> { run, logs: [] }
   const clients = new Set() // SSE responses
@@ -546,6 +569,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     'POST /api/version/seen': () => { markSeen(currentVersion()); return { ok: true } },
     'GET /api/settings': () => profile(),
     'POST /api/settings': (b) => updateProfile(b),
+    'POST /api/report': (b) => {
+      reporter.record({ kind: 'error', name: String(b.name || 'renderer').slice(0, 80), outcome: 'error', message: String(b.message || '').slice(0, 500), context: typeof b.context === 'object' && b.context ? b.context : {} })
+      return { ok: true }
+    },
     'GET /api/github/status': () => gitops.ghStatus(),
     'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
@@ -612,11 +639,24 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
 
       const pathKey = url.pathname.replace(/^\/api\/sessions\/[a-f0-9]+/, '/api/sessions/:id')
       const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || [])[1]
-      const handler = api[`${req.method} ${pathKey}`]
-      if (!handler) return json(404, { error: 'not found' })
+      const key = `${req.method} ${pathKey}`
+      const handler = api[key]
+      if (!handler) {
+        reporter.record({ kind: 'http404', name: key.slice(0, 80), outcome: 'error', status: 404 })
+        return json(404, { error: 'not found' })
+      }
       let raw = ''
       for await (const chunk of req) raw += chunk
-      return json(200, await handler(raw ? JSON.parse(raw) : {}, sid, url))
+      const body = raw ? JSON.parse(raw) : {}
+      const startedAt = Date.now()
+      try {
+        const out = await handler(body, sid, url)
+        json(200, out)
+        return recordRoute(key, { startedAt, status: 200, body })
+      } catch (err) {
+        recordRoute(key, { startedAt, status: err.status || 400, body, error: err })
+        throw err
+      }
     } catch (err) {
       return json(err.status || 400, { error: err.message, ...(err.signedOut ? { signedOut: true } : {}) })
     }
@@ -676,10 +716,13 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     url: `http://127.0.0.1:${actualPort}/?t=${token}`,
     port: actualPort,
     token,
+    report: (event) => reporter.record(event),
+    flushReports: () => reporter.flush(),
     close: async () => {
       link = null
       for (const id of [...runs.keys()]) await stop(id)
       for (const res of clients) res.end()
+      await reporter.close()
       await new Promise((r) => server.close(r))
     }
   }

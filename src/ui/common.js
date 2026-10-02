@@ -175,6 +175,27 @@ export function accessLine (m) {
   return parts.join(' · ')
 }
 
+// ------------------------------------------------------------- reports --
+// Errors nothing caught (a bug in the page) go to the app, which tells Quilt. The same
+// message within ten seconds is sent once. api() failures are not sent from here: the
+// handler that failed already recorded them.
+const recentReports = new Map()
+function reportRendererError (message) {
+  const text = String(message || '').slice(0, 500)
+  if (!text) return
+  const t = Date.now()
+  if (recentReports.get(text) > t - 10_000) return
+  recentReports.set(text, t)
+  for (const [k, v] of recentReports) if (v < t - 60_000) recentReports.delete(k)
+  fetch('/api/report', {
+    method: 'POST',
+    headers: { 'x-quilt-token': TOKEN || '', 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'renderer', message: text, context: { view: String(state.view || '') } })
+  }).catch(() => {})
+}
+window.addEventListener('error', (e) => reportRendererError(e.message || (e.error && e.error.message) || ''))
+window.addEventListener('unhandledrejection', (e) => reportRendererError((e.reason && e.reason.message) || String(e.reason || '')))
+
 /**
  * Same as decodeInvite in runner.js (room and relay only): an invite link, or an older base64 code.
  * A link naming its own relay must name Quilt's relay or the one this app uses (state.defaults.relay).

@@ -27,6 +27,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const users = new Map(); const orgs = new Map(); const roles = new Map(); const members = new Map()
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
   const agentInvites = new Map(); const keyRows = new Map()
+  const events = new Map(); const issues = new Map()
   const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
   const grantKey = (room, account) => `${room}\n${account}`
@@ -571,6 +572,44 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       const r = requests.get(id)
       if (!r || r.status !== 'pending') return false
       Object.assign(r, { status, decidedBy, decidedAt: now() }); return true
-    }
+    },
+    // Issue reports. One event per outcome; a failure also opens (or counts up) its
+    // issue by fingerprint. Mirrors record_events(jsonb) in Postgres.
+    async recordEvents (list) {
+      for (const e of list) {
+        let issueId = null
+        if (e.outcome !== 'ok') {
+          let issue = issues.get(e.fingerprint)
+          if (!issue) {
+            issue = { id: uuid(), fingerprint: e.fingerprint, surface: e.surface, kind: e.kind, name: e.name, message: e.message, count: 0, firstSeenAt: e.occurredAt, lastSeenAt: e.occurredAt, resolvedAt: null }
+            issues.set(e.fingerprint, issue)
+          }
+          issue.count += 1
+          issue.lastSeenAt = Math.max(issue.lastSeenAt, e.occurredAt)
+          issue.resolvedAt = null
+          issueId = issue.id
+        }
+        const row = { id: uuid(), ...copy(e), issueId, createdAt: now() }
+        delete row.fingerprint
+        events.set(row.id, row)
+      }
+      return list.length
+    },
+    async pruneEvents (before) {
+      let n = 0
+      for (const [id, e] of events) if (e.occurredAt < before) { events.delete(id); n++ }
+      return n
+    },
+    // Issues people haven't seen in a long while, so the one table meant to be read
+    // doesn't grow forever (scanners hitting unknown routes, abandoned reports, …).
+    async pruneIssues (before) {
+      let n = 0
+      for (const [key, i] of issues) if (i.lastSeenAt < before) { issues.delete(key); n++ }
+      return n
+    },
+    // Test-only views (production reads the tables in the Supabase dashboard).
+    listEvents () { return [...events.values()].map(copy) },
+    listIssues () { return [...issues.values()].map(copy) },
+    async resolveIssue (id) { for (const i of issues.values()) if (i.id === id) i.resolvedAt = now() }
   }
 }

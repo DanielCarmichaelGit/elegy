@@ -514,6 +514,7 @@ function settingsHtml ({ head = true } = {}) {
       ${toggle('shareAgent', p.shareAgent, 'Share my AI chat', 'Partners see your prompts, the replies and which files it touches. You can pause it inside any session.')}
       ${toggle('summarize', p.summarize, 'Summarize my chats', 'Your prompts and your AI’s replies are shortened to a sentence or two on this computer before they’re shared. Uses your claude CLI (a few Haiku tokens each); if it isn’t available, the text is just shortened.')}
       ${toggle('preferLocal', p.preferLocal, 'Keep my files when joining a folder that has some', 'When off, their versions of the same files win.')}
+      ${toggle('report', p.report, 'Send problem reports to Quilt', 'The app tells Quilt which actions you take (not what you read), whether they worked and how long they took, with the error message when something fails, your app version and OS. Never your files, your chats or your links.')}
       <div class="sec-actions"><span></span><button class="btn primary" type="submit">Save</button></div>
     </div>
   </form>
@@ -604,7 +605,7 @@ function bindSettings (root, refresh) {
 
   const sess = $('#sessions-sec', root)
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir', root))
-  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal') }))
+  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal'), report: !!f.get('report') }))
 
   bindAgents(root)
 

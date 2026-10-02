@@ -2,6 +2,9 @@
 // The Quilt accounts API: links desktop apps to accounts (a device-code flow, like
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
 import { parsePublicKey, verifyDeviceLink } from '../identity.js'
 import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
@@ -22,6 +25,10 @@ import { sessionInviteRoutes } from './routes/session-invites.js'
 import { HOSTED_RELAY } from '../settings.js'
 import { roomAccess } from './access.js'
 import { parseInvite } from '../ui/invite.js'
+import { issueRoutes } from './routes/issues.js'
+import { routeName, cleanEvent } from './issues.js'
+
+const API_VERSION = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')).version
 
 const LINK_TTL_MS = 10 * 60 * 1000
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
@@ -36,7 +43,7 @@ const MCP_TIMEOUT_MS = 30 * 1000
 // a change to its grant reaches it as soon as it reaches a connected app.
 const PASS_REUSE_MARGIN_MS = 5 * 60 * 1000
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, relaySecret = '' }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '' }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -92,6 +99,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const limitJoin = makeLimiter(joinLimit, 'too many tries; wait a minute and try again')
   // Passes, per token (keyed on its hash, counted once the token checks out).
   const limitPasses = makeLimiter(passLimit, 'too many passes; try again in a minute', { keyOf: (tokenHash) => tokenHash })
+  // Reports with no sign-in (the app before it's linked): a few batches a minute per address.
+  const limitReports = makeLimiter(reportLimit, 'too many reports; try again in a minute')
   const agentAuth = makeAgentAuth({ store, now, bearer })
   // Hosted MCP calls, per agent.
   const limitMcp = makeLimiter(mcpLimit, 'too many requests; slow down', { keyOf: (agentId) => agentId })
@@ -249,8 +258,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, person, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, relaySecret }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx))
+  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret }
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
@@ -260,16 +269,45 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return link
   }
 
+  // The API's own trouble, straight into the store: no-route 404s, crashes (5xx) and
+  // slow requests of any status; the 4xx a route throws on purpose (including a
+  // deliberate 404, like an expired invite or an org you've left) is only kept when
+  // it was slow, and then as `slow`, never as an error. Never awaited by the request,
+  // and a failure to record is only logged — nothing here may escape and disturb an
+  // already-sent reply.
+  function recordOwn ({ method, pathname, status, startedAt, message, noRoute }) {
+    try {
+      const durationMs = now() - startedAt
+      const slow = durationMs > slowMs
+      const crash = status >= 500
+      const http404 = status === 404 && noRoute
+      if (!crash && !http404 && !slow) return
+      // A scanner path outside /v1/ (wp-login.php, .env, …) has no route shape worth
+      // keeping per-path; group every one of those under one name instead of letting
+      // each distinct path become its own permanent issue.
+      const name = http404 && !pathname.startsWith('/v1/') ? `${method} (no route)` : routeName(method, pathname)
+      const event = cleanEvent({
+        kind: http404 ? 'http404' : 'action',
+        name,
+        outcome: crash || http404 ? 'error' : 'slow',
+        status, durationMs, message
+      }, { surface: 'api', appVersion: API_VERSION, now })
+      Promise.resolve().then(() => store.recordEvents([event])).catch((err) => log(`issue record failed: ${err?.message || err}`))
+    } catch (err) { log(`issue record failed: ${err?.message || err}`) }
+  }
+
   const server = http.createServer(async (req, res) => {
+    const startedAt = now()
     // The parsed pathname (not the raw url string) decides this: it's what a route
     // actually matches against, so "/v1/../v1/join/x" counts as a join link too.
     let pathname
     try { pathname = new URL(req.url, 'http://x').pathname } catch { pathname = '' }
     // Join links are secrets in a URL: never cache them, and ask crawlers not to index them.
     const extra = pathname.startsWith('/v1/join/') ? { 'x-robots-tag': 'noindex' } : {}
-    const send = (status, data, type = 'application/json') => {
+    const send = (status, data, type = 'application/json', message = '', noRoute = false) => {
       res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...extra, ...cors(req) })
       res.end(type === 'application/json' ? JSON.stringify(data) : data)
+      recordOwn({ method: req.method, pathname, status, startedAt, message, noRoute })
     }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, { 'cache-control': 'no-store', ...extra, ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' })
@@ -279,7 +317,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (pathname === '/mcp') return await proxyMcp(req, res, send)
       const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
-      if (!route) throw new HttpError(404, 'not found')
+      if (!route) throw Object.assign(new HttpError(404, 'not found'), { noRoute: true })
       // A route may take a bigger body than usual (the relay's presence reports): route[3].maxBody.
       const body = ['POST', 'PUT'].includes(req.method) ? await readJson(req, route[3]?.maxBody || MAX_BODY) : {}
       const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodePart))
@@ -297,7 +335,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       if (err?.code === '23503') return send(409, { error: 'that is still in use' })
       // Supabase errors are plain objects, so fall back to their JSON.
       if (!(err instanceof HttpError)) log(`api error: ${err?.stack || err?.message || JSON.stringify(err)}`)
-      send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' })
+      send(err.status || 500, { error: err instanceof HttpError ? err.message : 'internal error' }, 'application/json', err instanceof HttpError ? err.message : String(err?.message || err?.stack || JSON.stringify(err) || 'error'), !!err.noRoute)
     }
   })
 
@@ -363,9 +401,21 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return site && req.headers.origin === site ? { 'access-control-allow-origin': site, vary: 'origin' } : {}
   }
 
+  // Events are the detail (kept 30 days); issues are the summary people read (kept
+  // 90 days, so slower-moving problems don't vanish while their events still would).
+  async function pruneNow () {
+    try { await store.pruneEvents(now() - keepEventsMs) } catch (err) { log(`issue prune failed: ${err?.message || err}`) }
+    try { await store.pruneIssues(now() - keepIssuesMs) } catch (err) { log(`issue prune failed: ${err?.message || err}`) }
+  }
+  const prune = setInterval(() => { pruneNow() }, pruneEveryMs)
+  prune.unref()
+  // Also soon after start, since every deploy restarts the hourly clock.
+  const firstPrune = setTimeout(() => { pruneNow() }, pruneStartMs)
+  firstPrune.unref()
+
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => new Promise((r) => server.close(r)), startKeys: () => limitStarts.size() })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); clearTimeout(firstPrune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size() })
   }))
 }
 

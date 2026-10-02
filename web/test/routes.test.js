@@ -7,18 +7,40 @@ import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
 
-const env = {
-  ...process.env,
-  NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://example.supabase.co',
-  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_test',
-  QUILT_API_URL: process.env.QUILT_API_URL || 'http://127.0.0.1:9'
-}
 const cwd = fileURLToPath(new URL('..', import.meta.url))
 const nextBin = fileURLToPath(new URL('../node_modules/.bin/next', import.meta.url))
-let server; let base
+let server; let base; let apiSrv; let env
+const apiSeen = []
 const freePort = () => new Promise((resolve) => { const s = net.createServer().listen(0, () => { const p = s.address().port; s.close(() => resolve(p)) }) })
 
 before(async () => {
+  // A tiny fake accounts API, standing in for the real one: it answers every path with 200
+  // {} (harmless for a page that only needs a 200/JSON, and nothing here renders dashboard
+  // pages signed in), except it records every POST to /v1/issues so the report tests can check
+  // what the site sent.
+  apiSrv = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      if (req.url === '/v1/issues') {
+        let parsed = body
+        try { parsed = JSON.parse(body) } catch {}
+        apiSeen.push({ method: req.method, url: req.url, headers: req.headers, body: parsed })
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{}')
+    })
+  }).listen(0)
+  await new Promise((r) => apiSrv.once('listening', r))
+
+  env = {
+    ...process.env,
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://example.supabase.co',
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_test',
+    QUILT_API_URL: `http://127.0.0.1:${apiSrv.address().port}`,
+    QUILT_REPORT_KEY: 'rk_routes'
+  }
+
   execFileSync(nextBin, ['build'], { cwd, env, stdio: 'ignore' })
   const port = await freePort()
   base = `http://127.0.0.1:${port}`
@@ -26,12 +48,16 @@ before(async () => {
   for (let i = 0; i < 100; i++) { try { await fetch(base); return } catch { await new Promise((r) => setTimeout(r, 200)) } }
   throw new Error('next start did not come up')
 })
-after(() => server?.kill())
+after(() => { server?.kill(); apiSrv?.close() })
 
 const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
   for (const path of ['/', '/pricing', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
+
+  const missing = await get('/no-such-page')
+  assert.equal(missing.status, 404)
+  assert.match(await missing.text(), /That page isn’t here/)
 })
 
 // A dynamic homepage runs a Netlify function on every visit (and a cold start can take a second);
@@ -164,4 +190,47 @@ test('signed-out /dashboard/ ends up at /signin with no trailing slash anywhere 
   const signin = new URL(second.headers.get('location'), base)
   assert.equal(signin.pathname, '/signin')
   assert.equal(signin.searchParams.get('next'), '/dashboard')
+})
+
+const SAFARI_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15'
+
+test('POST /api/report forwards a web issue to the accounts API, and quietly drops garbage', async () => {
+  const n = apiSeen.length
+  const res = await fetch(base + '/api/report', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': SAFARI_UA },
+    body: JSON.stringify({ kind: 'http404', name: '/missing?x=1#frag', message: '' })
+  })
+  assert.equal(res.status, 204)
+  const rep = apiSeen.slice(n).find((s) => s.url === '/v1/issues')
+  assert.ok(rep, 'the fake API received the report')
+  assert.equal(apiSeen.slice(n).filter((s) => s.url === '/v1/issues').length, 1)
+  assert.equal(rep.headers['x-quilt-report-key'], 'rk_routes')
+  assert.equal(rep.body.surface, 'web')
+  assert.equal(rep.body.platform, 'safari')
+  assert.equal(rep.body.events[0].kind, 'http404')
+  assert.equal(rep.body.events[0].name, '/missing')
+  assert.equal(rep.body.events[0].status, 404)
+
+  const n2 = apiSeen.length
+  const badKind = await fetch(base + '/api/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'nope', name: '/x' }) })
+  assert.equal(badKind.status, 204)
+  const tooBig = await fetch(base + '/api/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(5000) })
+  assert.equal(tooBig.status, 204)
+  assert.equal(apiSeen.slice(n2).filter((s) => s.url === '/v1/issues').length, 0, 'nothing new reached the fake API')
+})
+
+test('POST /api/report rate-limits per IP: eleven quick posts from one address forward at most ten', async () => {
+  const n = apiSeen.length
+  const ip = '203.0.113.9'
+  for (let i = 0; i < 11; i++) {
+    const res = await fetch(base + '/api/report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-nf-client-connection-ip': ip },
+      body: JSON.stringify({ kind: 'http404', name: `/rate-limit-${i}` })
+    })
+    assert.equal(res.status, 204)
+  }
+  const forwarded = apiSeen.slice(n).filter((s) => s.url === '/v1/issues')
+  assert.equal(forwarded.length, 10, 'the 11th post from the same address was dropped before forwarding')
 })

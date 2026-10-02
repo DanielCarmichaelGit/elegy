@@ -403,6 +403,20 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async decideJoinRequest (id, { status, decidedBy }) {
       const rows = await one(db.from('join_requests').update({ status, decided_by: decidedBy, decided_at: new Date().toISOString() }).eq('id', id).eq('status', 'pending').select('id'))
       return rows.length > 0
+    },
+    // Issue reports: one rpc per batch (record_events opens or counts up issues itself).
+    async recordEvents (list) {
+      if (!list.length) return 0
+      const events = list.map((e) => ({ ...toSnake({ ...e, occurredAt: ts(e.occurredAt) }), fingerprint: e.fingerprint ?? null, status: e.status ?? null, duration_ms: e.durationMs ?? null, user_id: e.userId ?? null, device_id: e.deviceId ?? null }))
+      return (await one(db.rpc('record_events', { events }))) ?? list.length
+    },
+    async pruneEvents (before) {
+      await one(db.from('events').delete().lt('occurred_at', ts(before)))
+      return 0
+    },
+    async pruneIssues (before) {
+      await one(db.from('issues').delete().lt('last_seen_at', ts(before)))
+      return 0
     }
   }
 }
