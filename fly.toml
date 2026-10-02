@@ -17,6 +17,9 @@ primary_region = "iad"
   # Supabase's free plan caps uploads at 50 MB per file; raise this on a paid plan.
   QUILT_MAX_STORED_FILE_MB = "50"
   PORT = "4321"
+  # Presence reports for people's dashboards. They also need the RELAY_API_SECRET secret
+  # (node scripts/relay-api-secret.mjs sets it on this app and on quilt-api).
+  QUILT_API_URL = "https://api.heyquilt.com"
 
 [[mounts]]
   source = "cowove_data"

@@ -1,0 +1,182 @@
+// The relay reports presence to the accounts API: a visit starts when an account is
+// let into a session and ends when it leaves. The owner names the session.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import WebSocket from 'ws'
+import { startServer, relayConfig } from '../src/server.js'
+import { generateIdentity, signChallenge } from '../src/identity.js'
+import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
+import { PRESENCE_FILE } from '../src/presence.js'
+import { PASS_KEYS, makePass } from './pass-helpers.js'
+import { startTestApi } from './api-helpers.js'
+
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-home-'))
+const SECRET = 'relay-api-secret-for-tests'
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+async function waitFor (fn, ms = 5000) {
+  const start = Date.now()
+  while (Date.now() - start < ms) { const v = await fn(); if (v) return v; await wait(25) }
+  throw new Error('timed out')
+}
+let rooms = 0
+const room = () => `pr-${++rooms}`
+
+/** A stand-in accounts API: every event the relay sends, in order. */
+function collector () {
+  const events = []
+  const fetch = async (url, init) => {
+    assert.equal(init.headers.authorization, `Bearer ${SECRET}`)
+    events.push(...JSON.parse(init.body).events)
+    return { ok: true, status: 200 }
+  }
+  return { fetch, events }
+}
+
+async function relay (t, opts = {}) {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, passPublicKey: PASS_KEYS.publicKey, apiUrl: 'http://api.test', relayApiSecret: SECRET, ...opts })
+  t.after(() => srv.close())
+  return srv
+}
+
+function connect (srv, r, { identity = generateIdentity(), pass, viewSecret } = {}) {
+  const q = new URLSearchParams({ secret: 's', name: 'n', key: identity.publicKey, kind: 'human', features: 'large-files' })
+  if (pass) q.set('pass', pass)
+  if (viewSecret) q.set('viewSecret', viewSecret)
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${r}?${q}`)
+  ws.binaryType = 'arraybuffer'
+  const c = { ws, access: [], members: [] }
+  c.closed = new Promise((resolve) => ws.on('close', (code) => resolve(code)))
+  return new Promise((resolve, reject) => {
+    c.closed.then((code) => reject(new Error(`closed with ${code}`)))
+    ws.on('error', () => {})
+    ws.on('message', (data) => {
+      const dec = decoding.createDecoder(new Uint8Array(data))
+      const type = decoding.readVarUint(dec)
+      if (type === MSG_AUTH) ws.send(bytesMessage(MSG_AUTH, signChallenge(identity, r, decoding.readVarUint8Array(dec))))
+      else if (type === MSG_ACCESS) { c.access.push(JSON.parse(decoding.readVarString(dec))); resolve(c) } else if (type === MSG_MEMBERS) c.members.push(JSON.parse(decoding.readVarString(dec)))
+    })
+  })
+}
+const as = (name, sub, kind = 'person') => { const identity = generateIdentity(); return { identity, pass: makePass({ identity, name, sub, kind }) } }
+let adminIds = 0
+function admin (c, req) {
+  const id = ++adminIds
+  c.ws.send(jsonMessage(MSG_ADMIN, { id, ...req }))
+  return waitFor(() => c.members.find((m) => m.reply && m.reply.id === id)?.reply)
+}
+const leave = async (c) => { c.ws.close(); await c.closed.catch(() => {}) }
+
+test('presence is off unless both QUILT_API_URL and RELAY_API_SECRET are set', async (t) => {
+  for (const opts of [{ apiUrl: '', relayApiSecret: '' }, { apiUrl: 'http://api.test', relayApiSecret: '' }, { apiUrl: '', relayApiSecret: SECRET }]) {
+    const srv = await relay(t, opts)
+    assert.equal(srv.presence, null, JSON.stringify(opts))
+  }
+  assert.deepEqual([relayConfig({}).apiUrl, relayConfig({}).relayApiSecret], ['', ''])
+})
+
+test('an account let in starts a visit, and leaving ends it', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
+  const r = room()
+  const olive = as('Olive', 'user-olive')
+  const o = await connect(srv, r, { ...olive, viewSecret: 'v' })
+  const bot = as('Larry', 'agent-1', 'agent')
+  const b = await connect(srv, r, bot)
+  assert.equal(b.access[0].state, 'pending')
+  await admin(o, { op: 'approve', key: 'agent:agent-1' })
+  await leave(b)
+  await waitFor(() => srv.presence.open.size === 1)
+  await srv.presence.flush()
+  assert.deepEqual(api.events.map((e) => [e.type, e.room, e.account, e.name, e.owner]), [
+    ['start', r, 'person:user-olive', 'Olive', true],
+    ['start', r, 'agent:agent-1', 'Larry', undefined],
+    ['end', r, 'agent:agent-1', undefined, undefined]
+  ])
+  assert.equal(api.events[2].start, api.events[1].id)
+})
+
+test('someone waiting for the owner records nothing, and nothing if they are turned away', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  const gus = await connect(srv, r, as('Gus', 'user-gus'))
+  assert.equal(gus.access[0].state, 'pending')
+  await admin(o, { op: 'deny', key: 'person:user-gus' })
+  await srv.presence.flush()
+  assert.deepEqual(api.events.map((e) => e.account), ['person:user-olive'])
+})
+
+test('connections without a pass are never reported', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { passPublicKey: '', presenceOptions: { fetch: api.fetch } })
+  await connect(srv, room())
+  await srv.presence.flush()
+  assert.deepEqual(api.events, [])
+})
+
+test('only the owner names the session; the name reaches everyone in it, and the API', async (t) => {
+  const api = collector()
+  const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  const gus = await connect(srv, r, as('Gus', 'user-gus'))
+  await admin(o, { op: 'approve', key: 'person:user-gus' })
+  for (const bad of ['', '   ', 'x'.repeat(81), 'two\nlines', 42]) {
+    const reply = await admin(o, { op: 'name', name: bad })
+    assert.deepEqual(reply, { id: reply.id, ok: false, error: 'Give the session a name of 1 to 80 characters.' }, JSON.stringify(bad))
+  }
+  assert.equal((await admin(gus, { op: 'name', name: 'Mine' })).error, 'only the session owner can do that')
+  assert.equal((await admin(o, { op: 'name', name: '  quilt-site  ' })).ok, true)
+  await waitFor(() => gus.members.some((m) => m.sessionName === 'quilt-site'))
+  assert.equal(srv.rooms.get(r).meta.name, 'quilt-site')
+  await srv.presence.flush()
+  assert.deepEqual(api.events.filter((e) => e.type === 'name').map((e) => [e.room, e.name]), [[r, 'quilt-site']])
+})
+
+test('the queue file survives a crash, and the next start ends the visits left open', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-data-'))
+  const down = { fetch: async () => ({ ok: false, status: 503 }) }
+  const first = await relay(t, { dataDir: dir, presenceOptions: down })
+  const r = room()
+  await connect(first, r, as('Olive', 'user-olive'))
+  first.presence.persist()
+  // A crash: the next relay finds the file as this one left it.
+  const crashed = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-presence-data-'))
+  fs.copyFileSync(path.join(dir, PRESENCE_FILE), path.join(crashed, PRESENCE_FILE))
+  const api = collector()
+  const second = await relay(t, { dataDir: crashed, presenceOptions: { fetch: api.fetch } })
+  await second.presence.flush()
+  assert.deepEqual(api.events.map((e) => [e.type, e.account]), [['start', 'person:user-olive'], ['end', 'person:user-olive']])
+})
+
+test('shutting down ends open visits and sends them', async (t) => {
+  const api = collector()
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, passPublicKey: PASS_KEYS.publicKey, apiUrl: 'http://api.test', relayApiSecret: SECRET, presenceOptions: { fetch: api.fetch } })
+  await connect(srv, room(), as('Olive', 'user-olive'))
+  await srv.close()
+  assert.deepEqual(api.events.map((e) => e.type), ['start', 'end'])
+})
+
+test('end to end: two accounts in one session see each other on their dashboards', async (t) => {
+  const accounts = await startTestApi({ relaySecret: SECRET })
+  t.after(() => accounts.close())
+  const srv = await relay(t, { apiUrl: accounts.api.url })
+  const r = room()
+  const mo = await connect(srv, r, { ...as('Mo', 'mem'), viewSecret: 'v' })
+  const ada = await connect(srv, r, as('Ada', 'admin'))
+  await admin(mo, { op: 'approve', key: 'person:admin' })
+  await admin(mo, { op: 'name', name: 'quilt-site' })
+  await wait(50)
+  await leave(ada)
+  await waitFor(() => srv.presence.open.size === 1)
+  assert.equal(await srv.presence.flush(), true)
+  const mine = (await accounts.call('GET', '/v1/me/sessions', null, 'mem')).body.sessions.find((s) => s.room === r)
+  assert.deepEqual([mine.name, mine.mine, mine.people.map((p) => p.name)], ['quilt-site', true, ['Ada']])
+  const hers = (await accounts.call('GET', '/v1/me/sessions', null, 'admin')).body.sessions.find((s) => s.room === r)
+  assert.deepEqual([hers.name, hers.mine, hers.owner.name, hers.people.map((p) => p.name)], ['quilt-site', false, 'Mo', ['Mo']])
+  assert.ok(hers.people[0].togetherMs > 0)
+})

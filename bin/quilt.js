@@ -95,6 +95,7 @@ async function serve () {
   const c = srv.config
   console.log(`quilt relay listening on :${srv.port} (data: ${dataDir})`)
   console.log(`  sign-in: ${c.passPublicKey ? 'a pass from the accounts API is required; new sessions are limited per account' : 'off (set QUILT_PASS_PUBLIC_KEY to require it)'}`)
+  console.log(`  dashboard: ${c.apiUrl && c.relayApiSecret ? `reports who is in which session to ${c.apiUrl}` : 'off (set QUILT_API_URL and RELAY_API_SECRET to report sessions to the dashboard)'}`)
   if (!c.passPublicKey) console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set QUILT_RELAY_KEY to restrict)'}`)
   console.log(`  limits: ${Math.round(c.maxRoomBytes / 1048576)} MB per session, ${Math.round(c.maxRoomFileBytes / 1048576)} MB of shared files, ${c.maxConnsPerIp} connections per address, idle sessions removed after ${c.roomTtlDays} days`)
   console.log(`for development, point Quilt at it with QUILT_SERVER=ws://<this-host>:${srv.port}`)

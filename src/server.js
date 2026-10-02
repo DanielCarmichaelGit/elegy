@@ -34,6 +34,8 @@ import { patternsOverlap, globMatcher } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
+import { PresenceReporter, PRESENCE_FILE } from './presence.js'
+import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -55,6 +57,9 @@ export function relayConfig (opts = {}) {
   const passPublicKey = opts.passPublicKey ?? env.QUILT_PASS_PUBLIC_KEY ?? ''
   return {
     passPublicKey,
+    // Presence reports for the dashboard (presence.js): only when both are set.
+    apiUrl: opts.apiUrl ?? env.QUILT_API_URL ?? '',
+    relayApiSecret: opts.relayApiSecret ?? env.RELAY_API_SECRET ?? '',
     // With passes on, the accounts API decides who may start sessions: the relay key isn't used.
     relayKey: passPublicKey ? '' : (opts.relayKey ?? env.QUILT_RELAY_KEY ?? ''),
     // A room's whole history lives in memory while anyone is in it, and takes
@@ -123,6 +128,7 @@ class Room {
     this.full = this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
+    this.presence = null // a PresenceReporter when the relay reports presence (set by startServer)
 
     this.doc.on('update', (update, origin, doc, tr) => {
       if (origin === this.guard && this.undoing) { this.undoing.push(update); return } // sent merged, below
@@ -348,7 +354,7 @@ class Room {
     const members = this.memberList()
     const pending = this.pendingList()
     for (const [ws, a] of this.access) {
-      const msg = { members, ...(a.owner ? { pending } : {}), ...(ws === replyTo && reply ? { reply } : {}) }
+      const msg = { members, sessionName: this.meta.name || '', ...(a.owner ? { pending } : {}), ...(ws === replyTo && reply ? { reply } : {}) }
       send(ws, jsonMessage(MSG_MEMBERS, msg))
     }
   }
@@ -357,6 +363,15 @@ class Room {
   adminRequest (ws, req) {
     const me = this.access.get(ws)
     if (!me || !me.owner) throw new Error('only the session owner can do that')
+    if (req.op === 'name') {
+      // The owner's app names the session after its folder, and the owner can rename it.
+      const name = cleanSessionName(req.name)
+      if (!name) throw new Error(BAD_SESSION_NAME)
+      this.meta.name = name
+      this.saveMeta()
+      if (this.presence) this.presence.rename({ room: this.name, name })
+      return { ok: true }
+    }
     if (req.op === 'end') {
       // Reply first; the relay then sends everyone away and deletes the room.
       setTimeout(() => this.onEnd && this.onEnd(), 50)
@@ -603,6 +618,8 @@ class Room {
   /** Lets a signed-in (and, if needed, approved) person into the room. */
   enter (ws, a) {
     this.setAccess(ws, a)
+    // Presence: an account's visit starts once it's let in (never while it waits for the owner).
+    if (ws.pass && this.presence && !ws.visit) ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
     send(ws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
     this.join(ws, a.name)
     this.broadcastMembers()
@@ -619,6 +636,7 @@ class Room {
   }
 
   leave (ws) {
+    if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit); ws.visit = null }
     const ids = this.conns.get(ws)
     this.conns.delete(ws)
     this.names.delete(ws)
@@ -680,7 +698,7 @@ class Room {
         reply = { id: req.id, ok: false, error: err.message }
       }
       if (reply.ok) this.broadcastMembers(ws, reply)
-      else send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), ...(this.access.get(ws)?.owner ? { pending: this.pendingList() } : {}), reply }))
+      else send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', ...(this.access.get(ws)?.owner ? { pending: this.pendingList() } : {}), reply }))
     }
   }
 
@@ -727,7 +745,7 @@ function send (ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(msg, (err) => { if (err) ws.terminate() })
 }
 
-export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, ...opts } = {}) {
+export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, presenceOptions = {}, ...opts } = {}) {
   const cfg = relayConfig(opts)
   const passKey = cfg.passPublicKey ? parsePublicKey(cfg.passPublicKey) : null
   if (cfg.passPublicKey && !passKey) throw new Error('QUILT_PASS_PUBLIC_KEY is not an Ed25519 public key (spki, base64url)')
@@ -738,6 +756,16 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   // Without sign-in the limit is per address, and the message says so (as before).
   const TOO_MANY = passKey ? 'too many new sessions; try again later' : 'too many new sessions from this address; try again later'
   if (dataDir) fs.mkdirSync(dataDir, { recursive: true })
+  // Who is in which session, for the dashboard (presence.js). Off unless both settings are set,
+  // and then only for connections with a pass. Visits a crash left open are ended now.
+  const presence = cfg.apiUrl && cfg.relayApiSecret
+    ? new PresenceReporter({ apiUrl: cfg.apiUrl, secret: cfg.relayApiSecret, file: dataDir ? path.join(dataDir, PRESENCE_FILE) : null, log, ...presenceOptions })
+    : null
+  if (presence) {
+    const ended = presence.load()
+    if (ended) log(`presence: ended ${ended} visit(s) left open by the last run`)
+    presence.start()
+  }
   const rooms = new Map() // loaded rooms only
   const ipConns = new Map()
   // New sessions are rate-limited per account when sign-in is on, otherwise per address.
@@ -781,6 +809,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       }
       unreadable.delete(name)
       rooms.set(name, room)
+      room.presence = presence
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
         if (!dataDir || rooms.get(name) !== room) return
@@ -1146,16 +1175,19 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         config: cfg,
         rooms, // exposed for tests
         store, // exposed for tests
+        presence, // exposed for tests
         sweep,
-        close: () => new Promise((resolve) => {
+        close: async () => {
           clearInterval(heartbeat)
           clearInterval(sweeper)
+          // Every open visit ends now, and the queue gets one last try at the accounts API.
+          if (presence) await presence.close()
           for (const ws of wss.clients) ws.terminate()
           for (const room of rooms.values()) room.destroy()
           rooms.clear()
           wss.close()
-          httpServer.close(() => resolve())
-        })
+          await new Promise((resolve) => httpServer.close(() => resolve()))
+        }
       })
     })
   })
