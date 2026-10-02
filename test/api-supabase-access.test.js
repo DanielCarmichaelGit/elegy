@@ -81,3 +81,10 @@ test('deleting a user removes its access before its activity, before the auth us
   assert.deepEqual(calls.slice(1).map((c) => c.rpc || (c.deletedUser && 'auth')), ['delete_account_access', 'delete_account_activity', 'auth'])
   assert.deepEqual(calls[1].args, { p_accounts: ['person:u1', 'agent:a1'] })
 })
+
+test("cancelling's grant delete is one function call that checks for open invites", async () => {
+  const { client, calls } = fakeClient(() => true)
+  const s = createSupabaseStore({ client })
+  assert.equal(await s.deleteUnusedGrant('r1', 'email:pat@example.com', Date.parse('2026-10-03T00:00:00Z')), true)
+  assert.deepEqual([calls[0].rpc, calls[0].args], ['delete_unused_grant', { p_room: 'r1', p_account: 'email:pat@example.com', p_now: '2026-10-03T00:00:00.000Z' }])
+})

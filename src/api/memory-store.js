@@ -330,6 +330,12 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (!i || i.usedAt || i.cancelledAt) return false
       i.cancelledAt = now(); return true
     },
+    // Mirrors delete_unused_grant.
+    async deleteUnusedGrant (room, account, at) {
+      const email = account.startsWith('email:') ? account.slice('email:'.length) : null
+      if (all(sessionInvites, (i) => i.room === room && (email ? i.email === email : i.account === account) && inviteOpenAt(i, at)).length) return false
+      return grants.delete(grantKey(room, account))
+    },
     // Mirrors claim_email_invites: the open invites are used, and the email's grant becomes the account's.
     async claimEmailInvites (room, email, account) {
       const at = now()

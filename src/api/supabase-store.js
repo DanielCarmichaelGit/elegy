@@ -239,6 +239,10 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       const rows = await one(db.from('session_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).select('id'))
       return rows.length > 0
     },
+    // The grant goes unless an open invite for that address or account still needs it (one statement).
+    async deleteUnusedGrant (room, account, at) {
+      return await one(db.rpc('delete_unused_grant', { p_room: room, p_account: account, p_now: ts(at) }))
+    },
     async claimEmailInvites (room, email, account) {
       return await one(db.rpc('claim_email_invites', { p_room: room, p_email: email, p_account: account, p_now: new Date().toISOString() }))
     },

@@ -6,6 +6,7 @@ import { ownType, grantView } from '../access.js'
 
 export const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 export const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
+const EMAIL_KEY = /^[^\s@,;<>"()\\]+@[^\s@,;<>"()\\]+$/
 export const NOT_YET = "That session hasn't reached heyquilt.com yet. Try again in a minute."
 
 /**
@@ -43,10 +44,12 @@ export function grantRoutes ({ store, person, now = Date.now }) {
 
     ['DELETE', /^\/v1\/sessions\/([^/]+)\/grants\/([^/]+)$/, async (req, body, [room, account]) => {
       await sessionOwner(store, person, req, room)
-      if (!ACCOUNT.test(account)) throw new HttpError(400, 'no such account')
+      // An account, or an email invite's grant (left by an invite that expired, say).
+      const email = account.startsWith('email:') ? account.slice('email:'.length) : ''
+      if (!ACCOUNT.test(account) && !(email && EMAIL_KEY.test(email))) throw new HttpError(400, 'no such account')
       await store.deleteGrant(room, account)
       // Their open invite would still list as waiting, for access they no longer have.
-      const open = await store.openSessionInvite(room, { account }, now())
+      const open = await store.openSessionInvite(room, email ? { email } : { account }, now())
       if (open) await store.cancelSessionInvite(open.id)
       return { ok: true }
     }]

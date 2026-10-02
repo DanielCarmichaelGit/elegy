@@ -7,7 +7,7 @@ import fs from 'node:fs'
 const sql = () => fs.readFileSync(new URL('../supabase/migrations/20261002010000_access_types_and_invites.sql', import.meta.url), 'utf8')
 const table = (s, name) => (s.match(new RegExp(`create table public\\.${name} \\([\\s\\S]*?\\n\\);`)) || [''])[0]
 const TABLES = ['access_types', 'session_grants', 'session_invites']
-const FUNCTIONS = ['delete_access_type (uuid, text)', 'claim_email_invites (text, text, text, timestamptz)', 'delete_account_access (text[])']
+const FUNCTIONS = ['delete_access_type (uuid, text)', 'claim_email_invites (text, text, text, timestamptz)', 'delete_account_access (text[])', 'delete_unused_grant (text, text, timestamptz)']
 
 test('access types, grants and invites, with the columns the spec names', () => {
   const s = sql()
@@ -46,4 +46,10 @@ test('one open invite per address or account, kept by the database; invites are 
   assert.ok(s.includes('create unique index session_invites_open_email on public.session_invites (room, email) where used_at is null and cancelled_at is null;'))
   assert.ok(s.includes('create unique index session_invites_open_account on public.session_invites (room, account) where used_at is null and cancelled_at is null;'))
   assert.ok(s.includes('create index session_invites_account on public.session_invites (account);'))
+})
+
+test('a cancelled invite takes its grant only if no open invite needs it, in one statement', () => {
+  const s = sql()
+  assert.match(s, /delete from public\.session_grants g where g\.room = p_room and g\.account = p_account\n\s+and not exists \(/)
+  assert.ok(s.includes('then i.email = substr(p_account, 7) else i.account = p_account end'))
 })

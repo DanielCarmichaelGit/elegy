@@ -110,6 +110,25 @@ begin
 end;
 $$;
 
+-- Cancelling an invite takes back its grant, unless another open invite for the same
+-- address or account needs it: checked in the same statement, so an invite made meanwhile
+-- keeps its grant.
+create function public.delete_unused_grant (p_room text, p_account text, p_now timestamptz)
+returns boolean
+language plpgsql
+set search_path = ''
+as $$
+begin
+  delete from public.session_grants g where g.room = p_room and g.account = p_account
+    and not exists (
+      select 1 from public.session_invites i
+      where i.room = p_room
+        and (case when p_account like 'email:%' then i.email = substr(p_account, 7) else i.account = p_account end)
+        and i.used_at is null and i.cancelled_at is null and i.expires_at > p_now);
+  return found;
+end;
+$$;
+
 -- Deleting an account: its access types, and its grants and invites in other people's
 -- sessions (its own sessions take theirs with them).
 create function public.delete_account_access (p_accounts text[])
@@ -125,6 +144,8 @@ $$;
 revoke execute on function public.delete_access_type (uuid, text) from public, anon, authenticated;
 revoke execute on function public.claim_email_invites (text, text, text, timestamptz) from public, anon, authenticated;
 revoke execute on function public.delete_account_access (text[]) from public, anon, authenticated;
+revoke execute on function public.delete_unused_grant (text, text, timestamptz) from public, anon, authenticated;
 grant execute on function public.delete_access_type (uuid, text) to service_role;
 grant execute on function public.claim_email_invites (text, text, text, timestamptz) to service_role;
 grant execute on function public.delete_account_access (text[]) to service_role;
+grant execute on function public.delete_unused_grant (text, text, timestamptz) to service_role;

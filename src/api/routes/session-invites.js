@@ -19,13 +19,17 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
   const statusOf = (i) => (i.usedAt ? 'used' : i.cancelledAt ? 'cancelled' : i.expiresAt <= now() ? 'expired' : 'waiting')
   // The invite comes first, then its grant: one that loses a race to another open invite for
   // the same address or account (the database's unique index) changes nothing.
-  async function createInvite (fields, duplicateMessage) {
+  async function createInvite (fields, duplicateMessage, grant) {
+    let invite
     try {
-      return await store.createSessionInvite({ ...fields, at: now() })
+      invite = await store.createSessionInvite({ ...fields, at: now() })
     } catch (err) {
       if (err.code === '23505') throw new HttpError(409, duplicateMessage)
       throw err
     }
+    // No grant, no invite: an open one would block inviting them again.
+    try { await store.putGrant(grant) } catch (err) { await store.cancelSessionInvite(invite.id).catch(() => {}); throw err }
+    return invite
   }
   // An account invite shows the name the owner saw, never the person's email.
   async function view (i) {
@@ -72,8 +76,8 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
         const email = cleanEmail(to.email)
         const taken = 'That address already has an open invite. Cancel it first.'
         if (await store.openSessionInvite(room, { email }, now())) throw new HttpError(409, taken)
-        const invite = await createInvite({ room, email, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS }, taken)
-        await store.putGrant({ room, account: `email:${email}`, typeId: type.id, grantedBy: owner.me })
+        const invite = await createInvite({ room, email, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS }, taken,
+          { room, account: `email:${email}`, typeId: type.id, grantedBy: owner.me })
         await send(email, { ...owner, link })
         return { invite: await view(invite) }
       }
@@ -88,8 +92,8 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
       // Inviting them again would overwrite the access they have, and cancelling that invite
       // would then take it all away.
       if (await store.grantFor(room, account)) throw new HttpError(409, 'They already have access to this session. Change it from the people menu.')
-      const invite = await createInvite({ room, account, accountName: who.name, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS }, taken)
-      await store.putGrant({ room, account, typeId: type.id, grantedBy: owner.me })
+      const invite = await createInvite({ room, account, accountName: who.name, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS }, taken,
+        { room, account, typeId: type.id, grantedBy: owner.me })
       // A person hears about it at their sign-in email (looked up here, never sent back). An
       // agent has no email: its grant just lets it straight in.
       if (who.kind === 'person') {
@@ -105,9 +109,8 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
       const invite = UUID.test(id) ? await store.sessionInviteById(room, id) : null
       if (!invite) throw new HttpError(404, 'no such invite')
       if (!await store.cancelSessionInvite(invite.id)) throw new HttpError(409, 'That invite was already used or cancelled.')
-      const key = invite.email ? `email:${invite.email}` : invite.account
-      const stillOpen = await store.openSessionInvite(room, invite.email ? { email: invite.email } : { account: invite.account }, now(), invite.id)
-      if (!stillOpen) await store.deleteGrant(room, key)
+      // Unless an open invite for the same address or account needs it, even one made just now.
+      await store.deleteUnusedGrant(room, invite.email ? `email:${invite.email}` : invite.account, now())
       return { ok: true }
     }]
   ]

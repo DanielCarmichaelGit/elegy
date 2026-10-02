@@ -151,12 +151,41 @@ test('someone who already has access is changed from the people menu, not invite
   assert.deepEqual(await grants(room), [['person:lim', 'View only']], 'their grant is untouched')
 })
 
-test('taking away an account\'s grant also closes its open invite; only accounts have grants to take away', async () => {
+test('taking away a grant also closes its open invite; only account and email grants can be taken', async () => {
   const room = await session()
   const inv = (await invite(room, { to: { account: 'agent:a1' } })).body.invite
   assert.deepEqual((await t.call('DELETE', `/v1/sessions/${room}/grants/agent:a1`, null, 'mem')).body, { ok: true })
   const list = (await t.call('GET', `/v1/sessions/${room}/invites`, null, 'mem')).body.invites
   assert.deepEqual(list.map((i) => [i.id, i.status]), [[inv.id, 'cancelled']])
-  const bad = await t.call('DELETE', `/v1/sessions/${room}/grants/email:pat@example.com`, null, 'mem')
-  assert.equal(bad.status, 400)
+  // An email invite's grant can be taken away too, which closes that invite.
+  const byMail = (await invite(room, { to: { email: 'pat@example.com' } })).body.invite
+  assert.deepEqual((await t.call('DELETE', `/v1/sessions/${room}/grants/email:pat@example.com`, null, 'mem')).body, { ok: true })
+  assert.equal((await t.call('GET', `/v1/sessions/${room}/invites`, null, 'mem')).body.invites.find((i) => i.id === byMail.id).status, 'cancelled')
+  assert.equal((await t.call('DELETE', `/v1/sessions/${room}/grants/nonsense`, null, 'mem')).status, 400)
+})
+
+test('a grant that fails to save leaves no open invite behind to block inviting them again', async () => {
+  const room = await session()
+  const real = t.store.putGrant
+  t.store.putGrant = async () => { throw new Error('the database is down') }
+  let failed
+  try { failed = await invite(room, { to: { email: 'pat@example.com' } }) } finally { t.store.putGrant = real }
+  assert.equal(failed.status, 500)
+  const again = await invite(room, { to: { email: 'pat@example.com' } })
+  assert.equal(again.status, 200, JSON.stringify(again.body))
+})
+
+test('cancelling never takes a grant another open invite still needs, whatever the timing', async () => {
+  const room = await session()
+  const a = (await invite(room, { to: { email: 'pat@example.com' } })).body.invite
+  // A new invite for Pat lands between the cancel's check and its delete: the store's one
+  // conditional delete sees it, and leaves the grant.
+  assert.equal(await t.store.cancelSessionInvite(a.id), true)
+  const b = await t.store.createSessionInvite({ room, email: 'pat@example.com', typeId: 'builtin:view', invitedBy: 'person:mem', expiresAt: clock + DAY, at: clock })
+  await t.store.putGrant({ room, account: 'email:pat@example.com', typeId: 'builtin:view', grantedBy: 'person:mem' })
+  assert.equal(await t.store.deleteUnusedGrant(room, 'email:pat@example.com', clock), false)
+  assert.deepEqual(await grants(room), [['email:pat@example.com', 'View only']])
+  assert.equal(await t.store.cancelSessionInvite(b.id), true)
+  assert.equal(await t.store.deleteUnusedGrant(room, 'email:pat@example.com', clock), true)
+  assert.deepEqual(await grants(room), [])
 })
