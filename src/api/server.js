@@ -232,19 +232,22 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   }
 
   // The API's own trouble, straight into the store: unknown routes, crashes (5xx) and
-  // slow requests. The 4xx a route throws on purpose is the API working, so it isn't kept.
-  // Never awaited by the request, and a failure to record is only logged.
+  // slow requests of any status; the 4xx a route throws on purpose is only kept when
+  // it was slow, and then as `slow`. Never awaited by the request, and a failure to
+  // record is only logged — nothing here may escape and disturb an already-sent reply.
   function recordOwn ({ method, pathname, status, startedAt, message }) {
-    const durationMs = now() - startedAt
-    const slow = durationMs > slowMs
-    if (status < 500 && status !== 404 && !slow) return
-    const event = cleanEvent({
-      kind: status === 404 ? 'http404' : 'action',
-      name: routeName(method, pathname),
-      outcome: status >= 400 ? 'error' : 'slow',
-      status, durationMs, message
-    }, { surface: 'api', appVersion: API_VERSION, now })
-    Promise.resolve().then(() => store.recordEvents([event])).catch((err) => log(`issue record failed: ${err?.message || err}`))
+    try {
+      const durationMs = now() - startedAt
+      const slow = durationMs > slowMs
+      if (status < 500 && status !== 404 && !slow) return
+      const event = cleanEvent({
+        kind: status === 404 ? 'http404' : 'action',
+        name: routeName(method, pathname),
+        outcome: status >= 500 || status === 404 ? 'error' : 'slow',
+        status, durationMs, message
+      }, { surface: 'api', appVersion: API_VERSION, now })
+      Promise.resolve().then(() => store.recordEvents([event])).catch((err) => log(`issue record failed: ${err?.message || err}`))
+    } catch (err) { log(`issue record failed: ${err?.message || err}`) }
   }
 
   const server = http.createServer(async (req, res) => {

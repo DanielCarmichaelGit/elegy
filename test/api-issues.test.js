@@ -153,3 +153,23 @@ test('old events are pruned on the API\'s timer', async () => {
     assert.ok(n >= 1, 'pruneEvents ran on the timer')
   } finally { await api.close() }
 })
+
+test('a slow 4xx the route throws on purpose is still recorded, but as slow, not an error', async () => {
+  const slow = await startTestApi({ slowMs: -1 }) // everything is "slow"
+  try {
+    const r = await slow.call('GET', '/v1/me') // a deliberate 401: no token
+    assert.equal(r.status, 401)
+    await new Promise((res) => setTimeout(res, 20))
+    const e = slow.store.listEvents().find((x) => x.surface === 'api' && x.name === 'GET /v1/me')
+    assert.equal(e.outcome, 'slow'); assert.equal(e.status, 401); assert.equal(e.kind, 'action')
+  } finally { await slow.close() }
+})
+
+test('a store that throws synchronously while recording never breaks the reply', async () => {
+  const saved = t.store.recordEvents
+  t.store.recordEvents = () => { throw new Error('sync no db') }
+  try {
+    const r = await t.call('GET', '/v1/nothing')
+    assert.equal(r.status, 404)
+  } finally { t.store.recordEvents = saved }
+})
