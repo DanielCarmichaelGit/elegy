@@ -43,6 +43,20 @@ function openInvite (link) {
   win.webContents.send('invite', link)
 }
 
+/** Tells Quilt about a crash in this process, when the app is far enough along to. Never throws. */
+async function reportCrash (name, err) {
+  try {
+    if (!ui) return
+    ui.report({ kind: 'crash', name, outcome: 'error', message: err?.stack || err?.message || String(err) })
+    await ui.flushReports()
+  } catch {}
+}
+
+// Electron would show its own dialog and carry on; do the same, after telling Quilt.
+process.on('uncaughtException', (err) => {
+  reportCrash('main', err).finally(() => dialog.showErrorBox('quilt hit a problem', err?.stack || err?.message || String(err)))
+})
+
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
@@ -64,7 +78,8 @@ if (!app.requestSingleInstanceLock()) {
   else app.setAsDefaultProtocolClient('quilt')
 
   pendingInvite = process.argv.map(inviteFrom).find(Boolean) || null
-  app.whenReady().then(start).catch((err) => {
+  app.whenReady().then(start).catch(async (err) => {
+    await reportCrash('start', err)
     dialog.showErrorBox('quilt could not start', err.stack || err.message)
     app.exit(1)
   })
