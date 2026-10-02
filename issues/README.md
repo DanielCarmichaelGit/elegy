@@ -18,11 +18,11 @@ the commit, so the history stays in one place.
 | [009](009-relay-crashes-on-bad-input.md) | Any client can crash the relay with one request (bad %-escape; unhandled socket error, crashed production 2026-10-01) | **Fixed** (4637800) |
 | [010](010-production-relay-sign-in-off.md) | Production relay has sign-in off: 0.3.1 clients get 403 starting sessions, names unchecked | **Fixed** (deployed 2026-10-02) |
 | [031](031-peer-can-unignore-env.md) | A partner's `.gitignore` edit un-ignores `.env` and your secrets sync into the room | **Fixed** (4637800) |
-| [011](011-secrets-in-websocket-urls.md) | Room secrets, relay key and passes travel in WebSocket URLs and were logged by Fly's proxy | Open, high |
+| [011](011-secrets-in-websocket-urls.md) | Room secrets, relay key and passes travel in WebSocket URLs and were logged by Fly's proxy | **Fixed** (7028258): headers, with a query fallback for one release; rotate the leaked key |
 | [012](012-release-tag-and-default-branch.md) | GitHub default branch is a stale `claude/*` branch; v0.3.1 tagged on 27 Sept code; relay image stale | Open, high |
-| [013](013-client-stops-reconnecting.md) | The app stops reconnecting after a 429 or a proxy 502/503 (relay restarts) | Open, high |
-| [014](014-session-ownership-first-come.md) | Session ownership and creation go to whoever connects first | Open, high |
-| [015](015-relay-disk-errors.md) | A disk error stops the relay; a half-written session file is deleted on restart | Open, high |
+| [013](013-client-stops-reconnecting.md) | The app stops reconnecting after a 429 or a proxy 502/503 (relay restarts) | **Fixed** (7028258) |
+| [014](014-session-ownership-first-come.md) | Session ownership and creation go to whoever connects first | **Fixed** (7028258): only the creator becomes owner; creation by a view link needs a client-side join flag |
+| [015](015-relay-disk-errors.md) | A disk error stops the relay; a half-written session file is deleted on restart | **Fixed** (7028258); a relay-wide free-space cap is still to do |
 | [021](021-chat-xss.md) | Stored XSS in the chat panel through a peer-controlled message id | **Fixed** (a95063c): id encoded and escaped, non-hex ids dropped, CSP on the page |
 | [032](032-remote-write-failure-reverts-edits.md) | One unwritable file drops the rest of an update and reverts the partner's edit; first-join name collisions abort | Open, high |
 | [033](033-symlink-read-on-rejoin.md) | On rejoin, a shared path under a local symlink reads a file outside the project into the room | Open, high |

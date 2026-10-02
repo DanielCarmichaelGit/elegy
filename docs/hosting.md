@@ -120,6 +120,11 @@ All settings are environment variables on the relay.
   starting sessions needs a key). It doesn't reveal usage.
 - `curl https://your-relay/healthz` tests it from any machine.
 - Logs show sessions connecting and leaving, but never their contents.
+- Session secrets, the relay key and sign-in passes travel in request headers
+  (`x-quilt-secret`, `x-quilt-view-secret`, `x-quilt-key`, `x-quilt-pass`),
+  never in the URL, so a proxy's access log doesn't record them. The relay
+  still reads them from the query string for clients older than 0.3.2; that
+  stops in the release after. Make sure your proxy doesn't log request headers.
 
 ## Large files
 

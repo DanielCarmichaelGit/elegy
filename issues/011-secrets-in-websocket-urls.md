@@ -1,6 +1,6 @@
 # 011: Room secrets, the relay key and passes travel in the WebSocket URL and end up in proxy logs
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** relay.heyquilt.com via Fly's proxy logs
+**Status:** **Fixed** (7028258) · **Reported:** 2026-10-01 (audit) · **Seen on:** relay.heyquilt.com via Fly's proxy logs
 
 ## What happens
 `src/connection.js:50-55` puts `secret`, `relayKey`, `viewSecret` and (with
@@ -30,3 +30,11 @@ upgrade, and the relay closes the socket if that message does not arrive.
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: fixed (7028258). The app sends `secret`, `viewSecret`, the relay key and the pass as
+  `x-quilt-secret`, `x-quilt-view-secret`, `x-quilt-key` and `x-quilt-pass` headers on the upgrade
+  (`src/connection.js`); only the name and public key stay in the query string. The relay reads the
+  headers first and still falls back to the query string for clients before 0.3.2 (drop that in the
+  release after). The relay never logged request URLs; `docs/hosting.md` now says so and names the
+  headers. Test: "secrets go in the upgrade request headers, never in its URL, and the relay takes
+  either form" in `test/relay.test.js`. Step 1 (rotating the leaked relay key / ending `room-3fce2917`)
+  is operational and still to do.

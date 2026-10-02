@@ -1,6 +1,6 @@
 # 013: The app stops reconnecting after a 429 or a proxy 502/503 (for example during a relay restart)
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** app/CLI from main (0.3.1), any relay behind a proxy
+**Status:** **Fixed** (7028258) · **Reported:** 2026-10-01 (audit) · **Seen on:** app/CLI from main (0.3.1), any relay behind a proxy
 
 ## What happens
 If the upgrade request gets an HTTP answer that is not 101 and not one of the
@@ -30,3 +30,8 @@ restart sync once it's back."
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: fixed (7028258). In `src/connection.js` the non-fatal `unexpected-response` branches
+  (429 and anything else, such as a proxy's 502/503) now end the handshake like the 401 branch does
+  (`ws.retrying = true; ws.terminate()`), so `close` fires and the usual backoff reconnect runs. Tests
+  in `test/relay.test.js`: "a connection refused with 429 keeps trying and gets in once a slot frees
+  up" and "a 503 from a proxy while the relay restarts is retried until the relay is back".

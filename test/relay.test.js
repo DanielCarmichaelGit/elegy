@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
+import http from 'node:http'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
@@ -14,6 +15,7 @@ import { relayUrl } from '../src/settings.js'
 import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 import { generateIdentity } from '../src/identity.js'
+import { PASS_KEYS, testPasses } from './pass-helpers.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-relay-${n}-`))
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -400,4 +402,190 @@ test('a client that sends more than the relay accepts is dropped, not fatal', as
   ws.send(Buffer.alloc(2 * 1024 * 1024)) // maxPayload is at least 1 MB, here exactly 1 MB
   assert.equal(await closed, 1009, 'closed for being too big')
   assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200, 'the relay is still up')
+})
+
+// Issue 011: secrets must not travel in the URL, where proxies log them.
+test('secrets go in the upgrade request headers, never in its URL, and the relay takes either form', async (t) => {
+  const defer = cleanups(t)
+  // A stand-in for a proxy in front of the relay: it records the upgrade request and refuses it.
+  let seen = null
+  const proxy = http.createServer((req, res) => { res.writeHead(404); res.end() })
+  proxy.on('upgrade', (req, socket) => {
+    seen = { url: req.url, headers: req.headers }
+    socket.write('HTTP/1.1 400 Nope\r\nConnection: close\r\n\r\n')
+    socket.destroy()
+  })
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  defer(() => new Promise((resolve) => proxy.close(resolve)))
+  const identity = generateIdentity()
+  const c = new Connection({ server: `ws://127.0.0.1:${proxy.address().port}`, room: 'r', secret: 'EDIT-SECRET', viewSecret: 'VIEW-SECRET', key: 'RELAY-KEY', name: 'olive', identity, doc: new Y.Doc(), passes: testPasses(identity) })
+  defer(() => c.close())
+  await new Promise((resolve) => c.on('fatal', resolve))
+  assert.ok(seen, 'the request reached the proxy')
+  assert.doesNotMatch(seen.url, /EDIT-SECRET|VIEW-SECRET|RELAY-KEY|pass=|secret=|relayKey=/i, `the URL carries no secrets: ${seen.url}`)
+  assert.match(seen.url, /name=olive/, 'the name may stay in the URL')
+  assert.match(seen.url, new RegExp(`key=${identity.publicKey}`), 'so may the public key')
+  assert.equal(seen.headers['x-quilt-secret'], 'EDIT-SECRET')
+  assert.equal(seen.headers['x-quilt-view-secret'], 'VIEW-SECRET')
+  assert.equal(seen.headers['x-quilt-key'], 'RELAY-KEY')
+  assert.ok(seen.headers['x-quilt-pass'], 'the pass is a header too')
+
+  // The relay reads the headers: a relay key, a pass, and the room's secrets all arrive that way.
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, relayKey: 'RELAY-KEY', passPublicKey: PASS_KEYS.publicKey })
+  defer(() => srv.close())
+  const server = `ws://127.0.0.1:${srv.port}`
+  const owner = new Connection({ server, room: 'hdr', secret: 'EDIT-SECRET', viewSecret: 'VIEW-SECRET', key: 'RELAY-KEY', name: 'olive', identity, doc: new Y.Doc(), passes: testPasses(identity) })
+  defer(() => owner.close())
+  await owner.waitForSync()
+  await waitFor(() => owner.access && owner.access.owner)
+  const viewerId = generateIdentity()
+  const viewer = new Connection({ server, room: 'hdr', secret: 'VIEW-SECRET', name: 'vic', identity: viewerId, doc: new Y.Doc(), passes: testPasses(viewerId, { name: 'Vic', sub: 'user-vic' }) })
+  defer(() => viewer.close())
+  await waitFor(() => viewer.access && viewer.access.state === 'pending')
+  assert.equal(viewer.access.invitedAs, 'viewer', 'the view secret in the header was matched')
+
+  // Older clients still send everything in the query string; that keeps working for one release.
+  const oldId = generateIdentity()
+  const pass = await testPasses(oldId, { name: 'Old', sub: 'user-old' }).get()
+  const q = new URLSearchParams({ secret: 's', name: 'old', key: oldId.publicKey, relayKey: 'RELAY-KEY', features: 'large-files', pass })
+  const ws = new WebSocket(`${server}/old-style?${q}`)
+  ws.on('error', () => {})
+  const status = await new Promise((resolve) => {
+    ws.on('open', () => resolve(101))
+    ws.on('unexpected-response', (req, res) => resolve(res.statusCode))
+  })
+  defer(() => ws.terminate())
+  assert.equal(status, 101)
+})
+
+// Issue 013: a refusal that isn't final must end the handshake so the backoff reconnect runs.
+test('a connection refused with 429 keeps trying and gets in once a slot frees up', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxConnsPerIp: 1 })
+  defer(() => srv.close())
+  const holder = new WebSocket(`ws://127.0.0.1:${srv.port}/x?secret=s&name=h&key=${generateIdentity().publicKey}`)
+  await new Promise((resolve, reject) => { holder.on('open', resolve); holder.on('error', reject) })
+  const warnings = []
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'x', secret: 's', name: 'dana', identity: generateIdentity(), doc: new Y.Doc() })
+  defer(() => c.close())
+  c.on('warn', (w) => warnings.push(w))
+  await waitFor(() => warnings.some((w) => /too many connections/.test(w)))
+  holder.close()
+  await waitFor(() => c.connected, 5000)
+  assert.equal(c.ws.readyState, WebSocket.OPEN)
+})
+
+test('a 503 from a proxy while the relay restarts is retried until the relay is back', async (t) => {
+  const defer = cleanups(t)
+  // The proxy answers 503 once (the relay is restarting), then the relay itself takes the port.
+  let refusals = 0
+  const proxy = http.createServer((req, res) => { res.writeHead(503); res.end() })
+  proxy.on('upgrade', (req, socket) => {
+    refusals++
+    socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+    socket.destroy()
+  })
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  const port = proxy.address().port
+  const c = new Connection({ server: `ws://127.0.0.1:${port}`, room: 'r', secret: 's', name: 'dana', identity: generateIdentity(), doc: new Y.Doc() })
+  defer(() => c.close())
+  await waitFor(() => refusals > 0)
+  await new Promise((resolve) => proxy.close(resolve))
+  const srv = await startServer({ port, host: '127.0.0.1', log: quiet })
+  defer(() => srv.close())
+  await waitFor(() => c.connected, 5000)
+  assert.equal(refusals, 1)
+})
+
+// Issue 014: whoever created the room is its owner, not whoever signs in first.
+test('only the creator of a session becomes its owner, even if an invitee signs in first', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  defer(() => srv.close())
+  const server = `ws://127.0.0.1:${srv.port}`
+  const creator = generateIdentity()
+  // The app's first connection: the upgrade creates the room, then the link drops before the challenge is answered.
+  const first = new WebSocket(`${server}/room?secret=EDIT&viewSecret=VIEW&name=olive&key=${creator.publicKey}&features=large-files`)
+  await new Promise((resolve, reject) => { first.on('open', resolve); first.on('error', reject) })
+  first.close()
+  await new Promise((resolve) => first.on('close', resolve))
+  assert.equal(srv.rooms.get('room').controlled, true)
+
+  // Someone with the view-only link, and someone with the edit link, both get there before the creator reconnects.
+  const mallory = new Connection({ server, room: 'room', secret: 'VIEW', name: 'mallory', identity: generateIdentity(), doc: new Y.Doc() })
+  defer(() => mallory.close())
+  await waitFor(() => mallory.access)
+  assert.equal(mallory.access.state, 'pending', `a view-only invitee waits for the owner: ${JSON.stringify(mallory.access)}`)
+  const eddieId = generateIdentity()
+  const eddie = new Connection({ server, room: 'room', secret: 'EDIT', name: 'eddie', identity: eddieId, doc: new Y.Doc() })
+  defer(() => eddie.close())
+  await waitFor(() => eddie.access)
+  assert.equal(eddie.access.state, 'pending', `an editor invitee waits too: ${JSON.stringify(eddie.access)}`)
+
+  const olive = new Connection({ server, room: 'room', secret: 'EDIT', name: 'olive', identity: creator, doc: new Y.Doc() })
+  defer(() => olive.close())
+  await waitFor(() => olive.access)
+  assert.equal(olive.access.owner, true, `the creator is the owner: ${JSON.stringify(olive.access)}`)
+  await olive.adminRequest({ op: 'approve', key: eddieId.publicKey })
+  await waitFor(() => eddie.access.state === 'approved')
+  assert.equal(eddie.access.role, 'editor')
+  assert.equal(mallory.access.state, 'pending')
+})
+
+// Issue 015: disk trouble must not stop the relay or lose sessions.
+test('a data folder that stops taking writes makes sessions read-only instead of stopping the relay', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('ro')
+  const logs = []
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: (m) => logs.push(m), dataDir })
+  defer(() => srv.close())
+  fs.chmodSync(dataDir, 0o500)
+  defer(() => fs.chmodSync(dataDir, 0o700))
+  const doc = new Y.Doc()
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'ro', secret: 's', name: 'ron', identity: generateIdentity(), doc })
+  defer(() => c.close())
+  await c.waitForSync()
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200, 'the relay is still up')
+  const room = srv.rooms.get('ro')
+  assert.equal(room.full, true, 'the session is read-only')
+  assert.ok(logs.some((m) => /\[ro\].*could not save/.test(m)), `the failure is logged: ${logs.join(' | ')}`)
+  doc.getText('t').insert(0, 'x')
+  await wait(1500) // the save timer
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200, 'a failed save does not stop it either')
+})
+
+test('a session whose metadata is unreadable is refused and left on disk, not deleted', async (t) => {
+  const defer = cleanups(t)
+  const dataDir = tmp('trunc')
+  fs.writeFileSync(path.join(dataDir, 'r3.json'), '{"secretHash":"ab","created') // cut off mid-write
+  fs.writeFileSync(path.join(dataDir, 'r3.ydoc'), Buffer.from([0, 0]))
+  fs.mkdirSync(path.join(dataDir, 'files', 'r3'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'files', 'r3', 'a'.repeat(32)), 'chat file')
+  const logs = []
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: (m) => logs.push(m), dataDir, roomTtlDays: 30 })
+  defer(() => srv.close())
+  srv.sweep()
+  const intact = () => ['r3.json', 'r3.ydoc', path.join('files', 'r3')].every((f) => fs.existsSync(path.join(dataDir, f)))
+  assert.equal(intact(), true, 'the sweep leaves what it cannot read')
+  assert.ok(logs.some((m) => /\[r3\].*could not read/.test(m)), `and says so: ${logs.join(' | ')}`)
+
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/r3?secret=s&name=n&key=${generateIdentity().publicKey}`)
+  ws.on('error', () => {})
+  const status = await new Promise((resolve) => {
+    ws.on('open', () => resolve(101))
+    ws.on('unexpected-response', (req, res) => resolve(res.statusCode))
+  })
+  defer(() => ws.terminate())
+  assert.notEqual(status, 101, 'the session is refused')
+  assert.equal(srv.rooms.has('r3'), false, 'and not kept in memory')
+  assert.equal(intact(), true, 'its files are still there for the operator')
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200, 'the relay is still up')
+
+  // Metadata is written atomically: a crash can only ever leave a .tmp behind, never a cut-off .json.
+  const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'ok', secret: 's', name: 'n', identity: generateIdentity(), doc: new Y.Doc() })
+  defer(() => c.close())
+  await c.waitForSync()
+  await waitFor(() => fs.existsSync(path.join(dataDir, 'ok.json')))
+  assert.equal(fs.readdirSync(dataDir).some((f) => f.endsWith('.tmp')), false)
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dataDir, 'ok.json'), 'utf8')).secretHash)
 })

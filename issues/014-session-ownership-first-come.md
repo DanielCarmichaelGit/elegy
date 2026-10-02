@@ -1,6 +1,6 @@
 # 014: Session ownership and creation go to whoever connects first, not to the person who started the session
 
-**Status:** Open · **Reported:** 2026-10-01 (audit) · **Seen on:** relay from main (98eb68b)
+**Status:** **Fixed** (7028258), part 1; part 2 is a design limit, see the log · **Reported:** 2026-10-01 (audit) · **Seen on:** relay from main (98eb68b)
 
 ## What happens
 1. **A view-only invitee can become the owner.** `accessFor`
@@ -32,3 +32,17 @@ or the creator is recorded at creation time.
 
 ## Log
 - 2026-10-01: found by the audit.
+- 2026-10-02: part 1 fixed (7028258). The upgrade handler now checks the identity key before the
+  room is touched, and `authorize` records it as `meta.creator` when it creates the room. `accessFor`
+  makes only that key the owner; everyone else who signs in before the creator waits in `pending`,
+  whatever secret they came with (for rooms stored before creators were recorded, with no owner yet,
+  the first editor invitee still becomes owner). Test: "only the creator of a session becomes its
+  owner, even if an invitee signs in first" in `test/relay.test.js`.
+  Part 2 (an invitee creating the room with the view secret before the creator's connection lands) is
+  not enforceable on the relay: before the room exists, a view secret and an edit secret look the
+  same, and the client doesn't tell the relay whether it is creating or joining (`Session` passes no
+  such flag to `Connection`, and tests and older clients create plain rooms with only a secret). In
+  practice the app only hands out the invite after `session.start()` has synced, by which point the
+  room exists with its creator recorded, so the race needs an invite shared before the app connected.
+  Closing it properly means a "joining" flag from `Session` to `Connection` (sent as a header) that
+  makes the relay refuse to create a room for a joiner; that touches `src/session.js`.
