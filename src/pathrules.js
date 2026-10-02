@@ -17,6 +17,8 @@ export const ALWAYS_IGNORED = [
   // Build output and caches: large, machine-specific, and rebuilt by each person.
   '.next', '.turbo', '.nuxt', '.svelte-kit', '.parcel-cache', '.vercel',
   '.env', '.env.*', '!.env.example',
+  // A .quiltignore is each person's own list of what stays on their machine, so it stays there too.
+  '.quiltignore', '.cowoveignore',
   '*.swp', '*.swo', '*~', '.#*'
 ]
 
@@ -40,11 +42,19 @@ export function scopeIgnore (text, dir) {
   }).join('\n')
 }
 
-/** An ignore matcher from the built-ins plus the text of .gitignore / .quiltignore files. */
+/**
+ * An ignore matcher from the built-ins plus the text of .gitignore / .quiltignore
+ * files. The built-ins are kept apart from the project patterns, so a shared
+ * .gitignore saying "!.env" can't make anyone's secrets sync.
+ */
 export function makeIgnore (texts = []) {
-  const ig = ignore().add(ALWAYS_IGNORED)
-  for (const t of texts) if (t) ig.add(t)
-  return ig
+  const builtin = ignore().add(ALWAYS_IGNORED)
+  const project = ignore()
+  for (const t of texts) if (t) project.add(t)
+  return {
+    add (text) { project.add(text); return this },
+    ignores (p) { return builtin.ignores(p) || project.ignores(p) }
+  }
 }
 
 export function isIgnored (ig, rel) {

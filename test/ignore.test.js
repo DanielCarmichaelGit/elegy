@@ -62,3 +62,28 @@ test('build and cache folders are never synced, even without a .gitignore', () =
   const ig = loadIgnore(root)
   assert.deepEqual(walk(root, ig), ['app/src/a.js'])
 })
+
+test('a project ignore file cannot re-include what is always ignored', () => {
+  const root = project({
+    '.gitignore': '!.env\n!.env.*\n!node_modules\n',
+    '.env': 'SECRET=1',
+    '.env.local': 'SECRET=2',
+    '.env.example': 'SECRET=',
+    'node_modules/x/index.js': 'x',
+    'app.js': 'x'
+  })
+  const ig = loadIgnore(root)
+  assert.equal(isIgnored(ig, '.env'), true, '.env stays local even when a shared .gitignore says otherwise')
+  assert.equal(isIgnored(ig, '.env.local'), true)
+  assert.equal(isIgnored(ig, 'node_modules/x/index.js'), true)
+  assert.equal(isIgnored(ig, '.env.example'), false, 'the built-in exception still applies')
+  assert.deepEqual(walk(root, ig).sort(), ['.env.example', '.gitignore', 'app.js'])
+})
+
+test('a .quiltignore is for your own machine and is never synced', () => {
+  const root = project({ '.quiltignore': 'private-notes.md\n', 'private-notes.md': 'x', 'app.js': 'x' })
+  const ig = loadIgnore(root)
+  assert.equal(isIgnored(ig, 'private-notes.md'), true)
+  assert.equal(isIgnored(ig, '.quiltignore'), true)
+  assert.deepEqual(walk(root, ig).sort(), ['app.js'])
+})

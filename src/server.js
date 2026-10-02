@@ -981,8 +981,13 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const wss = new WebSocketServer({ noServer: true, maxPayload: Math.max(MB, Math.min(64 * MB, cfg.maxRoomBytes)) })
 
   httpServer.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url, 'http://x')
-    const name = decodeURIComponent(url.pathname.slice(1))
+    let url, name
+    try {
+      url = new URL(req.url, 'http://x')
+      name = decodeURIComponent(url.pathname.slice(1))
+    } catch {
+      return reject(socket, 400, 'Bad room name')
+    }
     const secret = url.searchParams.get('secret') || ''
     const publicKey = url.searchParams.get('key') || ''
     const relayKey = url.searchParams.get('relayKey') || req.headers['x-quilt-key'] || req.headers['x-cowove-key'] || ''
@@ -1020,6 +1025,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
     if (!pass && !room.keyMatches(person, publicKey)) return reject(socket, 403, nameTaken(person))
     wss.handleUpgrade(req, socket, head, (ws) => {
+      // A frame over maxPayload or a reset mid-frame is this socket's problem, not
+      // the relay's: ws closes the socket itself once the error has a listener.
+      ws.on('error', (err) => log(`[${name}] dropping ${person}: ${err.message}`))
       ws.features = features
       if (pass) { ws.passKey = passKey; trackPass(ws, pass) }
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1)

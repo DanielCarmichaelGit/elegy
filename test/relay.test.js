@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import net from 'node:net'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
@@ -367,4 +368,36 @@ test('the sweep removes the tombstone of a session ended long ago', async (t) =>
   defer(() => srv.close())
   assert.equal(fs.existsSync(path.join(dataDir, 'gone.json')), false)
   assert.equal(fs.existsSync(path.join(dataDir, 'recent.json')), true, 'a recently ended session stays refused')
+})
+
+test('a malformed path in an upgrade request is refused, not fatal', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, relayKey: 'k' })
+  defer(() => srv.close())
+  const reply = await new Promise((resolve, reject) => {
+    const sock = net.connect(srv.port, '127.0.0.1', () => {
+      sock.write('GET /%E0%A4%A HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')
+    })
+    let buf = ''
+    sock.on('data', (d) => { buf += d })
+    sock.on('close', () => resolve(buf))
+    sock.on('error', reject)
+    setTimeout(() => { sock.destroy(); resolve(buf) }, 2000)
+  })
+  assert.match(reply, /^HTTP\/1\.1 400/)
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200, 'the relay is still up')
+})
+
+test('a client that sends more than the relay accepts is dropped, not fatal', async (t) => {
+  const defer = cleanups(t)
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 4000 })
+  defer(() => srv.close())
+  const id = generateIdentity()
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/big?secret=s&name=n&key=${id.publicKey}`)
+  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject) })
+  const closed = new Promise((resolve) => ws.on('close', (code) => resolve(code)))
+  ws.on('error', () => {})
+  ws.send(Buffer.alloc(2 * 1024 * 1024)) // maxPayload is at least 1 MB, here exactly 1 MB
+  assert.equal(await closed, 1009, 'closed for being too big')
+  assert.equal((await fetch(`http://127.0.0.1:${srv.port}/healthz`)).status, 200, 'the relay is still up')
 })

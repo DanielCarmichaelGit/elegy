@@ -89,6 +89,9 @@ async function serve () {
   const port = Number(values.port || process.env.PORT || 4321)
   const dataDir = path.resolve(values.data || process.env.QUILT_DATA || './quilt-data')
   const srv = await startServer({ port, host: values.host || '0.0.0.0', dataDir, ...(values.key ? { relayKey: values.key } : {}) })
+  // One bad request must never take every session down with it.
+  process.on('uncaughtException', (err) => console.error('relay: unexpected error, carrying on:', err))
+  process.on('unhandledRejection', (err) => console.error('relay: unexpected rejection, carrying on:', err))
   const c = srv.config
   console.log(`quilt relay listening on :${srv.port} (data: ${dataDir})`)
   console.log(`  sign-in: ${c.passPublicKey ? 'a pass from the accounts API is required; new sessions are limited per account' : 'off (set QUILT_PASS_PUBLIC_KEY to require it)'}`)
