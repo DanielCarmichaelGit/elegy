@@ -198,7 +198,11 @@ export async function runMcp () {
   const mergeLine = (m, me) => {
     const who = m.by === me ? 'you' : m.by
     const other = m.others[0] ? (m.others[0] === me ? 'you' : m.others[0]) : 'the session'
-    const what = m.kind === 'ai' ? `merged by AI, waiting for a look` : m.kind === 'claimed' ? `${who} changed it offline but ${m.claimedBy} has it claimed` : `${who} changed it offline and ${other} changed it in the session`
+    const what = m.kind === 'ai' ? `merged by AI, waiting for a look`
+      : m.kind === 'claimed' ? `${who} changed it offline but ${m.claimedBy} has it claimed`
+      : m.oursDeleted ? `${who} deleted it offline and ${other} changed it in the session`
+      : m.theirsHash === null ? `${who} changed it offline but it was deleted in the session`
+      : `${who} changed it offline and ${other} changed it in the session`
     return `- \`${m.path}\` (id ${m.id}, ${m.state}): ${what}${m.reason ? ` — ${m.reason}` : ''}`
   }
 

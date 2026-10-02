@@ -190,6 +190,10 @@ test('merges are listed and settled through the MCP tools', async () => {
   const r = text(await call('quilt_resolve_merge', { id: rec.id, how: 'theirs' }))
   assert.match(r, /settled/i)
   await waitFor(() => human.mergeList().find((m) => m.id === rec.id)?.state === 'done')
+  // A record where the offline side deleted the file must read as a deletion, not an ordinary content conflict.
+  const rec2 = openMerge(human.doc, human.merges, { path: 'src/gone.js', by: 'dana', others: ['helper'], kind: 'conflict', ours: null, oursDeleted: true, base: 'console.log("hi")\n', theirsHash: 'y', binary: false }, null)
+  const listed2 = await waitFor(async () => { const t = text(await call('quilt_merges')); return t.includes(rec2.id) ? t : null })
+  assert.match(listed2, /deleted it offline/)
 })
 
 test('agent edits sync back to people, and leaving removes the agent', async () => {
