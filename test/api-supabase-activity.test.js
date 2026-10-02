@@ -66,6 +66,7 @@ test("deleting a user removes its activity and its agents' before the auth user"
   const s = createSupabaseStore({ client })
   await s.deleteUser('u1')
   assert.deepEqual(calls[0].ops, [['select', 'id'], ['eq', 'owner_user_id', 'u1']])
-  assert.deepEqual([calls[1].rpc, calls[1].args], ['delete_account_activity', { p_accounts: ['person:u1', 'agent:a1', 'agent:a2'] }])
-  assert.deepEqual(calls[2], { deletedUser: 'u1' })
+  // delete_account_access (access types and grants) goes first; see api-supabase-access.test.js.
+  assert.deepEqual([calls[2].rpc, calls[2].args], ['delete_account_activity', { p_accounts: ['person:u1', 'agent:a1', 'agent:a2'] }])
+  assert.deepEqual(calls[3], { deletedUser: 'u1' })
 })
