@@ -87,3 +87,45 @@ off (today), same email domain as the owner, or anyone with the link. The
 relay checks the pass's email against the rule and skips the approval step
 when it matches. Skip public domains like gmail.com for the domain rule.
 Quick let-in is an actionable notification ("Sam wants to join. Let in").
+
+## Quitting the app never ends a live session
+**Status:** Idea
+**Unlocks:** You can quit Quilt (or shut your laptop) while your partners
+keep working. The session stays up on the relay with its files on disk, and
+when you come back you rejoin where it is now. Nothing anyone else is doing
+stops because one person left.
+**Rough shape:** Today quitting stops every local run (`desktop/main.js`
+`before-quit` → `ui.close()` → `stop(id)` → `run.stop()`), which only
+leaves the room; make sure that path never calls `endForEveryone`, and
+say so in the UI ("You left. The session keeps running for the others").
+On the relay, a room is alive while any member is connected: keep the
+Fly machine running with the session files on its disk while that is true.
+When the **last** member leaves, empty the room's files from the machine so
+it can be reused, and if no room on the machine has anyone in it, stop the
+machine (`fly.toml` has `auto_stop_machines = "off"` and
+`min_machines_running = 1` today, so this is a relay-driven stop, not
+Fly's idle timer). Owner-initiated "End for everyone" stays the only thing
+that ends a session for others.
+
+## View-only guests don't get a local folder
+**Status:** Idea
+**Unlocks:** Someone invited to view can follow the session without the
+project ever being written to their computer. Only edit (and above) gets a
+synced directory. That keeps read-only truly read-only: nothing to copy,
+nothing left behind when they're removed.
+**Rough shape:** Not settled. Viewers probably read through the relay
+instead of syncing: a tunnel into the machine that holds the session files,
+or the relay serving file contents and the feed over the existing
+connection for the app to render in place. The app would show the same
+feed, chat and file view for a viewer but skip the "choose a folder" step
+and never start the sync client. See role handling in `src/session.js`
+(`access.role === 'viewer'`).
+
+## Toasts stay while hovered, and can be copied
+**Status:** Idea
+**Unlocks:** A toast with something you need (an error, a path, an invite
+link) doesn't vanish while you're reading it, and one click copies its text.
+**Rough shape:** `src/ui/common.js` `toast()` hides after a fixed 2.4 s.
+Pause that timer on `mouseenter` and restart it on `mouseleave`. Add a small
+copy button inside `#toast` that writes the message text to the clipboard
+(and briefly confirms "Copied").
