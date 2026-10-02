@@ -141,6 +141,60 @@ export async function listAgents ({ token, api = apiUrl(), fetch: fetchImpl = gl
   return r.agents
 }
 
+// Access types, grants and session invites, as this computer's account (see
+// docs/superpowers/specs/2026-10-02-access-types-and-invites-design.md). Each throws with
+// .status when the API says no (401 once the token is revoked).
+const room$ = (room) => `/v1/sessions/${encodeURIComponent(room)}`
+
+/** The built-in access types, then this account's own. */
+export async function listAccessTypes ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', '/v1/access-types', null, token)
+  if (!Array.isArray(r.types)) throw new Error(BAD_REPLY)
+  return r.types
+}
+
+/** People and agents this account has worked with: [{ account, name, kind, lastTogetherAt }]. */
+export async function listCollaborators ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', '/v1/me/collaborators', null, token)
+  if (!Array.isArray(r.collaborators)) throw new Error(BAD_REPLY)
+  return r.collaborators
+}
+
+/** The owner's grants in a session: [{ account, typeId, typeName, tighten, access }]. */
+export async function listGrants ({ token, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${room$(room)}/grants`, null, token)
+  if (!Array.isArray(r.grants)) throw new Error(BAD_REPLY)
+  return r.grants
+}
+
+/** Gives `account` an access type in the owner's session, narrowed by `tighten`: the grant, with the access it comes to. */
+export async function putGrant ({ token, room, account, typeId, tighten = {}, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'PUT', `${room$(room)}/grants/${encodeURIComponent(account)}`, { typeId, tighten }, token)
+  if (!r.grant || !r.grant.access) throw new Error(BAD_REPLY)
+  return r.grant
+}
+
+export async function deleteGrant ({ token, room, account, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${room$(room)}/grants/${encodeURIComponent(account)}`, null, token)
+}
+
+/** Invites `to` ({ email } or { account }) to the owner's session as `typeId`. `link` is the session's invite link, for the email. */
+export async function inviteToSession ({ token, room, typeId, to, link, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${room$(room)}/invites`, { typeId, to, link }, token)
+  if (!r.invite) throw new Error(BAD_REPLY)
+  return r.invite
+}
+
+export async function listSessionInvites ({ token, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${room$(room)}/invites`, null, token)
+  if (!Array.isArray(r.invites)) throw new Error(BAD_REPLY)
+  return r.invites
+}
+
+export async function cancelSessionInvite ({ token, room, id, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${room$(room)}/invites/${encodeURIComponent(id)}`, null, token)
+}
+
 /** Revokes a token on the server, best effort, without touching account.json. */
 export async function revokeToken ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
   if (token) await call(fetchImpl, api, 'POST', '/v1/me/signout', {}, token, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => {})

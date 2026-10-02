@@ -14,7 +14,8 @@ import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './setting
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite } from './account.js'
+import { effectiveAccess } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
@@ -382,8 +383,82 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
     }
   }
 
+  // Access types and invites (the owner's): the API keeps grants, the relay applies them.
+  const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
+  const owned = (id) => {
+    const s = get(id)
+    if (!s.isOwner) throw httpError(403, 'Only the session owner can do that.')
+    return s
+  }
+  const typeById = async (token, typeId) => {
+    const type = (await listAccessTypes({ token })).find((t) => t.id === typeId)
+    if (!type) throw httpError(400, 'Pick an access type.')
+    return type
+  }
+  /** Runs `fn` against the API; anything but a 401 (which signs out) becomes a warning instead of an error. */
+  const tryApi = async (fn) => {
+    try { await fn(); return '' } catch (err) {
+      if (err.status === 401) throw err
+      return err.message
+    }
+  }
+
+  /**
+   * Lets someone in as an access type: the grant goes to the API first (so their next pass
+   * carries it), then the relay lets them in with the access it comes to. Someone who isn't
+   * an account (an older app) is still let in, with a warning that nothing was saved.
+   */
+  async function approveAs (id, { key, typeId }) {
+    const s = owned(id)
+    return asAccount(async (token) => {
+      const type = await typeById(token, typeId)
+      let access = effectiveAccess(type, {})
+      let warning = ''
+      if (ACCOUNT.test(String(key))) warning = await tryApi(async () => { access = (await putGrant({ token, room: s.room, account: key, typeId })).access })
+      await s.approve(key, { typeId, access })
+      return warning ? { ok: true, warning: `Let in, but their access wasn't saved on heyquilt.com: ${warning}` } : { ok: true }
+    })
+  }
+
+  /** Changes someone's access type and how it's narrowed: the API, then the relay at once. */
+  async function setAccess (id, { key, typeId, tighten }) {
+    const s = owned(id)
+    if (!ACCOUNT.test(String(key))) throw httpError(400, 'They joined before access types. Change their role instead.')
+    return asAccount(async (token) => {
+      const grant = await putGrant({ token, room: s.room, account: key, typeId, tighten })
+      await s.setMember(key, { access: grant.access })
+      return { grant }
+    })
+  }
+
+  /** Removes someone, and their grant, so they wait for the owner if they come back. */
+  async function removeMember (id, key) {
+    const s = owned(id)
+    if (ACCOUNT.test(String(key))) await asAccount((token) => tryApi(() => deleteGrant({ token, room: s.room, account: key })))
+    await s.removeMember(key)
+    return { ok: true }
+  }
+
+  /** Invites someone by email or account. The email carries the session's link: the view link for a view-only type. */
+  async function invite (id, { typeId, to }) {
+    const s = owned(id)
+    const run = runs.get(id).run
+    return asAccount(async (token) => {
+      const type = await typeById(token, typeId)
+      const link = type.files === 'view' && run.viewInvite ? run.viewInvite : run.invite
+      return { invite: await inviteToSession({ token, room: s.room, typeId, to, link }) }
+    })
+  }
+
   const api = {
     'GET /api/account': () => accountState(),
+    'GET /api/access-types': () => asAccount(async (token) => ({ types: await listAccessTypes({ token }) })),
+    'GET /api/collaborators': () => asAccount(async (token) => ({ collaborators: await listCollaborators({ token }) })),
+    'GET /api/sessions/:id/grants': (b, id) => { const s = owned(id); return asAccount(async (token) => ({ grants: await listGrants({ token, room: s.room }) })) },
+    'POST /api/sessions/:id/members/access': (b, id) => setAccess(id, b),
+    'GET /api/sessions/:id/invites': (b, id) => { const s = owned(id); return asAccount(async (token) => ({ invites: await listSessionInvites({ token, room: s.room }) })) },
+    'POST /api/sessions/:id/invites': (b, id) => invite(id, b),
+    'POST /api/sessions/:id/invites/cancel': (b, id) => { const s = owned(id); return asAccount(async (token) => { await cancelSessionInvite({ token, room: s.room, id: String(b.inviteId || '') }); return { ok: true } }) },
     'GET /api/agents': () => asAccount(async (token) => ({ agents: await listAgents({ token }) })),
     'POST /api/agent-invites': () => asAccount((token) => createAgentInvite({ token })),
     'POST /api/account/start': () => beginLink(),
@@ -425,10 +500,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       if (!f) throw httpError(404, 'That file is not in this session.')
       return f
     },
-    'POST /api/sessions/:id/members/approve': async (b, id) => (await get(id).approve(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
+    'POST /api/sessions/:id/members/approve': async (b, id) => b.typeId ? approveAs(id, b) : (await get(id).approve(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
-    'POST /api/sessions/:id/members/remove': async (b, id) => (await get(id).removeMember(b.key), { ok: true }),
+    'POST /api/sessions/:id/members/remove': (b, id) => removeMember(id, b.key),
     'POST /api/sessions/:id/rename': (b, id) => rename(id, b.name),
     'POST /api/sessions/:id/end': async (b, id) => { await get(id).endForEveryone(); await stop(id); return { ok: true } },
     'POST /api/sessions/:id/summarize': (b, id) => {

@@ -255,10 +255,14 @@ export class Session extends EventEmitter {
 
   get isOwner () { return !!(this.access && this.access.owner) }
 
-  /** Owner only: let someone in, with a role and (for agents) the folders they may change. */
-  approve (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'approve', key, role, scopes }) }
+  /**
+   * Owner only: let someone in, as an access type (`typeId`, with the `access` it comes to:
+   * { files, folders, foldersExcept, talk }), or, as before access types, with a role and
+   * the folders they may change.
+   */
+  approve (key, { role, scopes, typeId, access } = {}) { return this.conn.adminRequest({ op: 'approve', key, role, scopes, typeId, access }) }
   deny (key) { return this.conn.adminRequest({ op: 'deny', key }) }
-  setMember (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes }) }
+  setMember (key, { role, scopes, access } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes, access }) }
   removeMember (key) { return this.conn.adminRequest({ op: 'remove', key }) }
 
   /** Owner only: names the session for everyone in it (1 to 80 characters). */
