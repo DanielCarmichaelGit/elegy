@@ -41,7 +41,7 @@ const RETRY_MS = 30 * 1000
 const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '' }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -110,6 +110,9 @@ export class Session extends EventEmitter {
     this.access = null // from the relay: { state, role, scopes, owner, controlled }
     this.members = [] // everyone approved into a controlled session
     this.waiting = [] // people asking to join (only the owner hears about them)
+    this.sessionName = '' // what the owner named the session (the relay sends it with the member list)
+    this.startName = startName // a new session's name (its folder), sent once the relay lets us in as owner
+    this.startNameSent = false
     if (passes) this.adoptPass(passes.payload)
   }
 
@@ -211,6 +214,7 @@ export class Session extends EventEmitter {
   setAccess (a) {
     const was = this.access
     this.access = a
+    if (a.state === 'approved' && a.owner) this.sendStartName()
     if (a.state === 'pending' && (!was || was.state !== 'pending')) this.log(`⏳ waiting for the session owner to let you in (you were invited to ${a.invitedAs === 'viewer' ? 'view' : 'edit'})`)
     if (a.state === 'approved' && was && (was.role !== a.role || String(was.scopes) !== String(a.scopes))) {
       this.log(`🔑 you can now ${a.role === 'viewer' ? 'only view this session' : a.scopes.length ? `change files in ${a.scopes.join(', ')}` : 'change any file'}`)
@@ -220,8 +224,9 @@ export class Session extends EventEmitter {
     this.scheduleStatusWrite()
   }
 
-  setMembers ({ members, pending }) {
+  setMembers ({ members, pending, sessionName }) {
     this.members = members || []
+    if (typeof sessionName === 'string') this.sessionName = sessionName
     if (pending) {
       const known = new Set(this.waiting.map((p) => p.key))
       for (const p of pending) if (!known.has(p.key)) this.log(`🙋 ${p.name}${p.kind === 'agent' ? ' (an agent)' : ''} wants to join as ${p.invitedAs === 'viewer' ? 'a viewer' : 'an editor'}`)
@@ -247,6 +252,16 @@ export class Session extends EventEmitter {
   deny (key) { return this.conn.adminRequest({ op: 'deny', key }) }
   setMember (key, { role, scopes } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes }) }
   removeMember (key) { return this.conn.adminRequest({ op: 'remove', key }) }
+
+  /** Owner only: names the session for everyone in it (1 to 80 characters). */
+  rename (name) { return this.conn.adminRequest({ op: 'name', name }) }
+
+  /** A new session is named after its folder, once, as soon as the relay lets us in as its owner. */
+  sendStartName () {
+    if (!this.startName || this.startNameSent) return
+    this.startNameSent = true
+    this.rename(this.startName).catch((err) => this.log(`couldn't name the session: ${err.message}`))
+  }
 
   goLive () {
     this.files.observeDeep((events, tr) => {
@@ -1571,6 +1586,7 @@ export class Session extends EventEmitter {
       server: this.server,
       connected: !!(this.conn && this.conn.connected),
       access: this.access,
+      sessionName: this.sessionName,
       members: this.members,
       ...(this.isOwner ? { waiting: this.waiting } : {}),
       me: {

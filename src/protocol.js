@@ -13,8 +13,8 @@ export const MSG_AUTH = 10 // relay -> client: nonce; client -> relay: signature
 export const MSG_CLAIM = 11 // client -> relay: JSON { id, op: 'claim'|'release', pattern, note }
 export const MSG_CLAIMS = 12 // relay -> client: JSON { claims, reply?: { id, ok, error, released } }
 export const MSG_ACCESS = 13 // relay -> client: JSON { state: 'pending'|'approved', role, scopes, owner }
-export const MSG_ADMIN = 14 // client (owner) -> relay: JSON { id, op: 'approve'|'deny'|'set'|'remove', key, role, scopes }
-export const MSG_MEMBERS = 15 // relay -> client: JSON { members, pending?, reply?: { id, ok, error } }
+export const MSG_ADMIN = 14 // client (owner) -> relay: JSON { id, op: 'approve'|'deny'|'set'|'remove'|'end'|'name', key, role, scopes, name }
+export const MSG_MEMBERS = 15 // relay -> client: JSON { members, sessionName, pending?, reply?: { id, ok, error } }
 export const MSG_PASS = 16 // client -> relay: JSON { pass }: a fresh session pass, sent at least every 5 minutes
 
 // WebSocket close codes the relay uses to refuse a client for good.

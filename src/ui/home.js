@@ -51,7 +51,7 @@ function sidebarHtml (view) {
         <button class="pop-item" role="menuitem" data-new-session>${I.plus}<span>New session…</span></button>
         <button class="pop-item" role="menuitem" data-join-session>${I.link}<span>Join with an invite…</span></button>
         ${running.length ? `<div class="pop-sep"></div><div class="pop-label">Open now</div>${running.map((s) => `
-        <button class="pop-item" role="menuitem" data-go="${s.id}"><span class="dot" style="background:${s.status.connected ? 'var(--ok)' : 'var(--warn)'}"></span><span class="grow">${esc(basename(s.dir))}</span><span class="hint">${s.status.peers.length + 1} here</span></button>`).join('')}` : ''}
+        <button class="pop-item" role="menuitem" data-go="${s.id}"><span class="dot" style="background:${s.status.connected ? 'var(--ok)' : 'var(--warn)'}"></span><span class="grow">${esc(s.status.sessionName || basename(s.dir))}</span><span class="hint">${s.status.peers.length + 1} here</span></button>`).join('')}` : ''}
         ${reopenable.length ? `<div class="pop-sep"></div><div class="pop-label">Recent</div>${reopenable.slice(0, 5).map((r) => `
         <button class="pop-item" role="menuitem" data-rejoin="${esc(r.dir)}"><span class="dot"></span><span class="grow">${esc(basename(r.dir))}</span><span class="hint">${esc(ago(r.lastUsed))}</span></button>`).join('')}` : ''}
       </div>

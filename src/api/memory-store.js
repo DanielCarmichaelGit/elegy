@@ -27,6 +27,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
   const agentInvites = new Map(); const keyRows = new Map()
   const events = new Map(); const issues = new Map()
+  const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
   const all = (m, keep) => [...m.values()].filter(keep)
   const nameOf = (userId) => profiles.get(userId)?.name || ''
   const findMember = (orgId, userId) => all(members, (m) => m.orgId === orgId && m.userId === userId)[0]
@@ -49,6 +50,13 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     for (const [k, key] of keyRows) if (key.agentId === id) keyRows.delete(k)
     for (const [k, m] of members) if (m.agentId === id) dropMember(k)
     for (const i of agentInvites.values()) if (i.usedByAgentId === id) i.usedByAgentId = null
+  }
+
+  // Deleting an account takes the sessions it owns (with everyone's visits in them) and its
+  // own visits, like delete_account_activity.
+  const dropActivity = (accounts) => {
+    for (const [room, s] of relaySessions) if (accounts.includes(s.ownerAccount)) relaySessions.delete(room)
+    for (const [id, v] of visits) if (accounts.includes(v.account) || !relaySessions.has(v.room)) visits.delete(id)
   }
 
   return {
@@ -169,6 +177,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (k && !k.revokedAt) k.refreshedAt = null
     },
     async deleteUser (userId) {
+      dropActivity([`person:${userId}`, ...all(agents, (a) => a.ownerUserId === userId).map((a) => `agent:${a.id}`)])
       profiles.delete(userId); users.delete(userId)
       for (const [id, d] of devices) if (d.userId === userId) devices.delete(id)
       for (const [id, a] of agents) if (a.ownerUserId === userId) dropAgent(id)
@@ -181,6 +190,61 @@ export function createMemoryStore ({ now = Date.now } = {}) {
 
     // The address a person signs in with, and whether they've confirmed it.
     async userEmail (userId) { const u = users.get(userId); return u ? { ...u } : null },
+
+    // Session activity, as the relay reports it (routes/relay.js). Mirrors ingest_presence:
+    // events apply in order, each once; returns how many were new.
+    async ingestPresence (events, receivedAt) {
+      let applied = 0
+      for (const e of events) {
+        if (seenEvents.has(e.id)) continue
+        seenEvents.set(e.id, receivedAt)
+        applied++
+        const s = relaySessions.get(e.room)
+        if (e.type === 'start') {
+          if (!s) relaySessions.set(e.room, { room: e.room, name: '', ownerAccount: e.owner ? e.account : null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null })
+          else {
+            if (!s.ownerAccount && e.owner) s.ownerAccount = e.account
+            s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
+          }
+          if (!all(visits, (v) => v.eventStartId === e.id).length) {
+            const v = { id: uuid(), eventStartId: e.id, room: e.room, account: e.account, accountName: e.name || '', kind: e.account.split(':')[0], startedAt: e.at, endedAt: null }
+            visits.set(v.id, v)
+          }
+        } else if (e.type === 'end') {
+          for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) v.endedAt = Math.max(v.startedAt, e.at)
+          if (s) s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
+        } else if (e.type === 'name') {
+          if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null })
+          else if (s.renamedAt == null) s.name = e.name
+        }
+      }
+      return applied
+    },
+    // The sessions an account was in: the `limit` most recently active, plus any active since `since`.
+    async accountSessions (account, { since, limit }) {
+      const rooms = new Set(all(visits, (v) => v.account === account).map((v) => v.room))
+      const list = all(relaySessions, (s) => rooms.has(s.room)).sort((a, b) => b.lastActiveAt - a.lastActiveAt || a.room.localeCompare(b.room))
+      const keep = new Set(list.slice(0, limit))
+      return list.filter((s) => keep.has(s) || s.lastActiveAt >= since).map(copy)
+    },
+    async sessionByRoom (room) { return copy(relaySessions.get(room)) },
+    async visitsInRooms (rooms) {
+      const set = new Set(rooms)
+      return all(visits, (v) => set.has(v.room)).sort((a, b) => a.startedAt - b.startedAt).map(copy)
+    },
+    // The owner's rename: from now on the relay's name events leave it alone.
+    async renameSession (room, name, at) {
+      const s = relaySessions.get(room)
+      if (!s) return null
+      Object.assign(s, { name, renamedAt: at })
+      return copy(s)
+    },
+    // Mirrors prune_activity.
+    async pruneActivity ({ before, seenBefore }) {
+      for (const [id, v] of visits) if (v.endedAt != null && v.endedAt < before) visits.delete(id)
+      for (const [room, s] of relaySessions) if (s.lastActiveAt < before && !all(visits, (v) => v.room === room).length) relaySessions.delete(room)
+      for (const [id, at] of seenEvents) if (at < seenBefore) seenEvents.delete(id)
+    },
 
     // Orgs. Creating one makes its three built-in roles and its owner together.
     // first: true mirrors create_org's advisory lock for "a team" sign-ups: if

@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
 import { rememberSpace } from '@/lib/space-cookie.js'
 import { isSlug } from '@/lib/space.js'
+import { isRoom } from '@/lib/activity-view.js'
 
 // The Computers and Agents pages, and the overview that counts them. These actions don't
 // redirect: the form re-renders the page it was on, so revalidating that page (and the
@@ -52,6 +53,19 @@ export async function revokeAgent (formData) {
   const user = await requireUser(AGENTS)
   await apiCall(user, 'DELETE', `/v1/agents/${encodeURIComponent(String(formData.get('id')))}`)
   refresh(AGENTS)
+}
+
+// Renaming a session you own, from the dashboard or its page (the API checks you own it).
+// Returns the new name, or an error for the form to show.
+export async function renameSession (prev, formData) {
+  const user = await requireUser('/dashboard')
+  const room = String(formData.get('room') || '')
+  if (!isRoom(room)) return { error: 'That session wasn’t found.' }
+  const r = await apiCall(user, 'PUT', `/v1/me/sessions/${room}`, { name: String(formData.get('name') || '') })
+  if (!r.ok) return { error: r.data?.error || 'Couldn’t rename the session. Try again.' }
+  revalidatePath('/dashboard')
+  revalidatePath(`/dashboard/sessions/${room}`)
+  return { name: r.data.session.name }
 }
 
 // An org sign-up carries its org's name in the account until the org exists.

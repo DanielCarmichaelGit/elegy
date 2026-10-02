@@ -7,16 +7,14 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage } from './status.js'
-import { runSession, decodeInvite, newConn, readConfig, runningElsewhere } from './runner.js'
+import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent } from './agent-join.js'
-import { getSettings } from './settings.js'
 
 /**
  * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
@@ -27,29 +25,6 @@ export function roomFolder (cwd, room) {
   const dir = path.resolve(root, `quilt-${room}`)
   if (path.dirname(dir) !== root) throw new Error(INVALID_INVITE)
   return dir
-}
-
-const expandHome = (p) => p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p
-
-/**
- * Where an agent keeps its own copy of a room when it can't work in the current folder:
- * "quilt-<room>" under this computer's join folder (the app's "Join into" setting, ~/quilt
- * by default), so it never lands inside a person's project.
- */
-export function ownFolder (room) {
-  const root = path.resolve(expandHome(getSettings().joinDir || '~/quilt'))
-  const dir = path.resolve(root, `quilt-${room}`)
-  if (path.dirname(dir) !== root) throw new Error(INVALID_INVITE)
-  return dir
-}
-
-/**
- * A folder a person synced from this computer (the app, or `quilt join`), as opposed to an
- * agent's own copy. Older copies have no kind saved; they're known by their name.
- */
-export function personsFolder (dir) {
-  const saved = readConfig(dir)
-  return !!saved && saved.kind !== 'agent' && path.basename(dir) !== `quilt-${saved.room}`
 }
 
 export { toolLabel }
@@ -189,15 +164,15 @@ export async function runMcp () {
     // A person's folder that isn't being synced right now (they left, or closed the app) is
     // still theirs: taking it over would lock them out of their own session until the agent
     // leaves. The agent is its own member, in its own copy of the room.
+    // Each agent joins as itself: its name, key and passes come from its saved keys.
+    const auth = sessionPasses({ agent: pickAgent({ agent }) })
     let aside = null
     if (!dir || personsFolder(dir)) {
       if (starting) throw new Error(`${dir} already belongs to a session a person started on this computer. Ask them for its invite link and join that, or start from another folder.`)
       aside = dir || cwd
-      dir = ownFolder(conn.room)
+      dir = agentCopyFolder(conn.room, auth.name)
     }
     const tool = clientTool()
-    // Each agent joins as itself: its name, key and passes come from its saved keys.
-    const auth = sessionPasses({ agent: pickAgent({ agent }) })
     logs = []
     const run = await runSession({
       dir,

@@ -226,7 +226,7 @@ export function renderTabs () {
     const unread = s.status.unread
     return `<button class="tab${state.view === s.id ? ' on' : ''}" data-go="${s.id}">
       <span class="dot" style="background:${s.status.connected ? 'var(--ok)' : 'var(--warn)'}"></span>
-      ${esc(basename(s.dir))}
+      ${esc(s.status.sessionName || basename(s.dir))}
       ${unread && state.view !== s.id ? `<span class="badge">${unread}</span>` : ''}
     </button>`
   }).join('')

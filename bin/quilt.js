@@ -97,6 +97,7 @@ async function serve () {
   const c = srv.config
   console.log(`quilt relay listening on :${srv.port} (data: ${dataDir})`)
   console.log(`  sign-in: ${c.passPublicKey ? 'a pass from the accounts API is required; new sessions are limited per account' : 'off (set QUILT_PASS_PUBLIC_KEY to require it)'}`)
+  console.log(`  dashboard: ${c.apiUrl && c.relayApiSecret ? `reports who is in which session to ${c.apiUrl}` : 'off (set QUILT_API_URL and RELAY_API_SECRET to report sessions to the dashboard)'}`)
   if (!c.passPublicKey) console.log(`  new sessions: ${c.relayKey ? 'need the relay key' : 'open to anyone who can reach this relay (set QUILT_RELAY_KEY to restrict)'}`)
   console.log(`  limits: ${Math.round(c.maxRoomBytes / 1048576)} MB per session, ${Math.round(c.maxRoomFileBytes / 1048576)} MB of shared files, ${c.maxConnsPerIp} connections per address, idle sessions removed after ${c.roomTtlDays} days`)
   console.log(`for development, point Quilt at it with QUILT_SERVER=ws://<this-host>:${srv.port}`)
@@ -141,12 +142,15 @@ async function apiCmd () {
   const api = await startApi({
     port, host, store, verifyUser, mailer, passKey,
     reportKey: env.QUILT_REPORT_KEY || '',
+    // The relay signs its presence reports with this (scripts/relay-api-secret.mjs).
+    relaySecret: env.RELAY_API_SECRET || '',
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
   })
   console.log(`quilt accounts API listening on ${api.url}`)
+  if (!env.RELAY_API_SECRET) console.log('RELAY_API_SECRET is not set: the relay cannot report sessions for the dashboard')
   const shutdown = async () => { await api.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
 }
@@ -178,7 +182,7 @@ async function join () {
       tool: { type: 'string' }, dir: { type: 'string' }, prefer: { type: 'string' }, agent: { type: 'string' }
     }
   })
-  const { runSession, decodeInvite, newConn, readConfig } = await import('../src/runner.js')
+  const { runSession, decodeInvite, newConn, readConfig, personsFolder, agentCopyFolder } = await import('../src/runner.js')
   const { sessionPasses } = await import('../src/pass-source.js')
   const { clearAccount } = await import('../src/account.js')
   // Every session signs in: as this computer's account, or as a saved agent.
@@ -189,7 +193,7 @@ async function join () {
     clearAccount()
     return 'This computer was signed out. Run quilt login again.'
   }
-  const dir = path.resolve(values.dir || '.')
+  let dir = path.resolve(values.dir || '.')
   const saved = readConfig(dir) || {}
 
   const { unsupportedRelay } = await import('../src/settings.js')
@@ -206,6 +210,14 @@ async function join () {
     if (saved.server) console.log("This folder's last session ran on your computer's own relay, which Quilt no longer supports. Starting a new session.")
     conn = newConn()
     console.log('starting a new session')
+  }
+
+  // An agent never takes over a folder a person synced from this computer (they'd lose it
+  // from the app's Recent list and couldn't get back in): it keeps its own copy of the room.
+  if (auth.kind === 'agent' && personsFolder(dir)) {
+    const copy = agentCopyFolder(conn.room, auth.name)
+    console.log(`${dir} is a person's own copy of a session on this computer and stays theirs: syncing ${copy} instead.`)
+    dir = copy
   }
 
   const stamp = () => new Date().toLocaleTimeString()

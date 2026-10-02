@@ -97,6 +97,8 @@ All settings are environment variables on the relay.
 | Variable | Default | What it does |
 |---|---|---|
 | `QUILT_PASS_PUBLIC_KEY` | *(none)* | The accounts API's public key (`/v1/passes/key`). With it, every connection needs a pass from the API. Set it as a secret. |
+| `QUILT_API_URL` | *(none)* | The accounts API, e.g. `https://api.heyquilt.com`. With `RELAY_API_SECRET`, the relay reports who is in which session (account, display name and times only) for people's dashboards. Unsent reports wait in `presence-queue.jsonl` in the data folder. |
+| `RELAY_API_SECRET` | *(none)* | Shared with the accounts API; `node scripts/relay-api-secret.mjs` sets it on both. Set it as a secret. Without both settings, the relay reports nothing. |
 | `QUILT_RELAY_KEY` | *(none)* | Required to **start** sessions when sign-in is off. Ignored when `QUILT_PASS_PUBLIC_KEY` is set. |
 | `PORT` | `4321` | Port to listen on (Render and Fly set this for you). |
 | `QUILT_DATA` | `/data` in Docker | Where sessions and shared files are stored. |
@@ -162,6 +164,9 @@ quota (`QUILT_MAX_ROOM_FILES_MB`) together with files shared in chat.
   their own disk.
 - **Updating.** Redeploy (`fly deploy`, a Render redeploy, or
   `docker compose pull && docker compose up -d`). Clients reconnect on their
-  own, and edits made during the restart sync once it's back.
+  own, and edits made during the restart sync once it's back. Quilt's own
+  relay deploys itself from GitHub Actions ("Relay deploy") on every push to
+  `main` that changes what it runs, or by hand from the Actions tab; the
+  workflow uses the `FLY_API_TOKEN` repository secret.
 - **One instance.** Don't scale the relay to several machines. People in the
   same session must reach the same process.

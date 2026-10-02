@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { describeOtherSync, runSession, recentSessions } from '../src/runner.js'
+import { describeOtherSync, runSession, recentSessions, isAgentCopy, personsFolder, agentCopyFolder } from '../src/runner.js'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-busy-home-'))
 process.env.HOME = home
@@ -57,18 +57,32 @@ test('a `quilt join` in a terminal, and any other quilt process', async (t) => {
   assert.match(await describeOtherSync(dir), /another copy of the Quilt app \(process \d+\) has it open\. Leave it there, or quit that app, then rejoin here\.$/)
 })
 
-test("an agent's own copies of rooms stay out of the person's recent list", () => {
-  const folders = {}
-  for (const kind of ['human', 'agent']) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `quilt-recent-${kind}-`))
-    fs.mkdirSync(path.join(dir, '.quilt'))
-    fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify({ room: 'r', kind }))
-    folders[kind] = dir
+test("a folder is a person's unless it is an agent's copy, whoever ran it last", () => {
+  const make = (name, config) => {
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-whose-')), name)
+    fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
+    fs.writeFileSync(path.join(dir, '.quilt', 'config.json'), JSON.stringify(config))
+    return dir
   }
+  // Mo's project, last run by an agent (an older version, or `quilt join --agent` there): still Mo's.
+  const mine = make('elegy', { room: 'r', kind: 'agent', name: 'Martha' })
+  const older = make('quilt-r', { room: 'r' })
+  const copy = make('quilt-r-martha', { room: 'r', kind: 'agent' })
+  assert.equal(personsFolder(mine), true)
+  assert.equal(personsFolder(older), false)
+  assert.equal(personsFolder(copy), false)
+  assert.equal(personsFolder(path.join(os.tmpdir(), 'nowhere')), false, 'never synced: nobody\'s yet')
+  assert.equal(isAgentCopy('/x/quilt-r-martha', 'r'), true)
+  assert.equal(isAgentCopy('/x/quilt-rest', 'r'), false, 'another room\'s copy')
+
   fs.mkdirSync(path.join(home, '.quilt'), { recursive: true })
   fs.writeFileSync(path.join(home, '.quilt', 'recent.json'), JSON.stringify([
-    { dir: folders.agent, room: 'r', kind: 'agent', lastUsed: 2 },
-    { dir: folders.human, room: 'r', kind: 'human', lastUsed: 1 }
+    { dir: copy, room: 'r', kind: 'agent', lastUsed: 3 },
+    { dir: mine, room: 'r', kind: 'agent', name: 'Martha', lastUsed: 2 },
+    { dir: older, room: 'r', lastUsed: 1 }
   ]))
-  assert.deepEqual(recentSessions().map((r) => r.dir), [folders.human])
+  assert.deepEqual(recentSessions().map((r) => r.dir), [mine], "Mo's folder is listed; the agents' copies are not")
+
+  assert.equal(agentCopyFolder('r', 'Grok Bot'), path.join(home, 'quilt', 'quilt-r-grok-bot'), 'under the join folder, one per agent')
+  assert.equal(agentCopyFolder('r', '!!'), path.join(home, 'quilt', 'quilt-r-agent'))
 })

@@ -13,6 +13,7 @@ import { newPassKeys } from '../src/passes.js'
 import { loadIdentity } from '../src/identity.js'
 import { saveAccount } from '../src/account.js'
 import { agentJoin } from '../src/agent-join.js'
+import { encodeInvite } from '../src/runner.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-cli-join-${n}-`))
@@ -32,8 +33,8 @@ after(async () => { await relay.close(); await t.close() })
 const envFor = (home) => ({ ...process.env, HOME: home, QUILT_API_URL: t.api.url, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` })
 
 /** Runs `quilt join` until it prints an invite link (or exits). */
-function join (args, home) {
-  const child = spawn(process.execPath, [BIN, 'join', ...args], { cwd: tmp('proj'), env: envFor(home) })
+function join (args, home, cwd = tmp('proj')) {
+  const child = spawn(process.execPath, [BIN, 'join', ...args], { cwd, env: envFor(home) })
   let out = ''
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { child.kill(); reject(new Error('join did not start:\n' + out)) }, 15000)
@@ -79,6 +80,33 @@ test('quilt join --agent joins as a saved agent', async () => {
   try {
     assert.match(out, /as "helper"/)
     await waitFor(() => inRelay().some(([n, k]) => n === 'helper' && k === 'agent'))
+  } finally { await stop(child) }
+})
+
+test("quilt join --agent in a person's folder syncs the agent's own copy and leaves theirs alone", async () => {
+  const home = tmp('home')
+  const link = (await t.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.replace(API_URL, t.api.url)
+  await agentJoin({ link, name: 'grok-bot', dir: path.join(home, '.quilt'), log: () => {} })
+  // Mo's own folder for the room, from the app: saved, not being synced right now.
+  const mine = tmp('mine')
+  fs.mkdirSync(path.join(mine, '.quilt'))
+  fs.writeFileSync(path.join(mine, 'notes.md'), 'mine\n')
+  const saved = { server: `ws://127.0.0.1:${relay.port}`, room: 'elegy', secret: 's3cret', name: 'Mo', tool: 'Cursor', kind: 'human' }
+  fs.writeFileSync(path.join(mine, '.quilt', 'config.json'), JSON.stringify(saved))
+  const invite = encodeInvite({ server: `ws://127.0.0.1:${relay.port}`, room: 'elegy', secret: 's3cret' })
+  const copy = path.join(home, 'quilt', 'quilt-elegy-grok-bot')
+  const { child, out } = await join(['--agent', 'grok-bot', invite], home, mine)
+  try {
+    // Before: the agent synced Mo's folder itself, as the agent, which hid it from the app's
+    // Recent list and made Rejoin fail with "already being synced" until the agent left.
+    assert.match(out, new RegExp(`${mine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is a person's own copy of a session on this computer and stays theirs: syncing ${copy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} instead`))
+    assert.match(out, /as "grok-bot"/)
+    await waitFor(() => inRelay().some(([n, k]) => n === 'grok-bot' && k === 'agent'))
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(mine, '.quilt', 'config.json'), 'utf8')), saved, "Mo's saved session is untouched")
+    assert.equal(fs.existsSync(path.join(mine, '.quilt', 'daemon.json')), false, 'nothing runs in her folder')
+    assert.equal(JSON.parse(fs.readFileSync(path.join(copy, '.quilt', 'config.json'), 'utf8')).kind, 'agent')
+    const recent = JSON.parse(fs.readFileSync(path.join(home, '.quilt', 'recent.json'), 'utf8'))
+    assert.deepEqual(recent.map((r) => r.dir), [copy], "only the agent's copy was remembered, and that stays out of the app's list")
   } finally { await stop(child) }
 })
 

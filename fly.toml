@@ -7,6 +7,9 @@
 #   fly deploy
 app = "cowove-relay"
 primary_region = "iad"
+# Shutdown saves every room, then gives presence reports up to 5 s to reach the accounts
+# API: more than Fly's default 5 s before it kills the machine.
+kill_timeout = 10
 
 [env]
   QUILT_DATA = "/data"
@@ -17,6 +20,9 @@ primary_region = "iad"
   # Supabase's free plan caps uploads at 50 MB per file; raise this on a paid plan.
   QUILT_MAX_STORED_FILE_MB = "50"
   PORT = "4321"
+  # Presence reports for people's dashboards. They also need the RELAY_API_SECRET secret
+  # (node scripts/relay-api-secret.mjs sets it on this app and on quilt-api).
+  QUILT_API_URL = "https://api.heyquilt.com"
 
 [[mounts]]
   source = "cowove_data"
